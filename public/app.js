@@ -135,17 +135,9 @@
     pill.className = `mode-pill ${isSim ? "sim" : "live"}`;
   }
 
-  function miniGrokIcon(color, shape) {
+  function miniGrokIcon(color) {
     const c = esc(color || "#3b93f0");
-    let body = `<circle cx="12" cy="12" r="10" fill="${c}"/>`;
-    if (shape === "squircle") body = `<rect x="2" y="2" width="20" height="20" rx="6" fill="${c}"/>`;
-    else if (shape === "capsule") body = `<rect x="4" y="1.5" width="16" height="21" rx="8" fill="${c}"/>`;
-    else if (shape === "triangle") body = `<path d="M12 2.5 L21.5 19.5 Q22 21 20 21 L4 21 Q2 21 2.5 19.5 Z" fill="${c}"/>`;
-    else if (shape === "hexagon") body = `<polygon points="12,1.5 21,6.8 21,17.2 12,22.5 3,17.2 3,6.8" fill="${c}"/>`;
-    else if (shape === "cloud") body = `<path d="M7 19h10a4.5 4.5 0 0 0 1-8.9A5.5 5.5 0 0 0 7.2 8.5 4.2 4.2 0 0 0 7 19z" fill="${c}"/>`;
-    else if (shape === "droplet") body = `<path d="M12 2 C12 2 20 10.5 20 15 a8 8 0 0 1-16 0 C4 10.5 12 2 12 2z" fill="${c}"/>`;
-    else if (shape === "pebble") body = `<ellipse cx="12" cy="12.5" rx="10.5" ry="9" transform="rotate(-8 12 12)" fill="${c}"/>`;
-    return `<svg class="grok-mini" viewBox="0 0 24 24" width="24" height="24">${body}<ellipse cx="9.2" cy="12.2" rx="2.3" ry="2.8" fill="#fff"/><ellipse cx="14.8" cy="12.2" rx="2.3" ry="2.8" fill="#fff"/><circle cx="9.5" cy="12.3" r="1.2" fill="#0a0a0c"/><circle cx="15.1" cy="12.3" r="1.2" fill="#0a0a0c"/></svg>`;
+    return `<svg class="grok-mini" viewBox="0 0 24 24" width="26" height="26"><rect x="2" y="1.5" width="20" height="21" rx="7" fill="${c}"/><ellipse cx="9" cy="11.6" rx="2.4" ry="3" fill="#fff"/><ellipse cx="15" cy="11.6" rx="2.4" ry="3" fill="#fff"/><circle cx="9.3" cy="11.8" r="1.25" fill="#0a0a0c"/><circle cx="15.3" cy="11.8" r="1.25" fill="#0a0a0c"/></svg>`;
   }
 
   function renderTeamList() {
@@ -168,9 +160,9 @@
       .map(
         (b) => `
       <div class="team-row ${selectedBotId === b.id ? "selected" : ""}" data-select-bot="${esc(b.id)}">
-        ${miniGrokIcon(b.avatarColor, b.avatarShape)}
+        ${miniGrokIcon(b.avatarColor)}
         <div class="team-info">
-          <div class="team-name">${esc(b.name)}</div>
+          <div class="team-name">${esc(b.name)} <span class="muted" style="font-weight:500;font-size:0.75rem">· ${esc(b.role)}</span></div>
           <div class="team-sub">${esc(b.task || "Standing by")}</div>
         </div>
         <span class="st-pill st-${esc(b.status)}">${esc(statusLabel(b.status))}</span>
@@ -367,6 +359,7 @@
         <div>
           <span class="insp-name">${esc(bot.name)}</span>
           <span class="st-pill st-${esc(bot.status)}" style="margin-left:8px">${esc(statusLabel(bot.status))}</span>
+          <div style="font-size:0.76rem;color:var(--cyan);font-weight:600;margin-top:2px">${esc(bot.role || "Grok Bot")}</div>
         </div>
         <button id="btn-close-insp" class="btn-icon">✕</button>
       </div>

@@ -898,150 +898,66 @@ class Office3D {
     this.usageTex.needsUpdate = true;
   }
 
-  /* ---------- Authentic 3D Grok Bot Character System ---------- */
-  buildGrokBodyMesh(shape, mat, botId) {
+  /* ---------- Unified Iconic 3D Grok Bot Character System ---------- */
+  buildGrokBodyMesh(mat, botId) {
     const bodyGroup = new THREE.Group();
     const hitMeshes = [];
-    let eyeY = 0.86;
-    let eyeZ = 0.56;
-    let eyeSpread = 0.21;
 
-    const addPart = (geo, x = 0, y = 0, z = 0, sx = 1, sy = 1, sz = 1, rotZ = 0) => {
-      const m = new THREE.Mesh(geo, mat);
-      m.position.set(x, y, z);
-      m.scale.set(sx, sy, sz);
-      if (rotZ) m.rotation.z = rotZ;
-      m.castShadow = true;
-      m.receiveShadow = true;
-      m.userData.botId = botId;
-      bodyGroup.add(m);
-      hitMeshes.push(m);
-      return m;
-    };
+    // One unified, super-clean signature Grok Bot silhouette (plump rounded squircle-pill)
+    // Every bot shares identical refined proportions, differentiated cleanly by vibrant color.
+    const s = new THREE.Shape();
+    const r = 0.34;
+    const w = 0.56;
+    const h = 0.62;
+    s.moveTo(-w + r, -h);
+    s.lineTo(w - r, -h);
+    s.quadraticCurveTo(w, -h, w, -h + r);
+    s.lineTo(w, h - r);
+    s.quadraticCurveTo(w, h, w - r, h);
+    s.lineTo(-w + r, h);
+    s.quadraticCurveTo(-w, h, -w, h - r);
+    s.lineTo(-w, -h + r);
+    s.quadraticCurveTo(-w, -h, -w + r, -h);
 
-    if (shape === "circle") {
-      // Soft plump orb
-      addPart(new THREE.SphereGeometry(0.62, 28, 24), 0, 0.78, 0, 1.04, 1.0, 0.96);
-      eyeY = 0.86;
-      eyeZ = 0.54;
-      eyeSpread = 0.21;
-    } else if (shape === "pebble") {
-      // Organic asymmetric smooth stone/bean silhouette
-      addPart(new THREE.SphereGeometry(0.6, 28, 24), -0.05, 0.74, 0, 1.18, 0.92, 0.92, 0.14);
-      addPart(new THREE.SphereGeometry(0.46, 20, 18), 0.22, 0.82, -0.04, 0.95, 1.02, 0.88);
-      eyeY = 0.82;
-      eyeZ = 0.52;
-      eyeSpread = 0.22;
-    } else if (shape === "squircle") {
-      // Plump rounded cushion / beveled squircle
-      const s = new THREE.Shape();
-      const r = 0.3;
-      const w = 0.56;
-      const h = 0.58;
-      s.moveTo(-w + r, -h);
-      s.lineTo(w - r, -h);
-      s.quadraticCurveTo(w, -h, w, -h + r);
-      s.lineTo(w, h - r);
-      s.quadraticCurveTo(w, h, w - r, h);
-      s.lineTo(-w + r, h);
-      s.quadraticCurveTo(-w, h, -w, h - r);
-      s.lineTo(-w, -h + r);
-      s.quadraticCurveTo(-w, -h, -w + r, -h);
-      const geo = new THREE.ExtrudeGeometry(s, {
-        depth: 0.48,
-        bevelEnabled: true,
-        bevelThickness: 0.2,
-        bevelSize: 0.16,
-        bevelSegments: 8,
-      });
-      geo.center();
-      addPart(geo, 0, 0.82, 0);
-      eyeY = 0.88;
-      eyeZ = 0.44;
-      eyeSpread = 0.23;
-    } else if (shape === "capsule") {
-      // Tall friendly jellybean / pill
-      addPart(new THREE.CapsuleGeometry(0.46, 0.58, 12, 24), 0, 0.9, 0, 1.05, 1.0, 0.95);
-      eyeY = 1.06;
-      eyeZ = 0.43;
-      eyeSpread = 0.19;
-    } else if (shape === "triangle") {
-      // Soft rounded gumdrop / cone
-      addPart(new THREE.ConeGeometry(0.68, 1.28, 28), 0, 0.86, 0, 1.02, 1.0, 0.92);
-      addPart(new THREE.SphereGeometry(0.58, 20, 16), 0, 0.52, 0, 1.08, 0.65, 0.96);
-      addPart(new THREE.SphereGeometry(0.2, 14, 12), 0, 1.38, 0);
-      eyeY = 0.78;
-      eyeZ = 0.46;
-      eyeSpread = 0.19;
-    } else if (shape === "hexagon") {
-      // Soft chamfered hexagonal gem/prism
-      const hex = new THREE.Shape();
-      for (let i = 0; i < 6; i++) {
-        const a = (Math.PI / 3) * i - Math.PI / 6;
-        const px = Math.cos(a) * 0.6;
-        const py = Math.sin(a) * 0.6;
-        if (i === 0) hex.moveTo(px, py);
-        else hex.lineTo(px, py);
-      }
-      hex.closePath();
-      const geo = new THREE.ExtrudeGeometry(hex, {
-        depth: 0.46,
-        bevelEnabled: true,
-        bevelThickness: 0.18,
-        bevelSize: 0.14,
-        bevelSegments: 6,
-      });
-      geo.center();
-      addPart(geo, 0, 0.84, 0);
-      eyeY = 0.88;
-      eyeZ = 0.41;
-      eyeSpread = 0.21;
-    } else if (shape === "cloud") {
-      // Fluffy sculptural multi-puff cloud
-      addPart(new THREE.SphereGeometry(0.46, 22, 18), 0, 0.86, 0, 1.12, 1.05, 0.95);
-      addPart(new THREE.SphereGeometry(0.36, 18, 16), -0.4, 0.72, -0.02);
-      addPart(new THREE.SphereGeometry(0.36, 18, 16), 0.4, 0.72, -0.02);
-      addPart(new THREE.SphereGeometry(0.32, 16, 14), -0.22, 1.12, -0.04);
-      addPart(new THREE.SphereGeometry(0.32, 16, 14), 0.22, 1.12, -0.04);
-      eyeY = 0.86;
-      eyeZ = 0.44;
-      eyeSpread = 0.21;
-    } else {
-      // "droplet" — plump teardrop silhouette
-      addPart(new THREE.SphereGeometry(0.58, 24, 20), 0, 0.68, 0, 1.04, 0.98, 0.96);
-      addPart(new THREE.ConeGeometry(0.52, 0.92, 24), 0, 1.16, 0);
-      addPart(new THREE.SphereGeometry(0.14, 12, 10), 0, 1.56, 0);
-      eyeY = 0.76;
-      eyeZ = 0.52;
-      eyeSpread = 0.21;
-    }
+    const geo = new THREE.ExtrudeGeometry(s, {
+      depth: 0.44,
+      bevelEnabled: true,
+      bevelThickness: 0.22,
+      bevelSize: 0.16,
+      bevelSegments: 10,
+      curveSegments: 16,
+    });
+    geo.center();
 
-    return { bodyGroup, hitMeshes, eyeY, eyeZ, eyeSpread };
+    const body = new THREE.Mesh(geo, mat);
+    body.position.set(0, 0.86, 0);
+    body.castShadow = true;
+    body.receiveShadow = true;
+    body.userData.botId = botId;
+    bodyGroup.add(body);
+    hitMeshes.push(body);
+
+    return { bodyGroup, hitMeshes, eyeY: 0.94, eyeZ: 0.44, eyeSpread: 0.23 };
   }
 
   createBotAvatar(bot) {
     const group = new THREE.Group();
     group.userData.botId = bot.id;
 
-    const shape = bot.avatarShape || "pebble";
     const baseHex = bot.avatarColor || "#3b93f0";
     const primaryColor = new THREE.Color(baseHex);
 
-    // Tactile matte-satin soft vinyl/clay material (iconic Grok Bot finish)
+    // Tactile matte-satin vinyl Grok Bot finish
     const bodyMat = new THREE.MeshStandardMaterial({
       color: primaryColor,
-      roughness: 0.42,
-      metalness: 0.04,
+      roughness: 0.38,
+      metalness: 0.05,
     });
 
     const rig = new THREE.Group();
     group.add(rig);
 
-    const { bodyGroup, hitMeshes, eyeY, eyeZ, eyeSpread } = this.buildGrokBodyMesh(
-      shape,
-      bodyMat,
-      bot.id
-    );
+    const { bodyGroup, hitMeshes, eyeY, eyeZ, eyeSpread } = this.buildGrokBodyMesh(bodyMat, bot.id);
     rig.add(bodyGroup);
 
     // Big Iconic Expressive Grok Bot Eyes (White Sclera + Glossy Dark Pupils + Catchlights + Eyelids)
@@ -1052,35 +968,31 @@ class Office3D {
     const whiteMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.18, metalness: 0.02 });
     const pupilMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0c, roughness: 0.1, metalness: 0.15 });
     const catchMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    const lidMat = new THREE.MeshStandardMaterial({ color: primaryColor, roughness: 0.42 });
+    const lidMat = new THREE.MeshStandardMaterial({ color: primaryColor, roughness: 0.38 });
 
     const makeEye = (side) => {
       const eyeWrap = new THREE.Group();
       eyeWrap.position.set(side * eyeSpread, 0, 0);
 
-      // Large expressive oval eye sclera
-      const sclera = new THREE.Mesh(new THREE.SphereGeometry(0.165, 18, 16), whiteMat);
+      const sclera = new THREE.Mesh(new THREE.SphereGeometry(0.17, 18, 16), whiteMat);
       sclera.scale.set(0.92, 1.18, 0.45);
       eyeWrap.add(sclera);
 
-      // Movable pupil + tiny bright catchlight sparkle
       const pupilGroup = new THREE.Group();
       pupilGroup.position.set(0, 0, 0.068);
-      const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.088, 14, 12), pupilMat);
+      const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.09, 14, 12), pupilMat);
       pupil.scale.set(0.94, 1.1, 0.45);
       const sparkle = new THREE.Mesh(new THREE.SphereGeometry(0.032, 10, 8), catchMat);
       sparkle.position.set(0.034, 0.042, 0.036);
       pupilGroup.add(pupil, sparkle);
       eyeWrap.add(pupilGroup);
 
-      // Expressive upper eyelid (used for blinking, sleepy, angry/error, focused moods)
-      const upperLid = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.22, 0.16), lidMat);
+      const upperLid = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.22, 0.16), lidMat);
       upperLid.position.set(0, 0.22, 0.04);
       upperLid.visible = false;
       eyeWrap.add(upperLid);
 
-      // Expressive lower lid (used for happy smiling squint in meeting/lounge)
-      const lowerLid = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.16, 0.16), lidMat);
+      const lowerLid = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.16, 0.16), lidMat);
       lowerLid.position.set(0, -0.2, 0.04);
       lowerLid.visible = false;
       eyeWrap.add(lowerLid);
@@ -1106,23 +1018,23 @@ class Office3D {
     halo.position.y = 0.14;
     group.add(halo);
 
-    // Grok Bot "Orbit" Ring (spins cleanly around the bot while actively working!)
+    // Grok Bot "Orbit" Ring (spins cleanly around the bot while actively working)
     const orbitRing = new THREE.Mesh(
-      new THREE.TorusGeometry(0.84, 0.028, 8, 32),
+      new THREE.TorusGeometry(0.86, 0.028, 8, 32),
       new THREE.MeshBasicMaterial({
         color: primaryColor,
         transparent: true,
         opacity: 0.55,
       })
     );
-    orbitRing.position.y = 0.85;
+    orbitRing.position.y = 0.88;
     orbitRing.rotation.x = Math.PI / 2.6;
     orbitRing.visible = bot.status === "working";
     group.add(orbitRing);
 
-    // Grok Bot "Thinking" 3 Floating Dots (pulses gently when working/meeting)
+    // Grok Bot "Thinking" 3 Floating Dots
     const thinkGroup = new THREE.Group();
-    thinkGroup.position.set(0, 1.85, 0);
+    thinkGroup.position.set(0, 1.9, 0);
     const thinkDots = [-0.22, 0, 0.22].map((dx) => {
       const dot = new THREE.Mesh(
         new THREE.SphereGeometry(0.068, 10, 10),
@@ -1135,7 +1047,7 @@ class Office3D {
     thinkGroup.visible = bot.status === "working" || bot.status === "meeting";
     group.add(thinkGroup);
 
-    // Grok Bot Notification / Alert Dot (floating glossy pill orb for waiting / error)
+    // Grok Bot Notification / Alert Orb (for waiting / error)
     const beacon = new THREE.Mesh(
       new THREE.SphereGeometry(0.18, 16, 16),
       new THREE.MeshStandardMaterial({
@@ -1145,16 +1057,18 @@ class Office3D {
         roughness: 0.2,
       })
     );
-    beacon.position.set(0.45, 1.78, 0.18);
+    beacon.position.set(0.46, 1.82, 0.18);
     beacon.visible = bot.status === "waiting" || bot.status === "error";
     group.add(beacon);
 
     this.scene.add(group);
 
-    // Compact Nameplate
+    // Clean Name + Role Nameplate Tag
     const labelEl = document.createElement("div");
     labelEl.className = "bot-3d-label";
-    labelEl.innerHTML = `<span class="lbl-dot"></span><span class="lbl-name"></span>`;
+    labelEl.innerHTML =
+      `<div class="lbl-top"><span class="lbl-dot"></span><span class="lbl-name"></span></div>` +
+      `<div class="lbl-role"></div>`;
     labelEl.addEventListener("click", (e) => {
       e.stopPropagation();
       this.selectBot(bot.id);
@@ -1316,6 +1230,8 @@ class Office3D {
       const labelEl = this.labelEls.get(bot.id);
       if (labelEl) {
         labelEl.querySelector(".lbl-name").textContent = bot.name;
+        const roleEl = labelEl.querySelector(".lbl-role");
+        if (roleEl) roleEl.textContent = bot.role || "Grok Bot";
         const dot = labelEl.querySelector(".lbl-dot");
         dot.style.background = bot.status === "no_report" ? "transparent" : hex;
         dot.style.border = bot.status === "no_report" ? `1.5px solid ${hex}` : "none";
@@ -1450,6 +1366,7 @@ class Office3D {
         const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
         this.tooltip.innerHTML =
           `<div class="tt-head"><strong>${esc(bot.name)}</strong><span class="tt-pill st-${esc(bot.status)}">${esc(bot.status.replace("_", " "))}</span></div>` +
+          `<div class="tt-role">${esc(bot.role || "Grok Bot")}</div>` +
           `<div class="tt-task">${esc(bot.task || "Standing by")}</div>`;
         return;
       }

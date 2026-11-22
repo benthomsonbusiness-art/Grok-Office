@@ -212,24 +212,38 @@ html, body {
   top: 0;
   left: 0;
   display: inline-flex;
+  flex-direction: column;
   align-items: center;
-  gap: 5px;
-  padding: 3px 9px;
-  border-radius: 999px;
-  background: rgba(10, 15, 28, 0.88);
-  border: 1px solid rgba(148, 163, 184, 0.3);
+  gap: 1px;
+  padding: 4px 9px;
+  border-radius: 10px;
+  background: rgba(10, 15, 28, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.32);
   color: #f8fafc;
-  font-size: 0.74rem;
-  font-weight: 600;
   white-space: nowrap;
   pointer-events: auto;
   cursor: pointer;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.48);
 }
 .bot-3d-label.selected { border-color: var(--cyan); }
 .bot-3d-label.urgent { border-color: var(--amber); }
 
-.lbl-dot { width: 7px; height: 7px; border-radius: 50%; }
+.lbl-top {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  line-height: 1.15;
+}
+.lbl-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.lbl-role {
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: #94a3b8;
+  letter-spacing: 0.01em;
+  line-height: 1.15;
+}
 
 /* Minimal Top-Left Floating Bar */
 .stage-chip-bar {
@@ -347,7 +361,8 @@ html, body {
   padding: 10px 12px;
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5);
 }
-.tt-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; font-size: 0.88rem; }
+.tt-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px; font-size: 0.88rem; }
+.tt-role { font-size: 0.74rem; font-weight: 600; color: var(--cyan); margin-bottom: 5px; }
 .tt-task { font-size: 0.8rem; color: #cbd5e1; line-height: 1.4; }
 .tt-pill { padding: 2px 8px; border-radius: 999px; font-size: 0.68rem; font-weight: 700; text-transform: capitalize; }
 
