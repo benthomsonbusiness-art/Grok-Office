@@ -1,6 +1,7 @@
 (() => {
   let snapshot = null;
   let selectedBotId = null;
+  let activeView = "office";
   let teamFilter = "all";
   let chartMode = "tokens";
   let simTimer = null;
@@ -30,18 +31,18 @@
   }
 
   function timeAgo(iso) {
-    if (!iso) return "no updates yet";
+    if (!iso) return "Waiting…";
     const diffSec = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000));
-    if (diffSec < 10) return "just now";
+    if (diffSec < 10) return "Just now";
     if (diffSec < 60) return `${diffSec}s ago`;
     const mins = Math.floor(diffSec / 60);
     if (mins < 60) return `${mins}m ago`;
-    const hrs = Math.floor(mins / 60);
-    return `${hrs}h ago`;
+    return `${Math.floor(mins / 60)}h ago`;
   }
 
   function statusLabel(s) {
-    if (s === "no_report") return "No report";
+    if (s === "no_report") return "Standby";
+    if (s === "meeting") return "War Room";
     return s.charAt(0).toUpperCase() + s.slice(1);
   }
 
@@ -53,7 +54,6 @@
     el.classList.toggle("danger", pct >= 90);
   }
 
-  // WebSocket with automatic reconnect
   function connectWS() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const wsDot = document.getElementById("ws-dot");
@@ -61,20 +61,16 @@
 
     ws.onopen = () => {
       wsDot.classList.add("live");
-      wsDot.title = "Realtime WebSocket connected";
+      wsDot.title = "Live WebSocket connected";
     };
-
     ws.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data);
-        if (msg.type === "snapshot" && msg.data) {
-          applySnapshot(msg.data);
-        }
+        if (msg.type === "snapshot" && msg.data) applySnapshot(msg.data);
       } catch {
-        // Ignore malformed messages
+        // Ignore malformed frame
       }
     };
-
     ws.onclose = () => {
       wsDot.classList.remove("live");
       wsDot.title = "Reconnecting…";
@@ -99,41 +95,44 @@
 
   function renderAll() {
     if (!snapshot) return;
-    renderHUD();
+    renderRoomCounts();
     renderTeamList();
     renderActivity();
-    renderNeeds();
-    renderGoals();
-    renderAnalyticsModal();
+    renderMetricsPage();
+    renderNeedsPage();
     if (selectedBotId) renderInspector();
   }
 
-  function renderHUD() {
-    const { bots, usageSummary, lastBotUpdateAt } = snapshot;
-    const working = bots.filter((b) => b.status === "working" || b.status === "meeting").length;
+  function renderRoomCounts() {
+    const { bots, pendingNeeds, usageSummary, lastBotUpdateAt } = snapshot;
+    const working = bots.filter((b) => b.status === "working").length;
     const waiting = bots.filter((b) => b.status === "waiting").length;
     const err = bots.filter((b) => b.status === "error").length;
+    const meeting = bots.filter((b) => b.status === "meeting").length;
     const idle = bots.filter((b) => b.status === "idle").length;
     const noreport = bots.filter((b) => b.status === "no_report").length;
 
+    document.getElementById("cnt-all").textContent = String(bots.length);
     document.getElementById("cnt-working").textContent = String(working);
     document.getElementById("cnt-waiting").textContent = String(waiting);
     document.getElementById("cnt-error").textContent = String(err);
+    document.getElementById("cnt-meeting").textContent = String(meeting);
     document.getElementById("cnt-idle").textContent = String(idle);
     document.getElementById("cnt-noreport").textContent = String(noreport);
 
-    document.getElementById("last-update-label").textContent = lastBotUpdateAt
-      ? `last bot update ${timeAgo(lastBotUpdateAt)}`
-      : "waiting for bots";
+    const openNeeds = (pendingNeeds || []).filter((n) => n.status === "open").length;
+    const navBadge = document.getElementById("nav-needs-badge");
+    navBadge.textContent = String(openNeeds);
+    navBadge.classList.toggle("hidden", openNeeds === 0);
 
-    const rem = usageSummary?.usageRemainingPct ?? 100;
-    document.getElementById("usage-left-label").textContent = `Usage ${rem}% left`;
+    document.getElementById("last-update-label").textContent = timeAgo(lastBotUpdateAt);
+    document.getElementById("usage-left-pill").textContent =
+      `Budget ${usageSummary?.usageRemainingPct ?? 100}% left`;
 
     const isSim = Boolean(simTimer) || snapshot.activityLogs.some((l) => l.simulated);
     const pill = document.getElementById("mode-pill");
     pill.textContent = isSim ? "SIMULATED" : "LIVE";
     pill.className = `mode-pill ${isSim ? "sim" : "live"}`;
-    document.getElementById("activity-mode-tag").textContent = isSim ? "· SIMULATED" : "· LIVE";
   }
 
   function renderTeamList() {
@@ -148,7 +147,7 @@
 
     const el = document.getElementById("team-list");
     if (filtered.length === 0) {
-      el.innerHTML = `<div class="empty-msg">No bots match this filter.</div>`;
+      el.innerHTML = `<div class="empty-msg">No bots in this state.</div>`;
       return;
     }
 
@@ -158,8 +157,8 @@
       <div class="team-row ${selectedBotId === b.id ? "selected" : ""}" data-select-bot="${esc(b.id)}">
         <span class="bot-sq" style="background:${esc(b.avatarColor)}"></span>
         <div class="team-info">
-          <div class="team-name">${esc(b.name)} <span class="team-role">· ${esc(b.role)}</span></div>
-          <div class="team-sub">${esc(b.department)} · ${esc(b.task || "Standing by")}</div>
+          <div class="team-name">${esc(b.name)}</div>
+          <div class="team-sub">${esc(b.task || "Standing by")}</div>
         </div>
         <span class="st-pill st-${esc(b.status)}">${esc(statusLabel(b.status))}</span>
       </div>`
@@ -171,174 +170,109 @@
     const logs = snapshot.activityLogs || [];
     const el = document.getElementById("activity-list");
     if (logs.length === 0) {
-      el.innerHTML = `<div class="empty-msg">No activity logged yet.</div>`;
+      el.innerHTML = `<div class="empty-msg">No activity yet.</div>`;
       return;
     }
 
     el.innerHTML = logs
-      .slice(0, 35)
+      .slice(0, 20)
       .map((l) => {
-        const ts = new Date(l.createdAt).toLocaleTimeString([], {
-          hour: "numeric",
-          minute: "2-digit",
-        });
+        const ts = new Date(l.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
         return `
         <div class="act-item">
-          <span class="bot-sq" style="background:${esc(l.botColor || "#38bdf8")};margin-top:4px"></span>
-          <div class="act-body">
-            <div class="act-line">
-              <strong>${esc(l.botName)}</strong>
-              <span class="st-pill st-${esc(l.status || "working")}" style="padding:1px 6px;font-size:0.64rem;margin:0 4px">${esc(statusLabel(l.status || "working"))}</span>
-              ${esc(l.message)}
-            </div>
-            <div class="act-meta">
-              ${esc(ts)}${l.simulated ? ` · <span class="act-sim">Simulated</span>` : ""}
-            </div>
+          <span class="bot-sq" style="background:${esc(l.botColor || "#38bdf8")};margin-top:5px"></span>
+          <div style="min-width:0;flex:1">
+            <div><strong>${esc(l.botName)}</strong> — ${esc(l.message)}</div>
+            <div class="act-meta">${esc(ts)}</div>
           </div>
         </div>`;
       })
       .join("");
   }
 
-  function renderNeeds() {
-    const needs = snapshot.pendingNeeds || [];
-    const openNeeds = needs.filter((n) => n.status === "open");
-    const openSafe = openNeeds.filter((n) => n.severity === "approval" || n.severity === "input");
+  function renderMetricsPage() {
+    const { bots, objectives = [], settings, usageSummary } = snapshot;
 
-    const badge = document.getElementById("needs-count-pill");
-    badge.textContent = String(openNeeds.length);
-    badge.classList.toggle("hidden", openNeeds.length === 0);
-
-    document.getElementById("btn-approve-all").classList.toggle("hidden", openSafe.length < 2);
-
-    const el = document.getElementById("needs-list");
-    if (needs.length === 0) {
-      el.innerHTML = `<div class="empty-msg">All clear — no pending needs.</div>`;
-      return;
-    }
-
-    el.innerHTML = needs
-      .map((n) => {
-        const isOpen = n.status === "open";
-        return `
-        <div class="need-card severity-${esc(n.severity)} ${isOpen ? "" : "resolved"}">
-          <div style="display:flex;justify-content:space-between;gap:6px;align-items:center">
-            <span class="need-title">${esc(n.botName)}: ${esc(n.title)}</span>
-            <span class="st-pill ${isOpen ? (n.severity === "error" || n.severity === "budget" ? "st-error" : "st-waiting") : "st-working"}">${esc(isOpen ? n.severity : n.status)}</span>
-          </div>
-          ${n.description ? `<div class="need-desc">${esc(n.description)}</div>` : ""}
-          ${
-            isOpen
-              ? `<div class="need-actions">
-                  <input class="need-note" type="text" placeholder="Optional note…" data-note-for="${esc(n.id)}" />
-                  <button class="btn-xs btn-approve" data-resolve="${esc(n.id)}" data-action="approve">Approve</button>
-                  <button class="btn-xs btn-reject" data-resolve="${esc(n.id)}" data-action="reject">Reject</button>
-                </div>`
-              : `<div class="need-desc">Resolved${n.resolutionNote ? `: "${esc(n.resolutionNote)}"` : ""}</div>`
-          }
-        </div>`;
-      })
-      .join("");
-  }
-
-  function renderGoals() {
-    const { settings, usageSummary, objectives = [], bots = [] } = snapshot;
-
+    // 4 Hero KPI Cards
     const costCap = settings?.dailyCostCapUsd || 10;
     const todayCost = usageSummary.todayCostUsd ?? 0;
-    document.getElementById("sb-cost").textContent = `$${todayCost.toFixed(2)} / $${costCap.toFixed(2)}`;
-    setBar("sb-cost-fill", (todayCost / costCap) * 100);
+    const remPct = usageSummary.usageRemainingPct ?? 100;
+    document.getElementById("m-budget-pct").textContent = `${remPct}%`;
+    setBar("m-budget-bar", (todayCost / costCap) * 100);
+    document.getElementById("m-budget-foot").textContent =
+      `$${todayCost.toFixed(2)} spent of $${costCap.toFixed(2)} daily cap`;
+
+    const taskTarget = settings?.dailyTaskTarget || 30;
+    const tasksDone = usageSummary.todayTasksCompleted ?? 0;
+    const taskPct = Math.round((tasksDone / taskTarget) * 100);
+    document.getElementById("m-tasks-val").textContent = `${tasksDone} / ${taskTarget}`;
+    setBar("m-tasks-bar", taskPct);
+    document.getElementById("m-tasks-foot").textContent = `${taskPct}% of daily target`;
 
     const tokCap = settings?.dailyTokenCap || 500000;
     const todayTok = usageSummary.todayTokens ?? 0;
-    document.getElementById("sb-tokens").textContent = `${formatNum(todayTok)} / ${formatNum(tokCap)}`;
-    setBar("sb-tokens-fill", (todayTok / tokCap) * 100);
+    document.getElementById("m-tokens-val").textContent = formatNum(todayTok);
+    setBar("m-tokens-bar", (todayTok / tokCap) * 100);
+    document.getElementById("m-tokens-foot").textContent =
+      `${formatNum(usageSummary.totalTokensIn)} in · ${formatNum(usageSummary.totalTokensOut)} out`;
 
-    const renderGoalCard = (o, compact) => {
-      const done = o.status === "completed" || o.progress >= 100;
-      return `
-      <div class="goal-card">
-        <div class="goal-top">
-          <span>${esc(o.title)}</span>
-          <span class="st-pill ${done ? "st-working" : "st-meeting"}">${o.progress}%</span>
-        </div>
-        <div class="goal-meta">${esc(o.ownerBotName || "Team")} · ${esc(o.targetLabel || "Milestone")}</div>
-        <div class="pbar"><div class="pbar-fill ${done ? "green" : "blue"}" style="width:${o.progress}%"></div></div>
-        ${
-          compact
-            ? ""
-            : `<div class="goal-ctrls">
-                <div style="display:flex;gap:5px">
-                  ${
-                    !done
-                      ? `<button class="btn-xs" style="background:#1e293b;color:#f1f5f9" data-goal-bump="${esc(o.id)}" data-next="${Math.min(100, o.progress + 25)}">+25%</button>
-                         <button class="btn-xs btn-approve" data-goal-bump="${esc(o.id)}" data-next="100">Done</button>`
-                      : `<span class="muted" style="font-size:0.7rem">Completed</span>`
-                  }
-                </div>
-                <button class="btn-xs btn-reject" data-goal-del="${esc(o.id)}">✕</button>
-              </div>`
-        }
-      </div>`;
-    };
+    document.getElementById("m-latency-val").textContent = `${usageSummary.avgLatencyMs} ms`;
+    document.getElementById("m-health-foot").textContent =
+      `${usageSummary.errorRatePct ?? 0}% error rate · ${usageSummary.totalRequests} requests`;
 
-    const sbList = document.getElementById("sidebar-goals-list");
-    const modList = document.getElementById("modal-goals-list");
-    if (objectives.length === 0) {
-      sbList.innerHTML = `<div class="empty-msg">No objectives yet.</div>`;
-      modList.innerHTML = `<div class="empty-msg">Add a team goal above to track progress.</div>`;
-    } else {
-      sbList.innerHTML = objectives.slice(0, 4).map((o) => renderGoalCard(o, true)).join("");
-      modList.innerHTML = objectives.map((o) => renderGoalCard(o, false)).join("");
-    }
-
+    // Goals Grid
     const ownerSel = document.getElementById("goal-owner-select");
     const prev = ownerSel.value;
     ownerSel.innerHTML =
-      `<option value="">Unassigned</option>` +
+      `<option value="">Assign to bot (optional)</option>` +
       bots.map((b) => `<option value="${esc(b.id)}">${esc(b.name)}</option>`).join("");
     ownerSel.value = prev;
-  }
 
-  function renderAnalyticsModal() {
-    const { bots, pendingNeeds, settings, usageSummary } = snapshot;
-    const active = bots.filter((b) => b.status === "working" || b.status === "meeting").length;
-    const openNeeds = pendingNeeds.filter((n) => n.status === "open").length;
+    const goalsEl = document.getElementById("goals-grid");
+    if (objectives.length === 0) {
+      goalsEl.innerHTML = `<div class="empty-msg" style="grid-column:1/-1">No goals yet. Click <strong>+ New Goal</strong> above to add one.</div>`;
+    } else {
+      goalsEl.innerHTML = objectives
+        .map((o) => {
+          const done = o.status === "completed" || o.progress >= 100;
+          return `
+          <div class="goal-card">
+            <div class="goal-top">
+              <div class="goal-title">${esc(o.title)}</div>
+              <span class="goal-pct ${done ? "done" : ""}">${o.progress}%</span>
+            </div>
+            <div class="goal-meta">${esc(o.ownerBotName || "Team")} · ${esc(o.targetLabel || "Milestone")}</div>
+            <div class="pbar lg"><div class="pbar-fill ${done ? "green" : "blue"}" style="width:${o.progress}%"></div></div>
+            <div class="goal-actions">
+              <div style="display:flex;gap:8px">
+                ${
+                  !done
+                    ? `<button class="btn btn-secondary" style="padding:5px 10px;font-size:0.78rem" data-goal-bump="${esc(o.id)}" data-next="${Math.min(100, o.progress + 25)}">+25%</button>
+                       <button class="btn btn-approve" style="padding:5px 10px;font-size:0.78rem" data-goal-bump="${esc(o.id)}" data-next="100">Complete</button>`
+                    : `<span class="st-pill st-working">Completed</span>`
+                }
+              </div>
+              <button class="btn btn-reject" style="padding:5px 10px;font-size:0.78rem" data-goal-del="${esc(o.id)}">Remove</button>
+            </div>
+          </div>`;
+        })
+        .join("");
+    }
 
-    document.getElementById("kpi-bots").textContent = `${active} / ${bots.length}`;
-    document.getElementById("kpi-bots-sub").textContent = `${bots.length} bots registered`;
-
-    document.getElementById("kpi-needs").textContent = String(openNeeds);
-    document.getElementById("kpi-needs-sub").textContent = openNeeds > 0 ? "Action required" : "All clear";
-
-    const target = settings?.dailyTaskTarget || 30;
-    const done = usageSummary.todayTasksCompleted ?? 0;
-    document.getElementById("kpi-tasks").textContent = `${done} / ${target}`;
-    setBar("kpi-tasks-bar", (done / target) * 100);
-
-    document.getElementById("kpi-tokens").textContent = formatNum(usageSummary.totalTokens);
-    document.getElementById("kpi-tokens-sub").textContent =
-      `${formatNum(usageSummary.totalTokensIn)} in · ${formatNum(usageSummary.totalTokensOut)} out`;
-
-    document.getElementById("kpi-cost").textContent = `$${(usageSummary.todayCostUsd ?? 0).toFixed(4)}`;
-    document.getElementById("kpi-requests").textContent = `${usageSummary.totalRequests} API requests`;
-
-    document.getElementById("kpi-latency").textContent = `${usageSummary.avgLatencyMs} ms`;
-    document.getElementById("kpi-health").textContent = `${usageSummary.errorRatePct ?? 0}% error rate`;
-
+    // Usage Chart
     const chartEl = document.getElementById("usage-chart");
     const timeline = usageSummary.timeline || [];
     if (timeline.length === 0) {
-      chartEl.innerHTML = `<div class="muted" style="margin:auto;font-size:0.77rem">No usage data yet</div>`;
+      chartEl.innerHTML = `<div class="muted" style="margin:auto">No usage timeline data yet</div>`;
     } else {
       const vals = timeline.map((t) => (chartMode === "tokens" ? t.tokens : t.costUsd));
       const maxVal = Math.max(...vals, 0.0001);
       chartEl.innerHTML = timeline
         .map((t) => {
           const v = chartMode === "tokens" ? t.tokens : t.costUsd;
-          const pct = Math.max(6, Math.round((v / maxVal) * 100));
+          const pct = Math.max(8, Math.round((v / maxVal) * 100));
           return `
-          <div class="bar-col" title="${esc(t.label)}: ${formatNum(t.tokens)} tok ($${t.costUsd.toFixed(4)})">
+          <div class="bar-col" title="${esc(t.label)}: ${formatNum(t.tokens)} tokens ($${t.costUsd.toFixed(4)})">
             <div class="bar-fill" style="height:${pct}%"></div>
             <div class="bar-label">${esc(t.label)}</div>
           </div>`;
@@ -346,6 +280,7 @@
         .join("");
     }
 
+    // Model Spend Table
     const tbody = document.getElementById("model-tbody");
     const models = usageSummary.byModel || [];
     if (models.length === 0) {
@@ -357,12 +292,49 @@
           <tr>
             <td><strong>${esc(m.model)}</strong></td>
             <td>${m.requests}</td>
-            <td>${formatNum(m.tokensIn)} / ${formatNum(m.tokensOut)}</td>
-            <td>$${m.costUsd.toFixed(4)}</td>
+            <td>${formatNum(m.tokensIn + m.tokensOut)}</td>
+            <td><strong>$${m.costUsd.toFixed(4)}</strong></td>
           </tr>`
         )
         .join("");
     }
+  }
+
+  function renderNeedsPage() {
+    const needs = snapshot.pendingNeeds || [];
+    const openSafe = needs.filter(
+      (n) => n.status === "open" && (n.severity === "approval" || n.severity === "input")
+    );
+    document.getElementById("btn-approve-all").classList.toggle("hidden", openSafe.length < 2);
+
+    const grid = document.getElementById("needs-grid");
+    if (needs.length === 0) {
+      grid.innerHTML = `<div class="empty-msg" style="grid-column:1/-1">All clear — no bots are currently waiting on you.</div>`;
+      return;
+    }
+
+    grid.innerHTML = needs
+      .map((n) => {
+        const isOpen = n.status === "open";
+        return `
+        <div class="need-card severity-${esc(n.severity)} ${isOpen ? "" : "resolved"}">
+          <div class="need-head">
+            <span class="need-title">${esc(n.botName)} — ${esc(n.title)}</span>
+            <span class="st-pill ${isOpen ? (n.severity === "error" || n.severity === "budget" ? "st-error" : "st-waiting") : "st-working"}">${esc(isOpen ? n.severity : n.status)}</span>
+          </div>
+          ${n.description ? `<div class="need-desc">${esc(n.description)}</div>` : ""}
+          ${
+            isOpen
+              ? `<div class="need-actions">
+                  <input class="need-note" type="text" placeholder="Optional instruction or note…" data-note-for="${esc(n.id)}" />
+                  <button class="btn btn-approve" data-resolve="${esc(n.id)}" data-action="approve">Approve</button>
+                  <button class="btn btn-reject" data-resolve="${esc(n.id)}" data-action="reject">Reject</button>
+                </div>`
+              : `<div class="need-desc">Resolved${n.resolutionNote ? ` — "${esc(n.resolutionNote)}"` : ""}</div>`
+          }
+        </div>`;
+      })
+      .join("");
   }
 
   function renderInspector() {
@@ -380,24 +352,52 @@
     el.innerHTML = `
       <div class="insp-head">
         <div>
-          <strong>${esc(bot.name)}</strong> <span class="muted" style="font-size:0.75rem">· ${esc(bot.role)}</span>
-          <div class="muted" style="font-size:0.71rem">${esc(bot.department)} · <code>${esc(bot.model)}</code></div>
+          <span class="insp-name">${esc(bot.name)}</span>
+          <span class="st-pill st-${esc(bot.status)}" style="margin-left:8px">${esc(statusLabel(bot.status))}</span>
         </div>
         <button id="btn-close-insp" class="btn-icon">✕</button>
       </div>
-      <div style="font-size:0.78rem;margin:5px 0">${esc(bot.task || "Standing by")}</div>
-      <div class="muted" style="font-size:0.71rem">
-        ${formatNum(bot.tokensTotal)} tokens · $${bot.costTotalUsd.toFixed(4)} · ${bot.tasksCompleted} done · ${bot.requestsTotal} reqs
-      </div>
-      <div class="insp-actions">
-        <button class="hud-btn" data-move-bot="${esc(bot.id)}" data-status="working">→ Desk</button>
-        <button class="hud-btn" data-move-bot="${esc(bot.id)}" data-status="meeting">→ Meeting</button>
-        <button class="hud-btn" data-move-bot="${esc(bot.id)}" data-status="idle">→ Lounge</button>
+      <div class="insp-task">${esc(bot.task || "Standing by")}</div>
+      <div class="insp-moves">
+        <button class="chip-btn" data-move-bot="${esc(bot.id)}" data-status="working">Workfloor</button>
+        <button class="chip-btn" data-move-bot="${esc(bot.id)}" data-status="waiting">Waiting</button>
+        <button class="chip-btn" data-move-bot="${esc(bot.id)}" data-status="meeting">War Room</button>
+        <button class="chip-btn" data-move-bot="${esc(bot.id)}" data-status="idle">Lounge</button>
       </div>
     `;
   }
 
-  // Controls & Event Listeners
+  // Primary View Switcher
+  function switchView(viewName) {
+    activeView = viewName;
+    document.querySelectorAll("[data-view]").forEach((b) =>
+      b.classList.toggle("active", b.dataset.view === viewName)
+    );
+    document.querySelectorAll(".view-panel").forEach((p) =>
+      p.classList.toggle("active", p.id === `view-${viewName}`)
+    );
+    document.querySelectorAll(".office-only").forEach((el) =>
+      el.classList.toggle("hidden", viewName !== "office")
+    );
+    if (viewName === "office") {
+      setTimeout(() => office3d.handleResize(), 40);
+    }
+  }
+
+  document.querySelectorAll("[data-view]").forEach((btn) => {
+    btn.addEventListener("click", () => switchView(btn.dataset.view));
+  });
+
+  // Room Jumper Bar
+  document.querySelectorAll("[data-room]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("[data-room]").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      office3d.focusRoom(btn.dataset.room);
+    });
+  });
+
+  // Simulation Toggle
   document.getElementById("btn-sim").addEventListener("click", async (e) => {
     const btn = e.currentTarget;
     if (simTimer) {
@@ -405,7 +405,7 @@
       simTimer = null;
       btn.textContent = "Simulate";
       btn.classList.remove("active");
-      renderHUD();
+      renderRoomCounts();
     } else {
       if (!snapshot || snapshot.bots.length === 0) {
         await fetch("/api/demo/seed", { method: "POST" });
@@ -413,7 +413,7 @@
       simTimer = setInterval(() => fetch("/api/demo/tick", { method: "POST" }), 3200);
       btn.textContent = "Stop simulation";
       btn.classList.add("active");
-      renderHUD();
+      renderRoomCounts();
     }
   });
 
@@ -422,24 +422,32 @@
   });
 
   document.getElementById("btn-reset-view").addEventListener("click", () => {
+    document.querySelectorAll("[data-room]").forEach((b) =>
+      b.classList.toggle("active", b.dataset.room === "all")
+    );
     office3d.resetView();
   });
 
-  // Clean View Toggle
-  const wsEl = document.getElementById("workspace");
-  const exitCleanBtn = document.getElementById("btn-exit-clean");
+  document.getElementById("btn-toggle-labels").addEventListener("click", (e) => {
+    office3d.showAllLabels = !office3d.showAllLabels;
+    e.currentTarget.classList.toggle("active", office3d.showAllLabels);
+  });
+
+  // Clean View
+  const appRoot = document.getElementById("app-root");
+  const exitClean = document.getElementById("btn-exit-clean");
   document.getElementById("btn-clean-view").addEventListener("click", () => {
-    wsEl.classList.add("clean-mode");
-    exitCleanBtn.classList.remove("hidden");
+    appRoot.classList.add("clean-mode");
+    exitClean.classList.remove("hidden");
     setTimeout(() => office3d.handleResize(), 50);
   });
-  exitCleanBtn.addEventListener("click", () => {
-    wsEl.classList.remove("clean-mode");
-    exitCleanBtn.classList.add("hidden");
+  exitClean.addEventListener("click", () => {
+    appRoot.classList.remove("clean-mode");
+    exitClean.classList.add("hidden");
     setTimeout(() => office3d.handleResize(), 50);
   });
 
-  // Lighting & Camera Switchers
+  // Lighting & Camera Controls
   document.querySelectorAll("[data-light]").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll("[data-light]").forEach((b) => b.classList.remove("active"));
@@ -456,7 +464,6 @@
     });
   });
 
-  // Sidebar Team Filters & Bottom Tabs
   document.querySelectorAll("[data-filter]").forEach((btn) => {
     btn.addEventListener("click", () => {
       teamFilter = btn.dataset.filter;
@@ -466,32 +473,39 @@
     });
   });
 
-  document.querySelectorAll("[data-stab]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const target = btn.dataset.stab;
-      document.querySelectorAll("[data-stab]").forEach((b) => b.classList.toggle("active", b.dataset.stab === target));
-      document.querySelectorAll(".stab-pane").forEach((p) => p.classList.toggle("active", p.id === `stab-${target}`));
-    });
-  });
-
   document.querySelectorAll("[data-chart-mode]").forEach((btn) => {
     btn.addEventListener("click", () => {
       chartMode = btn.dataset.chartMode;
-      document.querySelectorAll("[data-chart-mode]").forEach((b) => b.classList.toggle("active", b.dataset.chartMode === chartMode));
-      renderAnalyticsModal();
+      document.querySelectorAll("[data-chart-mode]").forEach((b) =>
+        b.classList.toggle("active", b.dataset.chartMode === chartMode)
+      );
+      renderMetricsPage();
     });
   });
 
-  // Modals
-  const dashModal = document.getElementById("dashboard-modal");
+  // Goal Form
+  const goalForm = document.getElementById("goal-form");
+  document.getElementById("btn-toggle-goal-form").addEventListener("click", () => {
+    goalForm.classList.toggle("hidden");
+  });
+  goalForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const title = document.getElementById("goal-title-input").value.trim();
+    const ownerBotId = document.getElementById("goal-owner-select").value || null;
+    const targetLabel = document.getElementById("goal-target-input").value.trim();
+    if (!title) return;
+    await fetch("/api/objectives", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title, ownerBotId, targetLabel, progress: 0 }),
+    });
+    goalForm.reset();
+    goalForm.classList.add("hidden");
+  });
+
+  // Modals (Connect & Guardrails)
   const connectModal = document.getElementById("connect-modal");
   const settingsModal = document.getElementById("settings-modal");
-
-  const openDashboard = () => dashModal.classList.remove("hidden");
-  document.getElementById("btn-analytics").addEventListener("click", openDashboard);
-  document.getElementById("btn-open-dashboard-goals").addEventListener("click", openDashboard);
-  document.getElementById("btn-close-dashboard").addEventListener("click", () => dashModal.classList.add("hidden"));
-  dashModal.querySelector(".modal-backdrop").addEventListener("click", () => dashModal.classList.add("hidden"));
 
   document.getElementById("btn-connect").addEventListener("click", () => {
     const base = location.origin;
@@ -505,16 +519,16 @@ const grok = new OpenAI({
 });`;
 
     document.getElementById("ping-snippet").textContent =
-`When starting a task, hitting a blocker, or finishing, call this 1-line URL (server auto-idles bots):
-GET ${base}/api/ping?b=atlas&d=AI+News+Desk&s=w&t=Scanning+trends&token=<YOUR_REPORT_SECRET>
-Status codes: w=working, i=idle, wait=waiting, m=meeting, e=error. Add &need=Title for approval.`;
+`Call this 1-line URL only when changing state (server auto-idles bots to the Coffee Lounge):
+GET ${base}/api/ping?b=atlas&s=w&t=Short+task&token=<YOUR_REPORT_SECRET>
+Status codes: w=Workfloor, wait=Waiting Room, e=Repair Bay, m=War Room, i=Lounge. Add &need=Title for approval.`;
 
     document.getElementById("report-snippet").textContent =
 `POST ${base}/api/report
 Authorization: Bearer <YOUR_REPORT_SECRET>
 {
-  "b": "atlas", "name": "Atlas", "d": "Analytics Lab",
-  "s": "wait", "t": "Ready to publish weekly brief",
+  "b": "atlas", "name": "Atlas", "s": "wait",
+  "t": "Ready to publish report",
   "need": { "title": "Approve publish?", "severity": "approval" }
 }`;
     connectModal.classList.remove("hidden");
@@ -548,25 +562,11 @@ Authorization: Bearer <YOUR_REPORT_SECRET>
     settingsModal.classList.add("hidden");
   });
 
-  document.getElementById("goal-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const title = document.getElementById("goal-title-input").value.trim();
-    const ownerBotId = document.getElementById("goal-owner-select").value || null;
-    const targetLabel = document.getElementById("goal-target-input").value.trim();
-    if (!title) return;
-    await fetch("/api/objectives", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ title, ownerBotId, targetLabel, progress: 0 }),
-    });
-    e.target.reset();
-  });
-
   document.getElementById("btn-approve-all").addEventListener("click", () => {
     fetch("/api/needs/resolve-all", { method: "POST" });
   });
 
-  // Delegated click handlers
+  // Delegated click actions
   document.addEventListener("click", async (e) => {
     if (e.target.id === "btn-close-insp") {
       selectedBotId = null;
