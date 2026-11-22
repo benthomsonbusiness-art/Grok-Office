@@ -898,172 +898,255 @@ class Office3D {
     this.usageTex.needsUpdate = true;
   }
 
-  /* ---------- Articulated 3D Bot Character Rig ---------- */
+  /* ---------- Authentic 3D Grok Bot Character System ---------- */
+  buildGrokBodyMesh(shape, mat, botId) {
+    const bodyGroup = new THREE.Group();
+    const hitMeshes = [];
+    let eyeY = 0.86;
+    let eyeZ = 0.56;
+    let eyeSpread = 0.21;
+
+    const addPart = (geo, x = 0, y = 0, z = 0, sx = 1, sy = 1, sz = 1, rotZ = 0) => {
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(x, y, z);
+      m.scale.set(sx, sy, sz);
+      if (rotZ) m.rotation.z = rotZ;
+      m.castShadow = true;
+      m.receiveShadow = true;
+      m.userData.botId = botId;
+      bodyGroup.add(m);
+      hitMeshes.push(m);
+      return m;
+    };
+
+    if (shape === "circle") {
+      // Soft plump orb
+      addPart(new THREE.SphereGeometry(0.62, 28, 24), 0, 0.78, 0, 1.04, 1.0, 0.96);
+      eyeY = 0.86;
+      eyeZ = 0.54;
+      eyeSpread = 0.21;
+    } else if (shape === "pebble") {
+      // Organic asymmetric smooth stone/bean silhouette
+      addPart(new THREE.SphereGeometry(0.6, 28, 24), -0.05, 0.74, 0, 1.18, 0.92, 0.92, 0.14);
+      addPart(new THREE.SphereGeometry(0.46, 20, 18), 0.22, 0.82, -0.04, 0.95, 1.02, 0.88);
+      eyeY = 0.82;
+      eyeZ = 0.52;
+      eyeSpread = 0.22;
+    } else if (shape === "squircle") {
+      // Plump rounded cushion / beveled squircle
+      const s = new THREE.Shape();
+      const r = 0.3;
+      const w = 0.56;
+      const h = 0.58;
+      s.moveTo(-w + r, -h);
+      s.lineTo(w - r, -h);
+      s.quadraticCurveTo(w, -h, w, -h + r);
+      s.lineTo(w, h - r);
+      s.quadraticCurveTo(w, h, w - r, h);
+      s.lineTo(-w + r, h);
+      s.quadraticCurveTo(-w, h, -w, h - r);
+      s.lineTo(-w, -h + r);
+      s.quadraticCurveTo(-w, -h, -w + r, -h);
+      const geo = new THREE.ExtrudeGeometry(s, {
+        depth: 0.48,
+        bevelEnabled: true,
+        bevelThickness: 0.2,
+        bevelSize: 0.16,
+        bevelSegments: 8,
+      });
+      geo.center();
+      addPart(geo, 0, 0.82, 0);
+      eyeY = 0.88;
+      eyeZ = 0.44;
+      eyeSpread = 0.23;
+    } else if (shape === "capsule") {
+      // Tall friendly jellybean / pill
+      addPart(new THREE.CapsuleGeometry(0.46, 0.58, 12, 24), 0, 0.9, 0, 1.05, 1.0, 0.95);
+      eyeY = 1.06;
+      eyeZ = 0.43;
+      eyeSpread = 0.19;
+    } else if (shape === "triangle") {
+      // Soft rounded gumdrop / cone
+      addPart(new THREE.ConeGeometry(0.68, 1.28, 28), 0, 0.86, 0, 1.02, 1.0, 0.92);
+      addPart(new THREE.SphereGeometry(0.58, 20, 16), 0, 0.52, 0, 1.08, 0.65, 0.96);
+      addPart(new THREE.SphereGeometry(0.2, 14, 12), 0, 1.38, 0);
+      eyeY = 0.78;
+      eyeZ = 0.46;
+      eyeSpread = 0.19;
+    } else if (shape === "hexagon") {
+      // Soft chamfered hexagonal gem/prism
+      const hex = new THREE.Shape();
+      for (let i = 0; i < 6; i++) {
+        const a = (Math.PI / 3) * i - Math.PI / 6;
+        const px = Math.cos(a) * 0.6;
+        const py = Math.sin(a) * 0.6;
+        if (i === 0) hex.moveTo(px, py);
+        else hex.lineTo(px, py);
+      }
+      hex.closePath();
+      const geo = new THREE.ExtrudeGeometry(hex, {
+        depth: 0.46,
+        bevelEnabled: true,
+        bevelThickness: 0.18,
+        bevelSize: 0.14,
+        bevelSegments: 6,
+      });
+      geo.center();
+      addPart(geo, 0, 0.84, 0);
+      eyeY = 0.88;
+      eyeZ = 0.41;
+      eyeSpread = 0.21;
+    } else if (shape === "cloud") {
+      // Fluffy sculptural multi-puff cloud
+      addPart(new THREE.SphereGeometry(0.46, 22, 18), 0, 0.86, 0, 1.12, 1.05, 0.95);
+      addPart(new THREE.SphereGeometry(0.36, 18, 16), -0.4, 0.72, -0.02);
+      addPart(new THREE.SphereGeometry(0.36, 18, 16), 0.4, 0.72, -0.02);
+      addPart(new THREE.SphereGeometry(0.32, 16, 14), -0.22, 1.12, -0.04);
+      addPart(new THREE.SphereGeometry(0.32, 16, 14), 0.22, 1.12, -0.04);
+      eyeY = 0.86;
+      eyeZ = 0.44;
+      eyeSpread = 0.21;
+    } else {
+      // "droplet" — plump teardrop silhouette
+      addPart(new THREE.SphereGeometry(0.58, 24, 20), 0, 0.68, 0, 1.04, 0.98, 0.96);
+      addPart(new THREE.ConeGeometry(0.52, 0.92, 24), 0, 1.16, 0);
+      addPart(new THREE.SphereGeometry(0.14, 12, 10), 0, 1.56, 0);
+      eyeY = 0.76;
+      eyeZ = 0.52;
+      eyeSpread = 0.21;
+    }
+
+    return { bodyGroup, hitMeshes, eyeY, eyeZ, eyeSpread };
+  }
+
   createBotAvatar(bot) {
     const group = new THREE.Group();
     group.userData.botId = bot.id;
 
-    const primaryColor = new THREE.Color(bot.avatarColor || "#38bdf8");
-    const darkMetal = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.35, metalness: 0.55 });
-    const shellMat = new THREE.MeshStandardMaterial({ color: primaryColor, roughness: 0.32, metalness: 0.22 });
-    const trimMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.35, metalness: 0.25 });
+    const shape = bot.avatarShape || "pebble";
+    const baseHex = bot.avatarColor || "#3b93f0";
+    const primaryColor = new THREE.Color(baseHex);
+
+    // Tactile matte-satin soft vinyl/clay material (iconic Grok Bot finish)
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: primaryColor,
+      roughness: 0.42,
+      metalness: 0.04,
+    });
 
     const rig = new THREE.Group();
     group.add(rig);
 
-    // Legs + Boots
-    const makeLeg = (side) => {
-      const pivot = new THREE.Group();
-      pivot.position.set(side * 0.17, 0.48, 0);
-      const legMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.1, 0.24, 6, 10), darkMetal);
-      legMesh.position.y = -0.18;
-      legMesh.castShadow = true;
-      const boot = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.12, 0.3), shellMat);
-      boot.position.set(0, -0.36, 0.05);
-      pivot.add(legMesh, boot);
-      return pivot;
+    const { bodyGroup, hitMeshes, eyeY, eyeZ, eyeSpread } = this.buildGrokBodyMesh(
+      shape,
+      bodyMat,
+      bot.id
+    );
+    rig.add(bodyGroup);
+
+    // Big Iconic Expressive Grok Bot Eyes (White Sclera + Glossy Dark Pupils + Catchlights + Eyelids)
+    const faceGroup = new THREE.Group();
+    faceGroup.position.set(0, eyeY, eyeZ);
+    rig.add(faceGroup);
+
+    const whiteMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.18, metalness: 0.02 });
+    const pupilMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0c, roughness: 0.1, metalness: 0.15 });
+    const catchMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const lidMat = new THREE.MeshStandardMaterial({ color: primaryColor, roughness: 0.42 });
+
+    const makeEye = (side) => {
+      const eyeWrap = new THREE.Group();
+      eyeWrap.position.set(side * eyeSpread, 0, 0);
+
+      // Large expressive oval eye sclera
+      const sclera = new THREE.Mesh(new THREE.SphereGeometry(0.165, 18, 16), whiteMat);
+      sclera.scale.set(0.92, 1.18, 0.45);
+      eyeWrap.add(sclera);
+
+      // Movable pupil + tiny bright catchlight sparkle
+      const pupilGroup = new THREE.Group();
+      pupilGroup.position.set(0, 0, 0.068);
+      const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.088, 14, 12), pupilMat);
+      pupil.scale.set(0.94, 1.1, 0.45);
+      const sparkle = new THREE.Mesh(new THREE.SphereGeometry(0.032, 10, 8), catchMat);
+      sparkle.position.set(0.034, 0.042, 0.036);
+      pupilGroup.add(pupil, sparkle);
+      eyeWrap.add(pupilGroup);
+
+      // Expressive upper eyelid (used for blinking, sleepy, angry/error, focused moods)
+      const upperLid = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.22, 0.16), lidMat);
+      upperLid.position.set(0, 0.22, 0.04);
+      upperLid.visible = false;
+      eyeWrap.add(upperLid);
+
+      // Expressive lower lid (used for happy smiling squint in meeting/lounge)
+      const lowerLid = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.16, 0.16), lidMat);
+      lowerLid.position.set(0, -0.2, 0.04);
+      lowerLid.visible = false;
+      eyeWrap.add(lowerLid);
+
+      return { eyeWrap, pupilGroup, upperLid, lowerLid };
     };
-    const leftLeg = makeLeg(-1);
-    const rightLeg = makeLeg(1);
-    rig.add(leftLeg, rightLeg);
 
-    // Sculpted Torso + Glowing Chest Core
-    const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.38, 0.68, 16), shellMat);
-    torso.position.y = 0.84;
-    torso.castShadow = true;
-    torso.userData.botId = bot.id;
-    rig.add(torso);
+    const leftEye = makeEye(-1);
+    const rightEye = makeEye(1);
+    faceGroup.add(leftEye.eyeWrap, rightEye.eyeWrap);
 
-    const chestPlate = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.36, 0.14), trimMat);
-    chestPlate.position.set(0, 0.88, 0.28);
-    chestPlate.userData.botId = bot.id;
-    rig.add(chestPlate);
-
-    const chestCore = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.085, 0.085, 0.06, 14),
-      new THREE.MeshStandardMaterial({
-        color: STATUS_HEX[bot.status] || "#22c55e",
-        emissive: STATUS_HEX[bot.status] || "#22c55e",
-        emissiveIntensity: 0.9,
-      })
-    );
-    chestCore.rotation.x = Math.PI / 2;
-    chestCore.position.set(0, 0.9, 0.36);
-    rig.add(chestCore);
-
-    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.16, 0.14, 12), darkMetal);
-    neck.position.y = 1.24;
-    rig.add(neck);
-
-    // Articulated Arms + Coffee Mug Prop
-    const makeArm = (side) => {
-      const pivot = new THREE.Group();
-      pivot.position.set(side * 0.44, 1.1, 0);
-      const shoulder = new THREE.Mesh(new THREE.SphereGeometry(0.11, 10, 10), trimMat);
-      const upper = new THREE.Mesh(new THREE.CapsuleGeometry(0.085, 0.32, 6, 10), shellMat);
-      upper.position.y = -0.22;
-      upper.castShadow = true;
-      const hand = new THREE.Mesh(new THREE.SphereGeometry(0.095, 10, 10), darkMetal);
-      hand.position.y = -0.44;
-      pivot.add(shoulder, upper, hand);
-      return pivot;
-    };
-    const leftArm = makeArm(-1);
-    const rightArm = makeArm(1);
-
-    const coffeeMug = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.08, 0.07, 0.15, 10),
-      new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.3 })
-    );
-    coffeeMug.position.set(0, -0.46, 0.12);
-    coffeeMug.visible = false;
-    rightArm.add(coffeeMug);
-    rig.add(leftArm, rightArm);
-
-    // Expressive Rounded Robot Head + Glossy Visor + Blinking Eyes
-    const headGroup = new THREE.Group();
-    headGroup.position.set(0, 1.54, 0);
-    rig.add(headGroup);
-
-    const headShell = new THREE.Mesh(new THREE.SphereGeometry(0.38, 18, 16), shellMat);
-    headShell.scale.set(1.06, 0.92, 0.98);
-    headShell.castShadow = true;
-    headShell.userData.botId = bot.id;
-    headGroup.add(headShell);
-
-    const visor = new THREE.Mesh(
-      new THREE.BoxGeometry(0.56, 0.26, 0.24),
-      new THREE.MeshStandardMaterial({ color: 0x090f1e, roughness: 0.12, metalness: 0.75 })
-    );
-    visor.position.set(0, 0.02, 0.26);
-    visor.userData.botId = bot.id;
-    headGroup.add(visor);
-
-    const eyeMat = new THREE.MeshBasicMaterial({ color: 0xbae6fd });
-    const leftEye = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.09, 0.04), eyeMat);
-    leftEye.position.set(-0.14, 0.03, 0.39);
-    const rightEye = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.09, 0.04), eyeMat);
-    rightEye.position.set(0.14, 0.03, 0.39);
-    headGroup.add(leftEye, rightEye);
-
-    // Role Accessories
-    const dept = bot.department || "";
-    if (dept.includes("Media") || dept.includes("News")) {
-      const band = new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.04, 8, 18, Math.PI), darkMetal);
-      band.position.y = 0.02;
-      headGroup.add(band);
-      [-0.41, 0.41].forEach((ex) => {
-        const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.1, 12), trimMat);
-        cup.rotation.z = Math.PI / 2;
-        cup.position.set(ex, 0.02, 0);
-        headGroup.add(cup);
-      });
-    } else if (dept.includes("Executive")) {
-      const crest = new THREE.Mesh(
-        new THREE.OctahedronGeometry(0.12),
-        new THREE.MeshStandardMaterial({ color: 0xfbbf24, metalness: 0.8, roughness: 0.2 })
-      );
-      crest.position.set(0, 0.44, 0);
-      headGroup.add(crest);
-    } else if (dept.includes("Engineering")) {
-      [-0.16, 0.16].forEach((ax) => {
-        const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.26, 8), darkMetal);
-        stem.position.set(ax, 0.42, 0);
-        const tip = new THREE.Mesh(
-          new THREE.SphereGeometry(0.055, 8, 8),
-          new THREE.MeshBasicMaterial({ color: 0x38bdf8 })
-        );
-        tip.position.set(ax, 0.56, 0);
-        headGroup.add(stem, tip);
-      });
-    } else {
-      const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.24, 8), darkMetal);
-      stem.position.set(0, 0.42, 0);
-      const tip = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 10), trimMat);
-      tip.position.set(0, 0.55, 0);
-      headGroup.add(stem, tip);
-    }
-
-    // Status Halo Ring + Urgent Floating Diamond Beacon
+    // Subtle soft ground shadow ring (status colored)
     const halo = new THREE.Mesh(
-      new THREE.RingGeometry(0.54, 0.68, 28),
+      new THREE.RingGeometry(0.56, 0.68, 28),
       new THREE.MeshBasicMaterial({
         color: STATUS_HEX[bot.status] || "#22c55e",
         side: THREE.DoubleSide,
         transparent: true,
-        opacity: 0.72,
+        opacity: 0.62,
       })
     );
     halo.rotation.x = -Math.PI / 2;
     halo.position.y = 0.14;
     group.add(halo);
 
-    const beacon = new THREE.Mesh(
-      new THREE.OctahedronGeometry(0.22),
-      new THREE.MeshBasicMaterial({ color: 0xf59e0b })
+    // Grok Bot "Orbit" Ring (spins cleanly around the bot while actively working!)
+    const orbitRing = new THREE.Mesh(
+      new THREE.TorusGeometry(0.84, 0.028, 8, 32),
+      new THREE.MeshBasicMaterial({
+        color: primaryColor,
+        transparent: true,
+        opacity: 0.55,
+      })
     );
-    beacon.position.y = 2.48;
-    beacon.visible = false;
+    orbitRing.position.y = 0.85;
+    orbitRing.rotation.x = Math.PI / 2.6;
+    orbitRing.visible = bot.status === "working";
+    group.add(orbitRing);
+
+    // Grok Bot "Thinking" 3 Floating Dots (pulses gently when working/meeting)
+    const thinkGroup = new THREE.Group();
+    thinkGroup.position.set(0, 1.85, 0);
+    const thinkDots = [-0.22, 0, 0.22].map((dx) => {
+      const dot = new THREE.Mesh(
+        new THREE.SphereGeometry(0.068, 10, 10),
+        new THREE.MeshBasicMaterial({ color: 0xf8fafc })
+      );
+      dot.position.x = dx;
+      thinkGroup.add(dot);
+      return dot;
+    });
+    thinkGroup.visible = bot.status === "working" || bot.status === "meeting";
+    group.add(thinkGroup);
+
+    // Grok Bot Notification / Alert Dot (floating glossy pill orb for waiting / error)
+    const beacon = new THREE.Mesh(
+      new THREE.SphereGeometry(0.18, 16, 16),
+      new THREE.MeshStandardMaterial({
+        color: 0xf59e0b,
+        emissive: 0xf59e0b,
+        emissiveIntensity: 0.85,
+        roughness: 0.2,
+      })
+    );
+    beacon.position.set(0.45, 1.78, 0.18);
+    beacon.visible = bot.status === "waiting" || bot.status === "error";
     group.add(beacon);
 
     this.scene.add(group);
@@ -1082,31 +1165,29 @@ class Office3D {
     return {
       group,
       rig,
-      headGroup,
-      leftArm,
-      rightArm,
-      leftLeg,
-      rightLeg,
       leftEye,
       rightEye,
-      eyeMat,
-      chestCore,
-      coffeeMug,
-      hitMeshes: [torso, headShell, visor, chestPlate],
+      hitMeshes,
       halo,
+      orbitRing,
+      thinkGroup,
+      thinkDots,
       beacon,
       waypoints: [],
       targetRotY: 0,
       zone: bot.status,
       nextRoamAt: performance.now() + 5000 + Math.random() * 6000,
-      nextBlinkAt: performance.now() + 1500 + Math.random() * 4000,
+      nextBlinkAt: performance.now() + 1400 + Math.random() * 3800,
+      lookOffsetX: 0,
+      lookOffsetY: 0,
+      nextLookAt: performance.now() + 1500 + Math.random() * 2500,
     };
   }
 
   getRoomSpotForBot(bot, stateIndex) {
     if (bot.status === "waiting") {
       const spot = WAITING_SPOTS[stateIndex % WAITING_SPOTS.length];
-      return { pos: new THREE.Vector3(spot.x, 0.28, spot.z), rotY: Math.PI };
+      return { pos: new THREE.Vector3(spot.x, 0.28, spot.z), rotY: 0 };
     }
     if (bot.status === "error") {
       const spot = ERROR_BAY_SPOTS[stateIndex % ERROR_BAY_SPOTS.length];
@@ -1125,16 +1206,15 @@ class Office3D {
       const spot = STANDBY_PADS[stateIndex % STANDBY_PADS.length];
       return { pos: new THREE.Vector3(spot.x, 0.14, spot.z), rotY: 0 };
     }
-    // Default: "working" -> Active Workfloor desks
+    // Default: "working" -> Active Workfloor desks (angled slightly so you can see their cute faces!)
     const desk = WORKFLOOR_DESKS[stateIndex % WORKFLOOR_DESKS.length];
-    return { pos: new THREE.Vector3(desk.x, 0.04, desk.z + 0.92), rotY: Math.PI };
+    return { pos: new THREE.Vector3(desk.x, 0.04, desk.z + 0.92), rotY: Math.PI * 0.82 };
   }
 
   buildHallwayPath(fromPos, toPos, fromZone, toZone) {
     if (fromZone === toZone) {
       return [toPos.clone()];
     }
-    // Route smoothly through the central horizontal hallway spine (z = 0.2)
     return [
       new THREE.Vector3(fromPos.x, 0.04, 0.2),
       new THREE.Vector3(toPos.x, 0.04, 0.2),
@@ -1149,7 +1229,6 @@ class Office3D {
       this.updateWallScreen(usageSummary.usageRemainingPct ?? 100, activeCount);
     }
 
-    // Track per-status slot indices so bots spread cleanly inside each designated room
     const slotCounters = {
       working: 0,
       waiting: 0,
@@ -1186,15 +1265,52 @@ class Office3D {
 
       const hex = STATUS_HEX[bot.status] || "#22c55e";
       entry.halo.material.color.set(hex);
-      entry.chestCore.material.color.set(hex);
-      entry.chestCore.material.emissive.set(hex);
-      entry.eyeMat.color.set(
-        bot.status === "error" ? "#fb7185" : bot.status === "waiting" ? "#fbbf24" : "#bae6fd"
-      );
-      entry.coffeeMug.visible = bot.status === "idle";
+      entry.orbitRing.visible = bot.status === "working";
+      entry.thinkGroup.visible = bot.status === "working" || bot.status === "meeting";
+
       entry.beacon.visible = bot.status === "waiting" || bot.status === "error";
       if (entry.beacon.visible) {
-        entry.beacon.material.color.set(bot.status === "error" ? "#ef4444" : "#f59e0b");
+        const bCol = bot.status === "error" ? "#ef4444" : "#f59e0b";
+        entry.beacon.material.color.set(bCol);
+        entry.beacon.material.emissive.set(bCol);
+      }
+
+      // Expressive Grok Bot Face Mood per status
+      const setExpression = (lTop, rTop, lBot, rBot, lRot = 0, rRot = 0) => {
+        entry.leftEye.upperLid.visible = lTop !== null;
+        entry.rightEye.upperLid.visible = rTop !== null;
+        entry.leftEye.lowerLid.visible = lBot !== null;
+        entry.rightEye.lowerLid.visible = rBot !== null;
+        if (lTop !== null) {
+          entry.leftEye.upperLid.position.y = lTop;
+          entry.leftEye.upperLid.rotation.z = lRot;
+        }
+        if (rTop !== null) {
+          entry.rightEye.upperLid.position.y = rTop;
+          entry.rightEye.upperLid.rotation.z = rRot;
+        }
+        if (lBot !== null) entry.leftEye.lowerLid.position.y = lBot;
+        if (rBot !== null) entry.rightEye.lowerLid.position.y = rBot;
+      };
+
+      if (bot.status === "error") {
+        // Furrowed worried/angry brows
+        setExpression(0.14, 0.14, null, null, -0.35, 0.35);
+      } else if (bot.status === "waiting") {
+        // Wide-eyed eager / attentive
+        setExpression(null, null, null, null);
+      } else if (bot.status === "meeting") {
+        // Happy smiling eyes
+        setExpression(null, null, -0.15, -0.15);
+      } else if (bot.status === "idle") {
+        // Relaxed chill half-lids
+        setExpression(0.18, 0.18, -0.17, -0.17);
+      } else if (bot.status === "no_report") {
+        // Sleepy closed eyes
+        setExpression(0.06, 0.06, -0.09, -0.09);
+      } else {
+        // Working: focused attentive
+        setExpression(0.21, 0.21, null, null, -0.06, 0.06);
       }
 
       const labelEl = this.labelEls.get(bot.id);
@@ -1352,7 +1468,6 @@ class Office3D {
     const h = this.container.clientHeight || 600;
     const proj = new THREE.Vector3();
 
-    // Smooth camera focus transition
     if (this.camLerpTarget) {
       this.camera.position.lerp(this.camLerpTarget.pos, 0.08);
       this.controls.target.lerp(this.camLerpTarget.target, 0.08);
@@ -1360,7 +1475,6 @@ class Office3D {
       if (this.camLerpTarget.frames <= 0) this.camLerpTarget = null;
     }
 
-    // Animated Props
     if (this.holoRing) {
       this.holoRing.rotation.z = elapsed * 0.9;
       this.holoRing.position.y = 1.32 + Math.sin(elapsed * 2.5) * 0.06;
@@ -1399,12 +1513,11 @@ class Office3D {
       this.cat.tail.rotation.z = Math.sin(elapsed * 5.5) * 0.35;
     }
 
-    // Articulated Bot Waypoint Movement & Expressive State Animations
+    // Playful Squash-and-Stretch Grok Bot Animations
     this.bots.forEach((bot, idx) => {
       const entry = this.botMeshes.get(bot.id);
       if (!entry) return;
 
-      // Lounge idle roaming
       if (bot.status === "idle" && entry.waypoints.length === 0 && now > entry.nextRoamAt) {
         const spot = LOUNGE_SPOTS[(idx + Math.floor(now / 9000)) % LOUNGE_SPOTS.length];
         entry.waypoints = [new THREE.Vector3(spot.x, 0.04, spot.z)];
@@ -1413,6 +1526,7 @@ class Office3D {
 
       const pos = entry.group.position;
       if (entry.waypoints.length > 0) {
+        // Bouncy Grok Bot squash-and-stretch hop locomotion
         const wp = entry.waypoints[0];
         const dx = wp.x - pos.x;
         const dz = wp.z - pos.z;
@@ -1423,74 +1537,97 @@ class Office3D {
           pos.y = wp.y;
           entry.waypoints.shift();
         } else {
-          const step = Math.min(dist, 0.11);
+          const step = Math.min(dist, 0.115);
           pos.x += (dx / dist) * step;
           pos.z += (dz / dist) * step;
           pos.y += (wp.y - pos.y) * 0.12;
           entry.group.rotation.y = Math.atan2(dx, dz);
 
-          const stride = Math.sin(elapsed * 11 + idx);
-          entry.leftLeg.rotation.x = stride * 0.55;
-          entry.rightLeg.rotation.x = -stride * 0.55;
-          entry.leftArm.rotation.x = -stride * 0.45;
-          entry.rightArm.rotation.x = stride * 0.45;
-          entry.rig.position.y = Math.abs(stride) * 0.09;
+          const hop = Math.abs(Math.sin(elapsed * 9.5 + idx));
+          entry.rig.position.y = hop * 0.42;
+          entry.rig.scale.set(1.08 - hop * 0.14, 0.88 + hop * 0.22, 1.08 - hop * 0.14);
+          entry.rig.rotation.z = Math.sin(elapsed * 9.5 + idx) * 0.08;
         }
       } else {
         entry.group.rotation.y += (entry.targetRotY - entry.group.rotation.y) * 0.08;
-        entry.leftLeg.rotation.x *= 0.85;
-        entry.rightLeg.rotation.x *= 0.85;
 
         if (bot.status === "working") {
-          entry.leftArm.rotation.x = -0.95 + Math.sin(elapsed * 14 + idx) * 0.14;
-          entry.rightArm.rotation.x = -0.95 + Math.cos(elapsed * 14 + idx) * 0.14;
-          entry.headGroup.rotation.y = Math.sin(elapsed * 1.4 + idx) * 0.16;
-          entry.rig.position.y = Math.sin(elapsed * 3.5 + idx) * 0.02;
+          // Gentle focused breathing float + spinning Grok Orbit ring
+          const breath = Math.sin(elapsed * 3.8 + idx);
+          entry.rig.position.y = 0.06 + breath * 0.06;
+          entry.rig.scale.set(1 - breath * 0.03, 1 + breath * 0.04, 1 - breath * 0.03);
+          entry.rig.rotation.set(0, 0, Math.sin(elapsed * 2 + idx) * 0.04);
+          entry.orbitRing.rotation.z = elapsed * 1.9 + idx;
+          entry.orbitRing.rotation.y = elapsed * 0.8;
         } else if (bot.status === "waiting") {
-          entry.rightArm.rotation.x = -2.35 + Math.sin(elapsed * 6) * 0.25;
-          entry.leftArm.rotation.x = -0.15;
-          entry.headGroup.rotation.y = Math.sin(elapsed * 2.5) * 0.3;
-          entry.rig.position.y = 0;
+          // Eager attention hop in Waiting Room
+          const bounce = Math.abs(Math.sin(elapsed * 5.2 + idx));
+          entry.rig.position.y = bounce * 0.28;
+          entry.rig.scale.set(1.06 - bounce * 0.1, 0.92 + bounce * 0.14, 1.06 - bounce * 0.1);
+          entry.rig.rotation.set(0, 0, 0);
         } else if (bot.status === "error") {
-          entry.leftArm.rotation.x = -1.65;
-          entry.rightArm.rotation.x = -1.65;
-          entry.headGroup.rotation.y = Math.sin(elapsed * 12) * 0.22;
-          entry.rig.position.y = 0;
-        } else if (bot.status === "idle") {
-          entry.rightArm.rotation.x = -0.75;
-          entry.leftArm.rotation.x = 0.08;
-          entry.headGroup.rotation.y = Math.sin(elapsed * 0.9 + idx) * 0.28;
-          entry.rig.position.y = Math.sin(elapsed * 2 + idx) * 0.02;
+          // Rapid distressed shiver in Repair Bay
+          entry.rig.position.y = 0.04;
+          entry.rig.scale.set(1.04, 0.96, 1.04);
+          entry.rig.rotation.set(0, 0, Math.sin(elapsed * 18) * 0.12);
+        } else if (bot.status === "meeting") {
+          // Cheerful chat bob in War Room
+          const bob = Math.sin(elapsed * 4.6 + idx);
+          entry.rig.position.y = Math.max(0, bob) * 0.16;
+          entry.rig.scale.set(1.03 - Math.max(0, bob) * 0.05, 0.97 + Math.max(0, bob) * 0.07, 1.03);
+          entry.rig.rotation.set(0, 0, bob * 0.07);
         } else if (bot.status === "no_report") {
-          entry.leftArm.rotation.x = 0.05;
-          entry.rightArm.rotation.x = 0.05;
-          entry.headGroup.rotation.x = 0.22; // Sleep / standby tilt
+          // Sleepy resting squash on Standby Dock
+          const snore = Math.sin(elapsed * 1.3 + idx);
           entry.rig.position.y = 0;
+          entry.rig.scale.set(1.06 + snore * 0.02, 0.88 - snore * 0.02, 1.06);
+          entry.rig.rotation.set(0.14, 0, 0.08);
         } else {
-          entry.leftArm.rotation.x = -0.65 + Math.sin(elapsed * 4 + idx) * 0.22;
-          entry.rightArm.rotation.x = -0.55 + Math.cos(elapsed * 3.5 + idx) * 0.2;
-          entry.headGroup.rotation.y = Math.sin(elapsed * 1.8 + idx) * 0.25;
-          entry.rig.position.y = 0;
+          // Relaxed float in Coffee Lounge
+          const chill = Math.sin(elapsed * 2.2 + idx);
+          entry.rig.position.y = 0.08 + chill * 0.07;
+          entry.rig.scale.set(1, 1 + chill * 0.025, 1);
+          entry.rig.rotation.set(0, 0, chill * 0.05);
         }
       }
 
-      // Natural Eye Blink
-      if (bot.status !== "no_report" && now > entry.nextBlinkAt) {
-        entry.leftEye.scale.y = 0.15;
-        entry.rightEye.scale.y = 0.15;
-        if (now > entry.nextBlinkAt + 130) {
-          entry.leftEye.scale.y = 1;
-          entry.rightEye.scale.y = 1;
-          entry.nextBlinkAt = now + 2600 + Math.random() * 4200;
+      // Expressive Eye Gaze & Blinking
+      if (bot.status !== "no_report") {
+        if (now > entry.nextLookAt) {
+          entry.lookOffsetX = (Math.random() - 0.5) * 0.07;
+          entry.lookOffsetY = (Math.random() - 0.5) * 0.05;
+          entry.nextLookAt = now + 1800 + Math.random() * 2800;
+        }
+        entry.leftEye.pupilGroup.position.x += (entry.lookOffsetX - entry.leftEye.pupilGroup.position.x) * 0.12;
+        entry.rightEye.pupilGroup.position.x += (entry.lookOffsetX - entry.rightEye.pupilGroup.position.x) * 0.12;
+        entry.leftEye.pupilGroup.position.y += (entry.lookOffsetY - entry.leftEye.pupilGroup.position.y) * 0.12;
+        entry.rightEye.pupilGroup.position.y += (entry.lookOffsetY - entry.rightEye.pupilGroup.position.y) * 0.12;
+
+        if (now > entry.nextBlinkAt) {
+          entry.leftEye.eyeWrap.scale.y = 0.12;
+          entry.rightEye.eyeWrap.scale.y = 0.12;
+          if (now > entry.nextBlinkAt + 120) {
+            entry.leftEye.eyeWrap.scale.y = 1;
+            entry.rightEye.eyeWrap.scale.y = 1;
+            entry.nextBlinkAt = now + 2400 + Math.random() * 4000;
+          }
         }
       }
 
+      // Thinking 3-dot wave
+      if (entry.thinkGroup.visible) {
+        entry.thinkGroup.lookAt(this.camera.position);
+        entry.thinkDots.forEach((d, di) => {
+          d.position.y = Math.sin(elapsed * 6 - di * 0.7) * 0.07;
+        });
+      }
+
+      // Floating Alert / Notification Dot
       if (entry.beacon.visible) {
-        entry.beacon.position.y = 2.48 + Math.sin(elapsed * 5) * 0.12;
-        entry.beacon.rotation.y = elapsed * 2.5;
+        entry.beacon.position.y = 1.76 + Math.sin(elapsed * 5.5) * 0.12;
       }
 
-      // Project floating HTML nameplate
+      // Project Nameplate
       const lbl = this.labelEls.get(bot.id);
       if (lbl) {
         const show =
@@ -1499,7 +1636,7 @@ class Office3D {
           this.hoveredBotId === bot.id ||
           bot.status === "waiting" ||
           bot.status === "error";
-        proj.set(pos.x, pos.y + 2.38, pos.z);
+        proj.set(pos.x, pos.y + 2.1, pos.z);
         proj.project(this.camera);
         if (show && proj.z < 1) {
           const sx = (proj.x * 0.5 + 0.5) * w;

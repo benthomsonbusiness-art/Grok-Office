@@ -13,6 +13,7 @@ import type {
   ActivityLog,
   BotRecord,
   BotStatus,
+  GrokShape,
   LogLevel,
   NeedSeverity,
   NeedStatus,
@@ -34,18 +35,39 @@ export interface Env {
   AI_GATEWAY_BASE_URL?: string;
 }
 
+// Official Grok Bot 12-color palette
 const DEFAULT_COLORS = [
-  "#38bdf8",
-  "#a78bfa",
-  "#34d399",
-  "#fbbf24",
-  "#f472b6",
-  "#fb7185",
-  "#22d3ee",
-  "#818cf8",
-  "#f97316",
-  "#10b981",
+  "#3b93f0", // Blue
+  "#8b5cf6", // Purple
+  "#3ecf8e", // Green
+  "#f08a24", // Orange
+  "#e152b0", // Pink
+  "#f0b429", // Amber
+  "#2fbfa0", // Turquoise
+  "#e8483f", // Red
+  "#f1efe9", // Cream
+  "#a3a3a3", // Grey
+  "#8b5e3c", // Brown
+  "#1e2028", // Ink
 ];
+
+// Official Grok Bot 8 silhouette shapes
+const GROK_SHAPES: GrokShape[] = [
+  "pebble",
+  "circle",
+  "squircle",
+  "cloud",
+  "droplet",
+  "capsule",
+  "hexagon",
+  "triangle",
+];
+
+function normalizeGrokShape(raw: unknown, fallback: GrokShape): GrokShape {
+  if (typeof raw !== "string") return fallback;
+  const s = raw.trim().toLowerCase() as GrokShape;
+  return GROK_SHAPES.includes(s) ? s : fallback;
+}
 
 const MODEL_PRICING_PER_M: Record<string, { in: number; out: number }> = {
   "grok-4": { in: 3.0, out: 15.0 },
@@ -133,6 +155,7 @@ export class OfficeHub extends DurableObject<Env> {
         role TEXT NOT NULL,
         department TEXT NOT NULL DEFAULT 'Engineering Lab',
         avatar_color TEXT NOT NULL,
+        avatar_shape TEXT NOT NULL DEFAULT 'pebble',
         desk_index INTEGER NOT NULL,
         status TEXT NOT NULL DEFAULT 'idle',
         task TEXT NOT NULL DEFAULT '',
@@ -216,6 +239,9 @@ export class OfficeHub extends DurableObject<Env> {
     }
     if (!botCols.includes("department")) {
       this.sql.exec("ALTER TABLE bots ADD COLUMN department TEXT NOT NULL DEFAULT 'Engineering Lab'");
+    }
+    if (!botCols.includes("avatar_shape")) {
+      this.sql.exec("ALTER TABLE bots ADD COLUMN avatar_shape TEXT NOT NULL DEFAULT 'pebble'");
     }
 
     const usageCols = this.sql
@@ -343,6 +369,8 @@ export class OfficeHub extends DurableObject<Env> {
         role: clampText(url.searchParams.get("r") ?? url.searchParams.get("role"), 64) || undefined,
         department:
           clampText(url.searchParams.get("d") ?? url.searchParams.get("department"), 48) || undefined,
+        shape:
+          (clampText(url.searchParams.get("shape"), 24) as GrokShape) || undefined,
         status: url.searchParams.get("s") ?? url.searchParams.get("status") ?? undefined,
         task: clampText(url.searchParams.get("t") ?? url.searchParams.get("task"), 200) || undefined,
         model: clampText(url.searchParams.get("m") ?? url.searchParams.get("model"), 64) || undefined,
@@ -677,6 +705,7 @@ export class OfficeHub extends DurableObject<Env> {
         role: string;
         department: string;
         avatar_color: string;
+        avatar_shape?: string;
         desk_index: number;
         status: BotStatus;
         task: string;
@@ -703,6 +732,10 @@ export class OfficeHub extends DurableObject<Env> {
     const avatarColor = sanitizeHexColor(
       payload.avatarColor,
       existing?.avatar_color ?? DEFAULT_COLORS[nextDeskIndex % DEFAULT_COLORS.length]
+    );
+    const avatarShape: GrokShape = normalizeGrokShape(
+      payload.avatarShape ?? payload.shape,
+      normalizeGrokShape(existing?.avatar_shape, GROK_SHAPES[nextDeskIndex % GROK_SHAPES.length])
     );
     const status: BotStatus = normalizeStatus(
       payload.status ?? payload.s,
@@ -771,7 +804,7 @@ export class OfficeHub extends DurableObject<Env> {
     if (existing) {
       this.sql.exec(
         `UPDATE bots SET
-           name = ?, role = ?, department = ?, avatar_color = ?, desk_index = ?,
+           name = ?, role = ?, department = ?, avatar_color = ?, avatar_shape = ?, desk_index = ?,
            status = ?, task = ?, model = ?,
            tokens_total = tokens_total + ?,
            cost_total_usd = cost_total_usd + ?,
@@ -785,6 +818,7 @@ export class OfficeHub extends DurableObject<Env> {
         role,
         department,
         avatarColor,
+        avatarShape,
         nextDeskIndex,
         status,
         task,
@@ -801,14 +835,15 @@ export class OfficeHub extends DurableObject<Env> {
     } else {
       this.sql.exec(
         `INSERT INTO bots (
-           id, name, role, department, avatar_color, desk_index, status, task, model,
+           id, name, role, department, avatar_color, avatar_shape, desk_index, status, task, model,
            tokens_total, cost_total_usd, requests_total, tasks_completed, error_count, last_seen_at, collaborating_with
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         botId,
         name,
         role,
         department,
         avatarColor,
+        avatarShape,
         nextDeskIndex,
         status,
         task,
@@ -1167,6 +1202,7 @@ export class OfficeHub extends DurableObject<Env> {
         role: string;
         department: string;
         avatar_color: string;
+        avatar_shape?: string;
         desk_index: number;
         status: BotStatus;
         task: string;
@@ -1180,12 +1216,13 @@ export class OfficeHub extends DurableObject<Env> {
         collaborating_with: string | null;
       }>("SELECT * FROM bots ORDER BY desk_index ASC, name ASC")
       .toArray()
-      .map((b) => ({
+      .map((b, idx) => ({
         id: b.id,
         name: b.name,
         role: b.role,
         department: b.department,
         avatarColor: b.avatar_color,
+        avatarShape: normalizeGrokShape(b.avatar_shape, GROK_SHAPES[idx % GROK_SHAPES.length]),
         deskIndex: b.desk_index,
         status: b.status,
         task: b.task,

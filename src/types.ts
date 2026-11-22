@@ -8,12 +8,23 @@ export type LogLevel = "info" | "warn" | "error" | "success";
 
 export type ObjectiveStatus = "active" | "completed" | "blocked";
 
+export type GrokShape =
+  | "circle"
+  | "pebble"
+  | "squircle"
+  | "capsule"
+  | "triangle"
+  | "hexagon"
+  | "cloud"
+  | "droplet";
+
 export interface BotRecord {
   id: string;
   name: string;
   role: string;
   department: string;
   avatarColor: string;
+  avatarShape: GrokShape;
   deskIndex: number;
   status: BotStatus;
   task: string;
@@ -120,6 +131,8 @@ export interface ReportPayload {
   department?: string;
   d?: string;
   avatarColor?: string;
+  avatarShape?: GrokShape;
+  shape?: GrokShape;
   deskIndex?: number;
   status?: BotStatus | string;
   s?: string;
