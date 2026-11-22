@@ -3,204 +3,229 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Grok Bot HQ — Virtual Office &amp; Command Center</title>
+  <title>Grok Bot Office — 3D Virtual HQ</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <div class="app-shell">
-    <!-- Topbar -->
-    <header class="topbar">
-      <div class="brand">
-        <div class="brand-logo">⚡</div>
+  <div id="workspace" class="workspace">
+    <!-- Left Full-Bleed 3D Office Viewport -->
+    <main class="stage-wrap">
+      <div id="office-3d-stage" class="office-3d-stage"></div>
+      <div id="label-layer" class="label-layer"></div>
+      <div id="bot-tooltip" class="bot-tooltip hidden"></div>
+
+      <!-- Floating Top-Left HUD Card (matches reference design) -->
+      <section id="hud-card" class="hud-card">
+        <div class="hud-title-row">
+          <span class="hud-brand">Grok Bot HQ</span>
+          <span class="hud-sub">Bot Office</span>
+          <span id="mode-pill" class="mode-pill live">LIVE</span>
+          <span id="ws-dot" class="ws-dot" title="WebSocket status"></span>
+        </div>
+
+        <div class="hud-counts">
+          <span class="cnt-item"><i class="dot green"></i><span id="cnt-working">0</span> working</span>
+          <span class="cnt-item"><i class="dot amber"></i><span id="cnt-waiting">0</span> waiting</span>
+          <span class="cnt-item"><i class="dot red"></i><span id="cnt-error">0</span> error</span>
+          <span class="cnt-item"><i class="dot blue"></i><span id="cnt-idle">0</span> idle</span>
+          <span class="cnt-item"><i class="dot hollow"></i><span id="cnt-noreport">0</span> no report</span>
+        </div>
+
+        <div class="hud-meta">
+          <span class="online-dot"></span>
+          <span>Office online · <span id="last-update-label">waiting for bots</span></span>
+          <span class="usage-left" id="usage-left-label">Usage 100% left</span>
+        </div>
+
+        <div class="hud-actions">
+          <button id="btn-sim" class="hud-btn sim">Simulate</button>
+          <button id="btn-reset-view" class="hud-btn">Reset view</button>
+          <button id="btn-analytics" class="hud-btn">Dashboard</button>
+          <button id="btn-clean-view" class="hud-btn">Clean view</button>
+          <button id="btn-connect" class="hud-btn accent">+ Connect</button>
+        </div>
+      </section>
+
+      <!-- Floating Top-Right Lighting & Camera Pills -->
+      <div id="hud-controls" class="hud-controls">
+        <div class="segmented" id="lighting-group">
+          <button class="seg-btn active" data-light="day">Day</button>
+          <button class="seg-btn" data-light="evening">Evening</button>
+          <button class="seg-btn" data-light="night">Night</button>
+          <button class="seg-btn" data-light="now">Now</button>
+        </div>
+        <div class="segmented" id="camera-group">
+          <button class="seg-btn active" data-cam="rotate">Rotate</button>
+          <button class="seg-btn" data-cam="fixed">Fixed</button>
+        </div>
+      </div>
+
+      <!-- Exit Clean View Pill (only visible in Clean View) -->
+      <button id="btn-exit-clean" class="exit-clean-btn hidden">Exit clean view</button>
+
+      <!-- Floating Selected Bot Inspector Card (Bottom-Left) -->
+      <aside id="bot-inspector" class="bot-inspector hidden"></aside>
+    </main>
+
+    <!-- Right Dark Sidebar: TEAM + ACTIVITY / NEEDS / GOALS -->
+    <aside id="sidebar" class="sidebar">
+      <!-- Top: TEAM Roster -->
+      <section class="sidebar-top">
+        <div class="sidebar-header">
+          <span class="sidebar-title">TEAM <strong id="team-count">0</strong></span>
+          <button id="btn-seed-mini" class="mini-link" title="Load 14 demo bots across 6 departments">Seed demo</button>
+        </div>
+        <div class="filter-pills" id="team-filters">
+          <button class="fpill active" data-filter="all">All</button>
+          <button class="fpill" data-filter="working">Working</button>
+          <button class="fpill" data-filter="waiting">Waiting</button>
+          <button class="fpill" data-filter="error">Error</button>
+          <button class="fpill" data-filter="idle">Idle</button>
+          <button class="fpill" data-filter="no_report">No report</button>
+        </div>
+        <div id="team-list" class="team-list">
+          <div class="empty-msg">No bots yet. Click <strong>Simulate</strong> or <strong>+ Connect</strong>.</div>
+        </div>
+      </section>
+
+      <!-- Bottom: ACTIVITY / NEEDS / GOALS Tabs -->
+      <section class="sidebar-bottom">
+        <div class="sidebar-tabs">
+          <button class="stab active" data-stab="activity">
+            ACTIVITY <span id="activity-mode-tag" class="stab-sub">LIVE</span>
+          </button>
+          <button class="stab" data-stab="needs">
+            NEEDS <span id="needs-count-pill" class="stab-badge hidden">0</span>
+          </button>
+          <button class="stab" data-stab="goals">GOALS</button>
+        </div>
+
+        <div id="stab-activity" class="stab-pane active">
+          <div id="activity-list" class="activity-list">
+            <div class="empty-msg">No activity yet.</div>
+          </div>
+        </div>
+
+        <div id="stab-needs" class="stab-pane">
+          <div class="needs-toolbar">
+            <span class="muted" style="font-size:0.74rem">Human-in-the-loop queue</span>
+            <button id="btn-approve-all" class="btn-xs btn-approve hidden">Approve Safe</button>
+          </div>
+          <div id="needs-list" class="needs-list">
+            <div class="empty-msg">All clear — no pending needs.</div>
+          </div>
+        </div>
+
+        <div id="stab-goals" class="stab-pane">
+          <div class="mini-bars">
+            <div class="mbar-row">
+              <span>Daily Spend</span>
+              <strong id="sb-cost">$0.00 / $10.00</strong>
+            </div>
+            <div class="pbar"><div id="sb-cost-fill" class="pbar-fill purple"></div></div>
+            <div class="mbar-row">
+              <span>Daily Tokens</span>
+              <strong id="sb-tokens">0 / 500k</strong>
+            </div>
+            <div class="pbar"><div id="sb-tokens-fill" class="pbar-fill blue"></div></div>
+          </div>
+          <div class="goals-bar-head">
+            <span class="muted" style="font-size:0.73rem">Team Objectives</span>
+            <button id="btn-open-dashboard-goals" class="mini-link">+ Manage</button>
+          </div>
+          <div id="sidebar-goals-list" class="sidebar-goals-list"></div>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <!-- Comprehensive Dashboard & Analytics Drawer / Modal -->
+  <div id="dashboard-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-card modal-xl">
+      <div class="modal-header">
         <div>
-          <h1>GROK BOT HQ</h1>
-          <p class="subtitle">Cloudflare Workers · Durable Objects · Zero-Overhead Telemetry</p>
+          <h3>Grok Bot HQ — Full Metrics, Usage &amp; Goals</h3>
+          <span class="muted" style="font-size:0.78rem">Cloudflare Durable Object SQLite · Real-time telemetry</span>
         </div>
-        <span id="ws-status" class="ws-pill offline">
-          <span class="dot"></span>
-          <span id="ws-label">Connecting…</span>
-        </span>
-      </div>
-
-      <div class="topbar-actions">
-        <button id="btn-seed" class="btn btn-secondary" title="Populate 6 demo Grok Bots & Goals">Seed Demo Team</button>
-        <button id="btn-tick" class="btn btn-secondary" title="Simulate one bot activity tick">Simulate Tick</button>
-        <button id="btn-autosim" class="btn btn-secondary" title="Toggle automatic simulation every 3.5s">Auto-Sim: Off</button>
-        <button id="btn-settings" class="btn btn-secondary" title="Configure daily budgets and auto-idle timer">⚙ Guardrails</button>
-        <a href="/api/export.csv" class="btn btn-secondary" title="Download usage CSV">↓ CSV</a>
-        <button id="btn-connect" class="btn btn-primary">+ Connect Grok Bot</button>
-      </div>
-    </header>
-
-    <!-- 6-Card KPI Strip -->
-    <section class="kpi-grid">
-      <div class="kpi-card">
-        <div class="kpi-label">Active Fleet</div>
-        <div class="kpi-value" id="kpi-bots">0 / 0</div>
-        <div class="kpi-sub" id="kpi-bots-sub">Waiting for bots…</div>
-      </div>
-
-      <div class="kpi-card" id="kpi-needs-card">
-        <div class="kpi-label">Pending Needs</div>
-        <div class="kpi-value" id="kpi-needs">0</div>
-        <div class="kpi-sub" id="kpi-needs-sub">All clear</div>
-      </div>
-
-      <div class="kpi-card">
-        <div class="kpi-label">Tasks Goal</div>
-        <div class="kpi-value" id="kpi-tasks">0 / 25</div>
-        <div class="kpi-bar"><div class="kpi-bar-fill green" id="kpi-tasks-bar"></div></div>
-        <div class="kpi-sub" id="kpi-tasks-sub">0% of daily target</div>
-      </div>
-
-      <div class="kpi-card">
-        <div class="kpi-label">Daily Tokens</div>
-        <div class="kpi-value" id="kpi-tokens">0</div>
-        <div class="kpi-bar"><div class="kpi-bar-fill blue" id="kpi-tokens-bar"></div></div>
-        <div class="kpi-sub" id="kpi-tokens-sub">0 in · 0 out</div>
-      </div>
-
-      <div class="kpi-card">
-        <div class="kpi-label">Daily Spend</div>
-        <div class="kpi-value" id="kpi-cost">$0.0000</div>
-        <div class="kpi-bar"><div class="kpi-bar-fill purple" id="kpi-cost-bar"></div></div>
-        <div class="kpi-sub" id="kpi-requests">0 API requests</div>
-      </div>
-
-      <div class="kpi-card">
-        <div class="kpi-label">Latency &amp; Health</div>
-        <div class="kpi-value" id="kpi-latency">0 ms</div>
-        <div class="kpi-sub" id="kpi-health">0% error rate</div>
-      </div>
-    </section>
-
-    <!-- Main Workspace: Virtual Office + Pending Needs -->
-    <section class="main-grid">
-      <div class="panel office-panel">
-        <div class="panel-header">
-          <div>
-            <h2>Virtual Office Floor</h2>
-            <span class="panel-hint">Bots walk corridors between desks, boardroom &amp; lounge · Click any bot to control</span>
-          </div>
-          <div class="legend">
-            <span class="legend-item"><i class="swatch working"></i>Working</span>
-            <span class="legend-item"><i class="swatch waiting"></i>Needs You</span>
-            <span class="legend-item"><i class="swatch error"></i>Error</span>
-            <span class="legend-item"><i class="swatch meeting"></i>Meeting</span>
-            <span class="legend-item"><i class="swatch idle"></i>Lounge</span>
-          </div>
-        </div>
-        <div class="canvas-wrap">
-          <canvas id="office-canvas"></canvas>
-          <div id="bot-tooltip" class="bot-tooltip hidden"></div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button id="btn-open-guardrails" class="hud-btn">⚙ Guardrails</button>
+          <a href="/api/export.csv" class="hud-btn">↓ Export CSV</a>
+          <button id="btn-close-dashboard" class="btn-icon">✕</button>
         </div>
       </div>
 
-      <div class="panel needs-panel">
-        <div class="panel-header">
-          <div>
-            <h2>Pending Needs</h2>
-            <span class="panel-hint">Approvals, errors &amp; budget alerts</span>
-          </div>
-          <div class="header-right">
-            <span id="open-needs-badge" class="badge badge-neutral">0 open</span>
-            <button id="btn-approve-all" class="btn-xs btn-approve hidden" title="Approve all open approval requests">Approve Safe</button>
-          </div>
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-label">Active Fleet</div>
+          <div class="kpi-value" id="kpi-bots">0 / 0</div>
+          <div class="kpi-sub" id="kpi-bots-sub">0 registered</div>
         </div>
-        <div class="filter-bar">
-          <button class="filter-chip active" data-need-filter="all">All</button>
-          <button class="filter-chip" data-need-filter="open">Open</button>
-          <button class="filter-chip" data-need-filter="error">Errors</button>
+        <div class="kpi-card">
+          <div class="kpi-label">Pending Needs</div>
+          <div class="kpi-value" id="kpi-needs">0</div>
+          <div class="kpi-sub" id="kpi-needs-sub">All clear</div>
         </div>
-        <div id="needs-list" class="needs-list">
-          <div class="empty-state">No pending needs. Click <strong>Seed Demo Team</strong> or connect a Grok Bot.</div>
+        <div class="kpi-card">
+          <div class="kpi-label">Tasks Completed</div>
+          <div class="kpi-value" id="kpi-tasks">0 / 30</div>
+          <div class="pbar"><div id="kpi-tasks-bar" class="pbar-fill green"></div></div>
         </div>
-      </div>
-    </section>
-
-    <!-- Bottom Grid: Goals/OKRs + Usage Analytics + Fleet/Inspector -->
-    <section class="bottom-grid-3">
-      <!-- Goals & Objectives -->
-      <div class="panel goals-panel">
-        <div class="panel-header">
-          <div>
-            <h2>Goals &amp; Objectives</h2>
-            <span class="panel-hint">Track milestones &amp; team OKRs</span>
-          </div>
-          <button id="btn-toggle-goal-form" class="btn-xs btn-secondary">+ Add Goal</button>
+        <div class="kpi-card">
+          <div class="kpi-label">Total Tokens</div>
+          <div class="kpi-value" id="kpi-tokens">0</div>
+          <div class="kpi-sub" id="kpi-tokens-sub">0 in · 0 out</div>
         </div>
-        <form id="goal-form" class="goal-form hidden">
-          <input id="goal-title-input" type="text" placeholder="Goal title (e.g., Ship Q4 landing page)" required maxlength="120" />
-          <div class="goal-form-row">
-            <select id="goal-owner-select">
-              <option value="">Unassigned</option>
-            </select>
-            <input id="goal-target-input" type="text" placeholder="Target (e.g., 20 leads)" maxlength="80" />
-            <button type="submit" class="btn-sm btn-primary">Save</button>
-          </div>
-        </form>
-        <div id="goals-list" class="goals-list">
-          <div class="empty-state">No team objectives yet. Add one or seed the demo office.</div>
+        <div class="kpi-card">
+          <div class="kpi-label">Daily Spend</div>
+          <div class="kpi-value" id="kpi-cost">$0.0000</div>
+          <div class="kpi-sub" id="kpi-requests">0 API requests</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Avg Latency &amp; Health</div>
+          <div class="kpi-value" id="kpi-latency">0 ms</div>
+          <div class="kpi-sub" id="kpi-health">0% error rate</div>
         </div>
       </div>
 
-      <!-- Usage & Spend Analytics -->
-      <div class="panel usage-panel">
-        <div class="panel-header">
-          <div>
-            <h2>Usage &amp; Spend Analytics</h2>
-            <span class="panel-hint">Auto-calculated per model &amp; bot</span>
+      <div class="dash-two-col">
+        <!-- Usage Chart + Model Breakdown -->
+        <div class="dash-box">
+          <div class="dash-box-head">
+            <h4>Usage &amp; Spend Breakdown</h4>
+            <div class="segmented compact">
+              <button class="seg-btn active" data-chart-mode="tokens">Tokens</button>
+              <button class="seg-btn" data-chart-mode="cost">Spend $</button>
+            </div>
           </div>
-          <div class="tabs compact">
-            <button class="chart-mode-btn active" data-chart-mode="tokens">Tokens</button>
-            <button class="chart-mode-btn" data-chart-mode="cost">Spend $</button>
-          </div>
+          <div id="usage-chart" class="usage-chart"></div>
+          <table class="data-table">
+            <thead>
+              <tr><th>Model</th><th>Reqs</th><th>In / Out</th><th>Est. Cost</th></tr>
+            </thead>
+            <tbody id="model-tbody">
+              <tr><td colspan="4" class="muted">No usage events yet</td></tr>
+            </tbody>
+          </table>
         </div>
-        <div class="usage-content">
-          <div class="chart-box">
-            <div class="chart-title" id="chart-title">Recent Token Volume</div>
-            <div id="usage-chart" class="usage-chart"></div>
-          </div>
-          <div class="model-table-wrap">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Model</th>
-                  <th>Reqs</th>
-                  <th>In / Out</th>
-                  <th>Cost</th>
-                </tr>
-              </thead>
-              <tbody id="model-tbody">
-                <tr><td colspan="4" class="muted">No usage events yet</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
 
-      <!-- Fleet Roster / Activity Feed / Bot Inspector -->
-      <div class="panel roster-panel">
-        <div class="panel-header">
-          <div class="tabs">
-            <button class="tab-btn active" data-tab="roster">Roster</button>
-            <button class="tab-btn" data-tab="feed">Activity</button>
-            <button class="tab-btn" data-tab="inspector" id="tab-inspector-btn">Inspector</button>
+        <!-- Goals / Objectives Manager -->
+        <div class="dash-box">
+          <div class="dash-box-head">
+            <h4>Team Goals &amp; Milestones</h4>
           </div>
-        </div>
-        <div id="tab-roster" class="tab-pane active">
-          <div id="roster-list" class="roster-list"></div>
-        </div>
-        <div id="tab-feed" class="tab-pane">
-          <div id="feed-list" class="feed-list"></div>
-        </div>
-        <div id="tab-inspector" class="tab-pane">
-          <div id="inspector-body" class="inspector-body">
-            <div class="empty-state">Click a bot in the Virtual Office or Roster to inspect &amp; move it.</div>
-          </div>
+          <form id="goal-form" class="goal-form">
+            <input id="goal-title-input" type="text" placeholder="New goal (e.g., Ship Q4 AI Brief)" required maxlength="120" />
+            <div class="goal-form-row">
+              <select id="goal-owner-select"><option value="">Unassigned</option></select>
+              <input id="goal-target-input" type="text" placeholder="Target metric" maxlength="80" />
+              <button type="submit" class="btn-xs btn-approve">Add</button>
+            </div>
+          </form>
+          <div id="modal-goals-list" class="modal-goals-list"></div>
         </div>
       </div>
-    </section>
+    </div>
   </div>
 
   <!-- Connect Grok Bot Modal -->
@@ -208,64 +233,52 @@
     <div class="modal-backdrop"></div>
     <div class="modal-card">
       <div class="modal-header">
-        <h3>Connect Your Grok Bots (Minimal Involvement)</h3>
-        <button id="btn-close-modal" class="btn-icon">✕</button>
+        <h3>Connect Your Grok Bots (Zero / Minimal Token Usage)</h3>
+        <button id="btn-close-connect" class="btn-icon">✕</button>
       </div>
       <div class="modal-body">
-        <div class="connect-option">
-          <h4>Option A — Zero-Token Auto-Tracking Proxy (Recommended for Custom Grok Scripts)</h4>
-          <p class="muted">Point your xAI / OpenAI SDK <code>baseURL</code> here. Tokens, cost, latency, and errors are logged automatically with <strong>0 extra Grok prompts or tokens</strong>:</p>
+        <div class="connect-opt">
+          <h4>Option 1 — Zero-Token Auto-Tracking Proxy (Custom Grok / xAI Scripts)</h4>
+          <p class="muted">Point your xAI / OpenAI SDK <code>baseURL</code> here. Tokens, cost, latency, and errors are tracked automatically with <strong>0 extra Grok tokens</strong>:</p>
           <pre id="proxy-snippet" class="code-block"></pre>
-          <button class="btn btn-secondary copy-btn" data-target="proxy-snippet">Copy SDK Snippet</button>
+          <button class="hud-btn copy-btn" data-target="proxy-snippet">Copy SDK Snippet</button>
         </div>
 
-        <div class="connect-option">
-          <h4>Option B — 1-Line Ping URL (For xAI Grok Bot Teammates)</h4>
-          <p class="muted">Lowest possible token footprint for hosted Grok Bots — just hit one compact URL:</p>
+        <div class="connect-opt">
+          <h4>Option 2 — 1-Line Ping URL (Best for Hosted xAI Grok Bots)</h4>
+          <p class="muted">Ultra-short URL so Grok barely spends any tokens. Server auto-idles bots to the lounge after inactivity:</p>
           <pre id="ping-snippet" class="code-block"></pre>
-          <button class="btn btn-secondary copy-btn" data-target="ping-snippet">Copy Ping Instruction</button>
+          <button class="hud-btn copy-btn" data-target="ping-snippet">Copy 1-Line Ping</button>
         </div>
 
-        <div class="connect-option">
-          <h4>Option C — Full JSON Report + Human Approval Queue</h4>
-          <pre id="prompt-snippet" class="code-block"></pre>
-          <button class="btn btn-secondary copy-btn" data-target="prompt-snippet">Copy Full JSON</button>
+        <div class="connect-opt">
+          <h4>Option 3 — Full JSON Report + Human Approval Queue</h4>
+          <pre id="report-snippet" class="code-block"></pre>
+          <button class="hud-btn copy-btn" data-target="report-snippet">Copy JSON</button>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Guardrails & Settings Modal -->
+  <!-- Guardrails Modal -->
   <div id="settings-modal" class="modal hidden">
     <div class="modal-backdrop"></div>
     <div class="modal-card modal-sm">
       <div class="modal-header">
-        <h3>Office Guardrails &amp; Auto-Idle</h3>
+        <h3>Budget Guardrails &amp; Auto-Idle</h3>
         <button id="btn-close-settings" class="btn-icon">✕</button>
       </div>
       <form id="settings-form" class="settings-form">
-        <label>
-          <span>Daily Spend Cap (USD)</span>
-          <input id="set-cost-cap" type="number" step="0.5" min="0.5" required />
-        </label>
-        <label>
-          <span>Daily Token Cap</span>
-          <input id="set-token-cap" type="number" step="10000" min="1000" required />
-        </label>
-        <label>
-          <span>Daily Tasks Completed Goal</span>
-          <input id="set-task-target" type="number" step="1" min="1" required />
-        </label>
-        <label>
-          <span>Auto-Idle to Lounge (minutes of silence)</span>
-          <input id="set-auto-idle" type="number" step="1" min="1" max="120" required />
-        </label>
-        <button type="submit" class="btn btn-primary" style="width:100%;margin-top:6px">Save Guardrails</button>
+        <label><span>Daily Spend Cap ($ USD)</span><input id="set-cost-cap" type="number" step="0.5" min="0.5" required /></label>
+        <label><span>Daily Token Cap</span><input id="set-token-cap" type="number" step="10000" min="1000" required /></label>
+        <label><span>Daily Tasks Goal</span><input id="set-task-target" type="number" step="1" min="1" required /></label>
+        <label><span>Auto-Idle to Lounge (minutes)</span><input id="set-auto-idle" type="number" step="1" min="1" max="120" required /></label>
+        <button type="submit" class="hud-btn accent" style="width:100%;margin-top:6px">Save Guardrails</button>
       </form>
     </div>
   </div>
 
-  <script src="/office.js"></script>
+  <script src="/office3d.bundle.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

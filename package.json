@@ -1,15 +1,20 @@
 {
   "name": "grok-office",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "build:client": "esbuild src/client/office3d.js --bundle --minify --format=iife --outfile=public/office3d.bundle.js",
+    "dev": "npm run build:client && wrangler dev",
+    "deploy": "npm run build:client && wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.mjs"
   },
+  "dependencies": {
+    "three": "^0.172.0"
+  },
   "devDependencies": {
     "@cloudflare/workers-types": "latest",
+    "esbuild": "^0.24.2",
     "typescript": "^5.7.2",
     "wrangler": "latest"
   }

@@ -43,6 +43,8 @@ const DEFAULT_COLORS = [
   "#fb7185",
   "#22d3ee",
   "#818cf8",
+  "#f97316",
+  "#10b981",
 ];
 
 const MODEL_PRICING_PER_M: Record<string, { in: number; out: number }> = {
@@ -56,9 +58,18 @@ const MODEL_PRICING_PER_M: Record<string, { in: number; out: number }> = {
 const DEFAULT_SETTINGS: OfficeSettings = {
   dailyTokenCap: 500_000,
   dailyCostCapUsd: 10.0,
-  dailyTaskTarget: 25,
+  dailyTaskTarget: 30,
   autoIdleMinutes: 5,
 };
+
+const DEPARTMENTS = [
+  "Command & Media",
+  "Executive Studio",
+  "Analytics Lab",
+  "Engineering Lab",
+  "AI News Desk",
+  "Ops & Finance",
+];
 
 function estimateCostUsd(model: string, tokensIn: number, tokensOut: number): number {
   const pricing = MODEL_PRICING_PER_M[model] ?? { in: 2.0, out: 10.0 };
@@ -75,6 +86,7 @@ function normalizeStatus(raw: unknown, fallback: BotStatus = "working"): BotStat
   if (s === "wait" || s === "waiting" || s === "approval" || s === "need" || s === "blocked") return "waiting";
   if (s === "e" || s === "err" || s === "error" || s === "failed") return "error";
   if (s === "m" || s === "meet" || s === "meeting" || s === "collab") return "meeting";
+  if (s === "nr" || s === "no_report" || s === "noreport" || s === "offline") return "no_report";
   return fallback;
 }
 
@@ -119,6 +131,7 @@ export class OfficeHub extends DurableObject<Env> {
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         role TEXT NOT NULL,
+        department TEXT NOT NULL DEFAULT 'Engineering Lab',
         avatar_color TEXT NOT NULL,
         desk_index INTEGER NOT NULL,
         status TEXT NOT NULL DEFAULT 'idle',
@@ -163,8 +176,11 @@ export class OfficeHub extends DurableObject<Env> {
         id TEXT PRIMARY KEY,
         bot_id TEXT NOT NULL,
         bot_name TEXT NOT NULL,
+        bot_color TEXT NOT NULL DEFAULT '#38bdf8',
+        status TEXT NOT NULL DEFAULT 'working',
         level TEXT NOT NULL DEFAULT 'info',
         message TEXT NOT NULL,
+        simulated INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL
       );
 
@@ -188,7 +204,6 @@ export class OfficeHub extends DurableObject<Env> {
       CREATE INDEX IF NOT EXISTS idx_logs_created ON activity_logs(created_at);
     `);
 
-    // Backfill columns if upgrading an existing local Durable Object DB
     const botCols = this.sql
       .exec<{ name: string }>("PRAGMA table_info(bots)")
       .toArray()
@@ -199,6 +214,9 @@ export class OfficeHub extends DurableObject<Env> {
     if (!botCols.includes("error_count")) {
       this.sql.exec("ALTER TABLE bots ADD COLUMN error_count INTEGER NOT NULL DEFAULT 0");
     }
+    if (!botCols.includes("department")) {
+      this.sql.exec("ALTER TABLE bots ADD COLUMN department TEXT NOT NULL DEFAULT 'Engineering Lab'");
+    }
 
     const usageCols = this.sql
       .exec<{ name: string }>("PRAGMA table_info(usage_events)")
@@ -207,37 +225,68 @@ export class OfficeHub extends DurableObject<Env> {
     if (!usageCols.includes("is_error")) {
       this.sql.exec("ALTER TABLE usage_events ADD COLUMN is_error INTEGER NOT NULL DEFAULT 0");
     }
+
+    const logCols = this.sql
+      .exec<{ name: string }>("PRAGMA table_info(activity_logs)")
+      .toArray()
+      .map((c) => c.name);
+    if (!logCols.includes("bot_color")) {
+      this.sql.exec("ALTER TABLE activity_logs ADD COLUMN bot_color TEXT NOT NULL DEFAULT '#38bdf8'");
+    }
+    if (!logCols.includes("status")) {
+      this.sql.exec("ALTER TABLE activity_logs ADD COLUMN status TEXT NOT NULL DEFAULT 'working'");
+    }
+    if (!logCols.includes("simulated")) {
+      this.sql.exec("ALTER TABLE activity_logs ADD COLUMN simulated INTEGER NOT NULL DEFAULT 0");
+    }
   }
 
   async alarm(): Promise<void> {
     const settings = this.getSettings();
-    const cutoffMs = Date.now() - Math.max(1, settings.autoIdleMinutes) * 60_000;
-    const activeBots = this.sql
-      .exec<{ id: string; name: string; status: BotStatus; last_seen_at: string }>(
-        "SELECT id, name, status, last_seen_at FROM bots WHERE status IN ('working', 'meeting')"
-      )
+    const idleCutoffMs = Date.now() - Math.max(1, settings.autoIdleMinutes) * 60_000;
+    const noReportCutoffMs = Date.now() - 24 * 60 * 60_000;
+
+    const allBots = this.sql
+      .exec<{
+        id: string;
+        name: string;
+        avatar_color: string;
+        status: BotStatus;
+        last_seen_at: string;
+      }>("SELECT id, name, avatar_color, status, last_seen_at FROM bots")
       .toArray();
 
     let changed = false;
     let stillActive = 0;
     const now = new Date().toISOString();
 
-    for (const bot of activeBots) {
+    for (const bot of allBots) {
       const lastSeen = Date.parse(bot.last_seen_at);
-      if (Number.isFinite(lastSeen) && lastSeen < cutoffMs) {
+      if (!Number.isFinite(lastSeen)) continue;
+
+      if ((bot.status === "working" || bot.status === "meeting") && lastSeen < idleCutoffMs) {
         this.sql.exec(
-          "UPDATE bots SET status = 'idle', collaborating_with = NULL, task = 'Auto-idled in Coffee Lounge' WHERE id = ?",
+          "UPDATE bots SET status = 'idle', collaborating_with = NULL, task = 'Auto-idled in Central Lounge' WHERE id = ?",
           bot.id
         );
         this.insertLog(
           bot.id,
           bot.name,
+          bot.avatar_color,
+          "idle",
           "info",
-          `Walked to Coffee Lounge (auto-idle after ${settings.autoIdleMinutes}m inactivity)`,
+          `Walked to Lounge (auto-idle after ${settings.autoIdleMinutes}m)`,
+          false,
           now
         );
         changed = true;
-      } else {
+      } else if (bot.status === "idle" && lastSeen < noReportCutoffMs) {
+        this.sql.exec(
+          "UPDATE bots SET status = 'no_report', task = 'No report in 24h' WHERE id = ?",
+          bot.id
+        );
+        changed = true;
+      } else if (bot.status === "working" || bot.status === "meeting") {
         stillActive++;
       }
     }
@@ -260,7 +309,6 @@ export class OfficeHub extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
-    // WebSocket upgrade for live dashboard clients
     if (url.pathname === "/ws") {
       if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
         return new Response("Expected WebSocket upgrade", { status: 426 });
@@ -281,7 +329,6 @@ export class OfficeHub extends DurableObject<Env> {
       return jsonResponse(this.getSnapshot());
     }
 
-    // Ultra-lightweight GET/POST ping for zero-overhead Grok reporting
     if (url.pathname === "/api/ping" && (request.method === "GET" || request.method === "POST")) {
       if (!(await isReportAuthorized(request, this.env))) {
         return jsonResponse({ error: "Unauthorized" }, 401);
@@ -294,6 +341,8 @@ export class OfficeHub extends DurableObject<Env> {
         botId,
         name: clampText(url.searchParams.get("n") ?? url.searchParams.get("name"), 64) || undefined,
         role: clampText(url.searchParams.get("r") ?? url.searchParams.get("role"), 64) || undefined,
+        department:
+          clampText(url.searchParams.get("d") ?? url.searchParams.get("department"), 48) || undefined,
         status: url.searchParams.get("s") ?? url.searchParams.get("status") ?? undefined,
         task: clampText(url.searchParams.get("t") ?? url.searchParams.get("task"), 200) || undefined,
         model: clampText(url.searchParams.get("m") ?? url.searchParams.get("model"), 64) || undefined,
@@ -343,7 +392,6 @@ export class OfficeHub extends DurableObject<Env> {
       return jsonResponse({ ok: true, ...result });
     }
 
-    // Minimal-token polling endpoint for a waiting Grok Bot
     const botStatusMatch = url.pathname.match(/^\/api\/bot\/([^/]+)\/status$/);
     if (botStatusMatch && request.method === "GET") {
       if (!(await isReportAuthorized(request, this.env))) {
@@ -361,11 +409,16 @@ export class OfficeHub extends DurableObject<Env> {
       });
     }
 
-    // Direct bot control from dashboard UI (move zone / assign task)
     const botCmdMatch = url.pathname.match(/^\/api\/bots\/([^/]+)\/command$/);
     if (botCmdMatch && request.method === "POST") {
       const botId = decodeURIComponent(botCmdMatch[1]);
-      let body: { status?: BotStatus; task?: string; deskIndex?: number; collaboratingWith?: string | null } = {};
+      let body: {
+        status?: BotStatus;
+        task?: string;
+        deskIndex?: number;
+        department?: string;
+        collaboratingWith?: string | null;
+      } = {};
       try {
         body = (await request.json()) as typeof body;
       } catch {
@@ -376,8 +429,9 @@ export class OfficeHub extends DurableObject<Env> {
         status: body.status,
         task: body.task,
         deskIndex: body.deskIndex,
+        department: body.department,
         collaboratingWith: body.collaboratingWith,
-        message: body.status ? `Manager moved bot → ${body.status}` : "Manager updated bot assignment",
+        message: body.status ? `Moved bot → ${body.status}` : "Updated bot assignment",
       });
       this.broadcastSnapshot();
       return jsonResponse({ ok: true, ...result });
@@ -421,7 +475,6 @@ export class OfficeHub extends DurableObject<Env> {
       return jsonResponse({ ok: true, need: updated });
     }
 
-    // Objectives / Goals CRUD
     if (url.pathname === "/api/objectives" && request.method === "GET") {
       return jsonResponse({ objectives: this.listObjectives() });
     }
@@ -508,7 +561,6 @@ export class OfficeHub extends DurableObject<Env> {
       return jsonResponse({ ok: true });
     }
 
-    // Office Guardrail Settings
     if (url.pathname === "/api/settings" && request.method === "GET") {
       return jsonResponse({ settings: this.getSettings() });
     }
@@ -539,7 +591,6 @@ export class OfficeHub extends DurableObject<Env> {
       return jsonResponse({ ok: true, settings: next });
     }
 
-    // Export CSV
     if (url.pathname === "/api/export.csv" && request.method === "GET") {
       const rows = this.sql
         .exec<{
@@ -568,7 +619,6 @@ export class OfficeHub extends DurableObject<Env> {
       });
     }
 
-    // Demo controls
     if (url.pathname === "/api/demo/seed" && request.method === "POST") {
       await this.seedDemoOffice();
       this.broadcastSnapshot();
@@ -597,7 +647,7 @@ export class OfficeHub extends DurableObject<Env> {
   }
 
   webSocketClose(_ws: WebSocket): void {
-    // Cleaned up automatically by Hibernation runtime
+    // Handled by Hibernation runtime
   }
 
   private broadcastSnapshot(): void {
@@ -625,6 +675,7 @@ export class OfficeHub extends DurableObject<Env> {
         id: string;
         name: string;
         role: string;
+        department: string;
         avatar_color: string;
         desk_index: number;
         status: BotStatus;
@@ -640,11 +691,15 @@ export class OfficeHub extends DurableObject<Env> {
 
     const nextDeskIndex =
       payload.deskIndex !== undefined
-        ? Math.max(0, Math.min(7, Math.floor(payload.deskIndex)))
-        : existing?.desk_index ?? (countRow?.cnt ?? 0) % 8;
+        ? Math.max(0, Math.min(24, Math.floor(payload.deskIndex)))
+        : existing?.desk_index ?? (countRow?.cnt ?? 0);
 
     const name = clampText(payload.name, 40) || existing?.name || botId;
     const role = clampText(payload.role, 48) || existing?.role || "Grok Agent";
+    const department =
+      clampText(payload.department ?? payload.d, 48) ||
+      existing?.department ||
+      DEPARTMENTS[nextDeskIndex % DEPARTMENTS.length];
     const avatarColor = sanitizeHexColor(
       payload.avatarColor,
       existing?.avatar_color ?? DEFAULT_COLORS[nextDeskIndex % DEFAULT_COLORS.length]
@@ -706,7 +761,6 @@ export class OfficeHub extends DurableObject<Env> {
         now
       );
 
-      // Keep recent 5000 usage events
       this.sql.exec(`
         DELETE FROM usage_events WHERE id NOT IN (
           SELECT id FROM usage_events ORDER BY created_at DESC LIMIT 5000
@@ -717,7 +771,7 @@ export class OfficeHub extends DurableObject<Env> {
     if (existing) {
       this.sql.exec(
         `UPDATE bots SET
-           name = ?, role = ?, avatar_color = ?, desk_index = ?,
+           name = ?, role = ?, department = ?, avatar_color = ?, desk_index = ?,
            status = ?, task = ?, model = ?,
            tokens_total = tokens_total + ?,
            cost_total_usd = cost_total_usd + ?,
@@ -729,6 +783,7 @@ export class OfficeHub extends DurableObject<Env> {
          WHERE id = ?`,
         name,
         role,
+        department,
         avatarColor,
         nextDeskIndex,
         status,
@@ -746,12 +801,13 @@ export class OfficeHub extends DurableObject<Env> {
     } else {
       this.sql.exec(
         `INSERT INTO bots (
-           id, name, role, avatar_color, desk_index, status, task, model,
+           id, name, role, department, avatar_color, desk_index, status, task, model,
            tokens_total, cost_total_usd, requests_total, tasks_completed, error_count, last_seen_at, collaborating_with
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         botId,
         name,
         role,
+        department,
         avatarColor,
         nextDeskIndex,
         status,
@@ -805,7 +861,6 @@ export class OfficeHub extends DurableObject<Env> {
       );
     }
 
-    // Check daily budget thresholds server-side
     if (addedTokens > 0 || addedCost > 0) {
       this.checkBudgetGuardrails(now);
     }
@@ -814,9 +869,7 @@ export class OfficeHub extends DurableObject<Env> {
       clampText(payload.message, 240) ||
       (payload.need
         ? `Requested ${payload.need.severity ?? "approval"}: ${clampText(payload.need.title, 120)}`
-        : task
-        ? `${status}: ${task}`
-        : `Status → ${status}`);
+        : task || `Status → ${status}`);
 
     const logLevel: LogLevel =
       payload.level ??
@@ -828,7 +881,16 @@ export class OfficeHub extends DurableObject<Env> {
         ? "success"
         : "info");
 
-    this.insertLog(botId, name, logLevel, logMessage, now);
+    this.insertLog(
+      botId,
+      name,
+      avatarColor,
+      status,
+      logLevel,
+      logMessage,
+      payload.simulated === true,
+      now
+    );
 
     if (status === "working" || status === "meeting") {
       await this.ensureAlarmScheduled();
@@ -859,7 +921,7 @@ export class OfficeHub extends DurableObject<Env> {
          ) VALUES (?, 'system', 'Office Guardrail', ?, ?, 'budget', 'open', ?)`,
         alertId,
         `Daily spend cap reached ($${(todayStats?.cost ?? 0).toFixed(2)} / $${settings.dailyCostCapUsd.toFixed(2)})`,
-        "Automatic office guardrail triggered. Review bot activity or raise the daily cap in Goals & Guardrails.",
+        "Automatic office guardrail triggered. Review bot activity or raise the daily cap in Guardrails.",
         now
       );
     } else if (tokenRatio >= 1.0) {
@@ -870,7 +932,7 @@ export class OfficeHub extends DurableObject<Env> {
          ) VALUES (?, 'system', 'Office Guardrail', ?, ?, 'budget', 'open', ?)`,
         alertId,
         `Daily token cap reached (${(todayStats?.tokens ?? 0).toLocaleString()} tokens)`,
-        "Automatic office guardrail triggered. Consider switching high-volume bots to grok-3-mini.",
+        "Automatic office guardrail triggered. Consider routing high-volume bots to grok-3-mini.",
         now
       );
     }
@@ -879,18 +941,24 @@ export class OfficeHub extends DurableObject<Env> {
   private insertLog(
     botId: string,
     botName: string,
+    botColor: string,
+    status: BotStatus,
     level: LogLevel,
     message: string,
+    simulated = false,
     createdAt = new Date().toISOString()
   ): void {
     this.sql.exec(
-      `INSERT INTO activity_logs (id, bot_id, bot_name, level, message, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO activity_logs (id, bot_id, bot_name, bot_color, status, level, message, simulated, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       crypto.randomUUID(),
       botId,
       botName,
+      botColor,
+      status,
       level,
       message,
+      simulated ? 1 : 0,
       createdAt
     );
 
@@ -1050,8 +1118,11 @@ export class OfficeHub extends DurableObject<Env> {
     this.insertLog(
       existing.bot_id,
       existing.bot_name,
+      "#34d399",
+      action === "reject" ? "idle" : "working",
       action === "reject" ? "warn" : "success",
       `Human ${newStatus} "${existing.title}"${note ? ` — "${note}"` : ""}`,
+      false,
       now
     );
 
@@ -1094,6 +1165,7 @@ export class OfficeHub extends DurableObject<Env> {
         id: string;
         name: string;
         role: string;
+        department: string;
         avatar_color: string;
         desk_index: number;
         status: BotStatus;
@@ -1112,6 +1184,7 @@ export class OfficeHub extends DurableObject<Env> {
         id: b.id,
         name: b.name,
         role: b.role,
+        department: b.department,
         avatarColor: b.avatar_color,
         deskIndex: b.desk_index,
         status: b.status,
@@ -1135,8 +1208,11 @@ export class OfficeHub extends DurableObject<Env> {
         id: string;
         bot_id: string;
         bot_name: string;
+        bot_color: string;
+        status: BotStatus;
         level: LogLevel;
         message: string;
+        simulated: number;
         created_at: string;
       }>("SELECT * FROM activity_logs ORDER BY created_at DESC LIMIT 60")
       .toArray()
@@ -1144,8 +1220,11 @@ export class OfficeHub extends DurableObject<Env> {
         id: l.id,
         botId: l.bot_id,
         botName: l.bot_name,
+        botColor: l.bot_color,
+        status: l.status,
         level: l.level,
         message: l.message,
+        simulated: l.simulated === 1,
         createdAt: l.created_at,
       }));
 
@@ -1184,6 +1263,15 @@ export class OfficeHub extends DurableObject<Env> {
       totalRequests > 0
         ? Number((((totals?.errors ?? 0) / totalRequests) * 100).toFixed(1))
         : 0;
+
+    const todayTokens = todayTotals?.tokens ?? 0;
+    const todayCostUsd = Number((todayTotals?.cost ?? 0).toFixed(4));
+    const tokenUsedRatio = settings.dailyTokenCap > 0 ? todayTokens / settings.dailyTokenCap : 0;
+    const costUsedRatio = settings.dailyCostCapUsd > 0 ? todayCostUsd / settings.dailyCostCapUsd : 0;
+    const usageRemainingPct = Math.max(
+      0,
+      Math.min(100, Math.round((1 - Math.max(tokenUsedRatio, costUsedRatio)) * 100))
+    );
 
     const byModel: UsageByModel[] = this.sql
       .exec<{
@@ -1245,6 +1333,14 @@ export class OfficeHub extends DurableObject<Env> {
       bucketMap.set(label, cur);
     }
 
+    const lastBotUpdateAt =
+      bots.length > 0
+        ? bots.reduce(
+            (latest, b) => (b.lastSeenAt > latest ? b.lastSeenAt : latest),
+            bots[0].lastSeenAt
+          )
+        : null;
+
     return {
       bots,
       pendingNeeds,
@@ -1260,12 +1356,14 @@ export class OfficeHub extends DurableObject<Env> {
         totalTasksCompleted,
         errorRatePct,
         avgLatencyMs: Math.round(totals?.avg_latency ?? 0),
-        todayTokens: todayTotals?.tokens ?? 0,
-        todayCostUsd: Number((todayTotals?.cost ?? 0).toFixed(4)),
+        todayTokens,
+        todayCostUsd,
         todayTasksCompleted: totalTasksCompleted,
+        usageRemainingPct,
         byModel,
         timeline: Array.from(bucketMap.values()).slice(-12),
       },
+      lastBotUpdateAt,
       serverTime: new Date().toISOString(),
     };
   }
@@ -1283,98 +1381,217 @@ export class OfficeHub extends DurableObject<Env> {
     const now = new Date().toISOString();
 
     const demoReports: ReportPayload[] = [
+      // Command & Media (Crimson Room)
       {
-        botId: "atlas-research",
-        name: "Atlas",
-        role: "Market Research",
-        avatarColor: "#38bdf8",
+        botId: "audience-bot",
+        name: "Audience",
+        role: "Audience Researcher",
+        department: "Command & Media",
+        avatarColor: "#ec4899",
         deskIndex: 0,
         status: "working",
-        task: "Scanning X threads & SEC filings for Q4 AI infra spend",
+        task: "Reviewing retention curves & viewer feedback",
         model: "grok-4",
         done: true,
-        usage: { model: "grok-4", tokensIn: 14200, tokensOut: 3800, latencyMs: 1420 },
-        message: "Compiled 18 competitor signals; drafting executive brief.",
+        simulated: true,
+        usage: { model: "grok-4", tokensIn: 11200, tokensOut: 3400, latencyMs: 1180 },
       },
       {
-        botId: "nova-eng",
-        name: "Nova",
-        role: "Code & DevOps",
-        avatarColor: "#a78bfa",
+        botId: "architect-bot",
+        name: "Architect",
+        role: "Content Strategist",
+        department: "Command & Media",
+        avatarColor: "#eab308",
         deskIndex: 1,
-        status: "waiting",
-        task: "PR #142 ready — waiting for production deploy approval",
+        status: "working",
+        task: "Packaging weekly launch brief",
+        model: "grok-4.7",
+        done: true,
+        simulated: true,
+        usage: { model: "grok-4.7", tokensIn: 9400, tokensOut: 2800, latencyMs: 920 },
+      },
+      // Executive Studio (Plum Room)
+      {
+        botId: "mel-chief",
+        name: "Mel",
+        role: "Chief of Staff",
+        department: "Executive Studio",
+        avatarColor: "#f97316",
+        deskIndex: 2,
+        status: "working",
+        task: "Coordinating morning priorities across 6 teams",
         model: "grok-4.20-multi-agent",
         done: true,
-        usage: {
-          model: "grok-4.20-multi-agent",
-          tokensIn: 22400,
-          tokensOut: 6150,
-          latencyMs: 2150,
-        },
+        simulated: true,
+        usage: { model: "grok-4.20-multi-agent", tokensIn: 14800, tokensOut: 4100, latencyMs: 1650 },
+      },
+      // Analytics Lab (Teal Room)
+      {
+        botId: "stats-bot",
+        name: "Stats",
+        role: "Metrics Analyst",
+        department: "Analytics Lab",
+        avatarColor: "#22c55e",
+        deskIndex: 3,
+        status: "working",
+        task: "Auditing funnel conversion & latency trends",
+        model: "grok-4",
+        done: true,
+        simulated: true,
+        usage: { model: "grok-4", tokensIn: 8900, tokensOut: 2200, latencyMs: 1050 },
+      },
+      {
+        botId: "vidperf-bot",
+        name: "VidPerf",
+        role: "Performance Tracker",
+        department: "Analytics Lab",
+        avatarColor: "#38bdf8",
+        deskIndex: 4,
+        status: "working",
+        task: "Comparing CTR across 4 thumbnail variants",
+        model: "grok-3-mini",
+        done: true,
+        simulated: true,
+        usage: { model: "grok-3-mini", tokensIn: 6200, tokensOut: 1700, latencyMs: 420 },
+      },
+      {
+        botId: "conclusions-bot",
+        name: "Conclusions",
+        role: "Synthesis Agent",
+        department: "Analytics Lab",
+        avatarColor: "#94a3b8",
+        deskIndex: 5,
+        status: "idle",
+        task: "Relaxing in central lounge",
+        model: "grok-3-mini",
+        done: true,
+        simulated: true,
+        usage: { model: "grok-3-mini", tokensIn: 3100, tokensOut: 900, latencyMs: 390 },
+      },
+      // Engineering Lab (Purple Rooms)
+      {
+        botId: "kyle-coo",
+        name: "Kyle",
+        role: "Engineering Lead",
+        department: "Engineering Lab",
+        avatarColor: "#10b981",
+        deskIndex: 6,
+        status: "waiting",
+        task: "PR #142 ready — waiting for deploy sign-off",
+        model: "grok-4.20-multi-agent",
+        done: true,
+        simulated: true,
+        usage: { model: "grok-4.20-multi-agent", tokensIn: 16500, tokensOut: 4900, latencyMs: 1840 },
         need: {
           title: "Approve production Worker deploy (PR #142)",
-          description:
-            "All 47 unit tests passed. Ready to roll out rate-limiter middleware to prod.",
+          description: "All 47 unit tests passed. Ready to roll out edge rate-limiter.",
           severity: "approval",
         },
       },
       {
-        botId: "pulse-support",
-        name: "Pulse",
-        role: "Customer Triage",
-        avatarColor: "#34d399",
-        deskIndex: 2,
+        botId: "systems-bot",
+        name: "Systems",
+        role: "Systems Analyst",
+        department: "Engineering Lab",
+        avatarColor: "#a855f7",
+        deskIndex: 7,
         status: "working",
-        task: "Reproducing 4 Zendesk tickets & drafting replies",
+        task: "Profiling Durable Object SQLite query speed",
+        model: "grok-4",
+        done: true,
+        simulated: true,
+        usage: { model: "grok-4", tokensIn: 7600, tokensOut: 2100, latencyMs: 980 },
+      },
+      {
+        botId: "accuracy-bot",
+        name: "Accuracy",
+        role: "QA & Verification",
+        department: "Engineering Lab",
+        avatarColor: "#60a5fa",
+        deskIndex: 8,
+        status: "meeting",
+        collaboratingWith: "architect-bot",
+        task: "Syncing with Architect on test coverage",
+        model: "grok-4.7",
+        done: true,
+        simulated: true,
+        usage: { model: "grok-4.7", tokensIn: 5400, tokensOut: 1500, latencyMs: 740 },
+      },
+      // AI News Desk (Gold Room)
+      {
+        botId: "jacob-news",
+        name: "Jacob",
+        role: "AI News Scout",
+        department: "AI News Desk",
+        avatarColor: "#06b6d4",
+        deskIndex: 9,
+        status: "working",
+        task: "Scanning live X threads & AI announcements",
+        model: "grok-4.7",
+        done: true,
+        simulated: true,
+        usage: { model: "grok-4.7", tokensIn: 8200, tokensOut: 2500, latencyMs: 810 },
+      },
+      {
+        botId: "johnny-editor",
+        name: "Johnny",
+        role: "Topic Curator",
+        department: "AI News Desk",
+        avatarColor: "#818cf8",
+        deskIndex: 10,
+        status: "working",
+        task: "Sorting daily briefing topics by relevance",
         model: "grok-3-mini",
         done: true,
-        usage: { model: "grok-3-mini", tokensIn: 8400, tokensOut: 2900, latencyMs: 540 },
-        message: "Resolved 3 billing inquiries automatically.",
+        simulated: true,
+        usage: { model: "grok-3-mini", tokensIn: 4800, tokensOut: 1400, latencyMs: 460 },
       },
+      // Ops & Finance
       {
         botId: "ledger-ops",
         name: "Ledger",
-        role: "Finance & Expenses",
+        role: "Finance & Billing",
+        department: "Ops & Finance",
         avatarColor: "#fbbf24",
-        deskIndex: 3,
+        deskIndex: 11,
         status: "error",
-        task: "Stripe webhook signature mismatch on invoice sync",
+        task: "Stripe webhook secret expired on invoice sync",
         model: "grok-4",
-        usage: { model: "grok-4", tokensIn: 5100, tokensOut: 950, latencyMs: 1180, error: true },
+        simulated: true,
+        usage: { model: "grok-4", tokensIn: 3200, tokensOut: 600, latencyMs: 1120, error: true },
         need: {
-          title: "Rotated Stripe webhook secret needed",
-          description:
-            "Received HTTP 400 on /webhooks/stripe. Please update STRIPE_WHSEC in Secrets.",
+          title: "Update Stripe webhook secret",
+          description: "Received HTTP 400 on /webhooks/stripe. Rotate STRIPE_WHSEC in Secrets.",
           severity: "error",
         },
       },
       {
-        botId: "echo-growth",
-        name: "Echo",
-        role: "Growth & Outreach",
-        avatarColor: "#f472b6",
-        deskIndex: 4,
-        status: "meeting",
-        collaboratingWith: "atlas-research",
-        task: "Syncing with Atlas on outbound campaign messaging",
-        model: "grok-4.7",
-        done: true,
-        usage: { model: "grok-4.7", tokensIn: 9800, tokensOut: 3200, latencyMs: 890 },
-        message: "Collaborating with Atlas on Q4 product launch angles.",
-      },
-      {
-        botId: "scribe-docs",
-        name: "Scribe",
-        role: "Docs & Knowledge",
-        avatarColor: "#22d3ee",
-        deskIndex: 5,
+        botId: "planner-ops",
+        name: "Planner",
+        role: "Notion & Sprints",
+        department: "Ops & Finance",
+        avatarColor: "#f43f5e",
+        deskIndex: 12,
         status: "idle",
-        task: "Recharging in lounge — awaiting changelog trigger",
+        task: "Taking a coffee break in central lounge",
         model: "grok-3-mini",
         done: true,
-        usage: { model: "grok-3-mini", tokensIn: 3100, tokensOut: 1100, latencyMs: 410 },
-        message: "Finished updating API reference docs; heading to lounge.",
+        simulated: true,
+        usage: { model: "grok-3-mini", tokensIn: 2400, tokensOut: 800, latencyMs: 370 },
+      },
+      {
+        botId: "thangs-scout",
+        name: "Thangs",
+        role: "Asset Monitor",
+        department: "Ops & Finance",
+        avatarColor: "#e879f9",
+        deskIndex: 13,
+        status: "idle",
+        task: "Chatting in lounge — awaiting next cron trigger",
+        model: "grok-3-mini",
+        done: true,
+        simulated: true,
+        usage: { model: "grok-3-mini", tokensIn: 1900, tokensOut: 550, latencyMs: 340 },
       },
     ];
 
@@ -1385,27 +1602,27 @@ export class OfficeHub extends DurableObject<Env> {
     const demoObjectives = [
       {
         id: "obj-q4-intel",
-        title: "Q4 Competitor & Pricing Intelligence Brief",
-        owner: "atlas-research",
-        progress: 75,
-        target: "20 companies analyzed",
+        title: "Daily AI News & Competitor Brief",
+        owner: "jacob-news",
+        progress: 80,
+        target: "20 signals curated",
         status: "active",
       },
       {
-        id: "obj-zero-downtime",
-        title: "Deploy Edge Rate-Limiter Middleware (PR #142)",
-        owner: "nova-eng",
+        id: "obj-edge-deploy",
+        title: "Ship Edge Rate-Limiter Middleware (PR #142)",
+        owner: "kyle-coo",
         progress: 90,
-        target: "Awaiting human sign-off",
+        target: "Awaiting deploy sign-off",
         status: "active",
       },
       {
-        id: "obj-inbox-zero",
-        title: "Keep Support Triage SLA under 15 minutes",
-        owner: "pulse-support",
-        progress: 100,
-        target: "100% tickets triaged",
-        status: "completed",
+        id: "obj-analytics-audit",
+        title: "Q4 Retention & Funnel Optimization",
+        owner: "stats-bot",
+        progress: 65,
+        target: "4 experiments live",
+        status: "active",
       },
     ];
 
@@ -1437,7 +1654,7 @@ export class OfficeHub extends DurableObject<Env> {
     }
 
     const pick = bots[Math.floor(Math.random() * bots.length)];
-    const statuses: BotStatus[] = ["working", "working", "idle", "meeting", "waiting"];
+    const statuses: BotStatus[] = ["working", "working", "working", "idle", "meeting", "waiting"];
     const nextStatus = statuses[Math.floor(Math.random() * statuses.length)];
     const otherBots = bots.filter((b) => b.id !== pick.id);
     const partner =
@@ -1447,21 +1664,23 @@ export class OfficeHub extends DurableObject<Env> {
 
     const sampleTasks: Record<BotStatus, string[]> = {
       working: [
-        "Analyzing live X sentiment stream",
-        "Running integration test suite",
-        "Summarizing weekly KPI spreadsheet",
-        "Drafting customer onboarding sequence",
+        "Scanning AI news & live X trends",
+        "Comparing two build benchmarks",
+        "Packaging a weekly executive brief",
+        "Scouting new growth opportunities",
+        "Drafting customer onboarding replies",
       ],
       idle: [
-        "Grabbing espresso in the lounge",
-        "Monitoring inbox for new triggers",
+        "Grabbing espresso in central lounge",
+        "Waiting for next scheduled trigger",
       ],
       meeting: [
-        "Reviewing handoff notes at holo-table",
-        "Coordinating sprint priorities with team",
+        "Reviewing sprint handoff in conference room",
+        "Coordinating campaign priorities with team",
       ],
-      waiting: ["Waiting for human sign-off on external email"],
+      waiting: ["Waiting for human sign-off on external publish"],
       error: ["API rate limit exceeded — retrying"],
+      no_report: ["No report received"],
     };
 
     const tasks = sampleTasks[nextStatus];
@@ -1473,17 +1692,18 @@ export class OfficeHub extends DurableObject<Env> {
       task,
       collaboratingWith: partner,
       done: nextStatus === "idle",
+      simulated: true,
       usage: {
         model: pick.model,
-        tokensIn: 900 + Math.floor(Math.random() * 4500),
-        tokensOut: 300 + Math.floor(Math.random() * 1600),
-        latencyMs: 380 + Math.floor(Math.random() * 1200),
+        tokensIn: 600 + Math.floor(Math.random() * 2600),
+        tokensOut: 200 + Math.floor(Math.random() * 900),
+        latencyMs: 380 + Math.floor(Math.random() * 1100),
       },
       need:
         nextStatus === "waiting"
           ? {
               title: `Approve action from ${pick.name}`,
-              description: `${pick.name} is ready to send an external update and requests confirmation.`,
+              description: `${pick.name} is ready to publish an external update and requests confirmation.`,
               severity: "approval",
             }
           : undefined,
@@ -1491,11 +1711,6 @@ export class OfficeHub extends DurableObject<Env> {
   }
 }
 
-/**
- * Transparent xAI Proxy:
- * Point any Grok / OpenAI SDK baseURL to https://<your-office>/proxy/<botId>/v1
- * Automatically logs tokens, latency, model, and errors to OfficeHub with ZERO extra Grok tokens!
- */
 async function handleXaiProxy(
   request: Request,
   env: Env,
@@ -1521,7 +1736,7 @@ async function handleXaiProxy(
       const parsed = JSON.parse(new TextDecoder().decode(bodyBuffer)) as { model?: string };
       if (parsed.model) requestModel = parsed.model;
     } catch {
-      // Ignore non-JSON body
+      // Ignore non-JSON
     }
   }
 
@@ -1561,7 +1776,7 @@ async function handleXaiProxy(
           }
           if (data.error?.message) errDetail = data.error.message;
         } catch {
-          // Ignore JSON parse errors
+          // Ignore parse errors
         }
 
         const stub = env.OFFICE_HUB.get(env.OFFICE_HUB.idFromName("hq"));
@@ -1608,7 +1823,7 @@ async function checkOfficePassword(request: Request, env: Env): Promise<Response
     url.pathname.startsWith("/api/bot/") ||
     url.pathname.startsWith("/proxy/")
   ) {
-    return null; // Bot endpoints use REPORT_SECRET instead
+    return null;
   }
   if (url.pathname === "/auth" && request.method === "POST") {
     return null;
@@ -1626,12 +1841,12 @@ async function checkOfficePassword(request: Request, env: Env): Promise<Response
 
   return withSecurityHeaders(
     new Response(
-      `<!doctype html><html><body style="font-family:system-ui;background:#090d16;color:#e2e8f0;display:grid;place-items:center;height:100vh;margin:0">
-        <form method="POST" action="/auth" style="background:#111827;padding:2rem;border-radius:14px;border:1px solid #23304c;width:330px;box-shadow:0 20px 50px rgba(0,0,0,0.5)">
-          <h2 style="margin:0 0 0.4rem">Grok Bot HQ</h2>
-          <p style="margin:0 0 1.2rem;color:#8b9bb4;font-size:0.9rem">Enter your office password to unlock the command center.</p>
-          <input type="password" name="password" placeholder="Office password" required autofocus style="width:100%;box-sizing:border-box;padding:0.7rem;border-radius:8px;border:1px solid #334155;background:#090d16;color:#fff;margin-bottom:1rem" />
-          <button type="submit" style="width:100%;padding:0.7rem;border-radius:8px;border:none;background:#38bdf8;color:#062033;font-weight:700;cursor:pointer">Unlock HQ</button>
+      `<!doctype html><html><body style="font-family:system-ui;background:#0a0e18;color:#e2e8f0;display:grid;place-items:center;height:100vh;margin:0">
+        <form method="POST" action="/auth" style="background:#121826;padding:2rem;border-radius:14px;border:1px solid #24304a;width:330px;box-shadow:0 20px 50px rgba(0,0,0,0.5)">
+          <h2 style="margin:0 0 0.4rem">Grok Bot Office</h2>
+          <p style="margin:0 0 1.2rem;color:#8b9bb4;font-size:0.9rem">Enter your office password to unlock HQ.</p>
+          <input type="password" name="password" placeholder="Office password" required autofocus style="width:100%;box-sizing:border-box;padding:0.7rem;border-radius:8px;border:1px solid #334155;background:#0a0e18;color:#fff;margin-bottom:1rem" />
+          <button type="submit" style="width:100%;padding:0.7rem;border-radius:8px;border:none;background:#f59e0b;color:#1c1917;font-weight:700;cursor:pointer">Enter Office</button>
         </form>
       </body></html>`,
       { status: 401, headers: { "content-type": "text/html; charset=utf-8" } }
@@ -1643,7 +1858,6 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    // Transparent xAI API proxy: /proxy/<botId>/v1/...
     const proxyMatch = url.pathname.match(/^\/proxy\/([^/]+)(\/v1\/.*)$/);
     if (proxyMatch) {
       if (env.REPORT_SECRET) {
@@ -1686,7 +1900,6 @@ export default {
     const authGate = await checkOfficePassword(request, env);
     if (authGate) return authGate;
 
-    // WebSockets & API routed to singleton OfficeHub Durable Object
     if (url.pathname === "/ws" || url.pathname.startsWith("/api/")) {
       const id = env.OFFICE_HUB.idFromName("hq");
       const stub = env.OFFICE_HUB.get(id);

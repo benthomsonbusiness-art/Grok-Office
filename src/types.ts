@@ -1,4 +1,4 @@
-export type BotStatus = "working" | "waiting" | "error" | "idle" | "meeting";
+export type BotStatus = "working" | "waiting" | "error" | "idle" | "meeting" | "no_report";
 
 export type NeedSeverity = "approval" | "input" | "error" | "budget";
 
@@ -12,6 +12,7 @@ export interface BotRecord {
   id: string;
   name: string;
   role: string;
+  department: string;
   avatarColor: string;
   deskIndex: number;
   status: BotStatus;
@@ -44,8 +45,11 @@ export interface ActivityLog {
   id: string;
   botId: string;
   botName: string;
+  botColor: string;
+  status: BotStatus;
   level: LogLevel;
   message: string;
+  simulated: boolean;
   createdAt: string;
 }
 
@@ -100,26 +104,31 @@ export interface OfficeSnapshot {
     todayTokens: number;
     todayCostUsd: number;
     todayTasksCompleted: number;
+    usageRemainingPct: number;
     byModel: UsageByModel[];
     timeline: UsageBucket[];
   };
+  lastBotUpdateAt: string | null;
   serverTime: string;
 }
 
 export interface ReportPayload {
   botId?: string;
-  b?: string; // compact alias for botId
+  b?: string;
   name?: string;
   role?: string;
+  department?: string;
+  d?: string;
   avatarColor?: string;
   deskIndex?: number;
   status?: BotStatus | string;
-  s?: string; // compact alias for status
+  s?: string;
   task?: string;
-  t?: string; // compact alias for task
+  t?: string;
   model?: string;
-  m?: string; // compact alias for model
-  done?: boolean; // marks previous/current task completed
+  m?: string;
+  done?: boolean;
+  simulated?: boolean;
   collaboratingWith?: string | null;
   message?: string;
   level?: LogLevel;
