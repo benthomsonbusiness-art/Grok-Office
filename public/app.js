@@ -6,7 +6,6 @@
   let actFilter = "all";
   let actSearch = "";
   let chartMode = "tokens";
-  let simTimer = null;
   let soundEnabled = localStorage.getItem("grok_hq_chime") !== "off";
   let knownOpenNeedIds = new Set();
   let firstSnapshotLoaded = false;
@@ -198,14 +197,13 @@
         ? "CAP LOCKED (429)"
         : `Budget ${usageSummary?.usageRemainingPct ?? 100}% left`;
 
-    const isSim = Boolean(simTimer) || snapshot.activityLogs.some((l) => l.simulated);
     const pill = document.getElementById("mode-pill");
     if (usageSummary?.budgetLocked) {
       pill.textContent = "CAP STOP";
       pill.className = "mode-pill locked";
     } else {
-      pill.textContent = isSim ? "SIMULATED" : "LIVE";
-      pill.className = `mode-pill ${isSim ? "sim" : "live"}`;
+      pill.textContent = "LIVE";
+      pill.className = "mode-pill live";
     }
   }
 
@@ -602,42 +600,12 @@
     });
   });
 
-  // Simulation Toggle
-  document.getElementById("btn-sim").addEventListener("click", async (e) => {
-    const btn = e.currentTarget;
-    if (simTimer) {
-      clearInterval(simTimer);
-      simTimer = null;
-      btn.textContent = "Simulate";
-      btn.classList.remove("active");
-      renderRoomCounts();
-    } else {
-      if (!snapshot || snapshot.bots.length === 0) {
-        await fetch("/api/demo/seed", { method: "POST" });
-      }
-      simTimer = setInterval(() => fetch("/api/demo/tick", { method: "POST" }), 3200);
-      btn.textContent = "Stop simulation";
-      btn.classList.add("active");
-      renderRoomCounts();
-    }
-  });
-
-  document.getElementById("btn-seed-mini").addEventListener("click", () => {
-    fetch("/api/demo/seed", { method: "POST" });
-  });
-
-  // Clear Demo / Office Data
+  // Reset Office Data (with confirmation so real bots aren't accidentally wiped)
   async function clearOfficeData() {
-    if (simTimer) {
-      clearInterval(simTimer);
-      simTimer = null;
-      const simBtn = document.getElementById("btn-sim");
-      simBtn.textContent = "Simulate";
-      simBtn.classList.remove("active");
-    }
+    if (!confirm("Reset the office and clear all bots, logs, and usage history?")) return;
     selectedBotId = null;
     knownOpenNeedIds.clear();
-    await fetch("/api/demo/reset", { method: "POST" });
+    await fetch("/api/office/reset", { method: "POST" });
   }
 
   document.getElementById("btn-clear-demo").addEventListener("click", clearOfficeData);

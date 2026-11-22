@@ -271,6 +271,31 @@ export class OfficeHub extends DurableObject<Env> {
     if (!logCols.includes("task_done")) {
       this.sql.exec("ALTER TABLE activity_logs ADD COLUMN task_done INTEGER NOT NULL DEFAULT 0");
     }
+
+    // Automatically purge simulated/fake demo bots once in production while keeping real bots
+    const purgedFlag = this.sql
+      .exec<{ value: string }>("SELECT value FROM office_settings WHERE key = 'purged_demo_v1'")
+      .toArray()[0];
+    if (!purgedFlag) {
+      this.sql.exec(`
+        DELETE FROM bots
+        WHERE id NOT IN (SELECT DISTINCT bot_id FROM activity_logs WHERE simulated = 0)
+          AND (
+            id IN (SELECT DISTINCT bot_id FROM activity_logs WHERE simulated = 1)
+            OR id IN (
+              'audience-bot','architect-bot','mel-chief','stats-bot','vidperf-bot',
+              'conclusions-bot','kyle-coo','systems-bot','accuracy-bot','jacob-news',
+              'johnny-editor','ledger-ops','planner-ops','thangs-scout',
+              'atlas-bot','nova-bot','pulse-bot','ledger-bot','echo-bot','scribe-bot'
+            )
+          );
+        DELETE FROM activity_logs WHERE simulated = 1;
+        DELETE FROM pending_needs WHERE bot_id != 'system' AND bot_id NOT IN (SELECT id FROM bots);
+        DELETE FROM usage_events WHERE bot_id NOT IN (SELECT id FROM bots);
+        DELETE FROM objectives WHERE id IN ('obj-q4-intel', 'obj-edge-deploy', 'obj-analytics-audit');
+        INSERT OR REPLACE INTO office_settings (key, value) VALUES ('purged_demo_v1', 'true');
+      `);
+    }
   }
 
   async alarm(): Promise<void> {
@@ -758,19 +783,10 @@ export class OfficeHub extends DurableObject<Env> {
       });
     }
 
-    if (url.pathname === "/api/demo/seed" && request.method === "POST") {
-      await this.seedDemoOffice();
-      this.broadcastSnapshot();
-      return jsonResponse({ ok: true, snapshot: this.getSnapshot() });
-    }
-
-    if (url.pathname === "/api/demo/tick" && request.method === "POST") {
-      await this.simulateTick();
-      this.broadcastSnapshot();
-      return jsonResponse({ ok: true, snapshot: this.getSnapshot() });
-    }
-
-    if (url.pathname === "/api/demo/reset" && request.method === "POST") {
+    if (
+      (url.pathname === "/api/office/reset" || url.pathname === "/api/demo/reset") &&
+      request.method === "POST"
+    ) {
       this.resetOffice();
       this.broadcastSnapshot();
       return jsonResponse({ ok: true, snapshot: this.getSnapshot() });
@@ -1588,340 +1604,6 @@ export class OfficeHub extends DurableObject<Env> {
     this.sql.exec("DELETE FROM usage_events");
     this.sql.exec("DELETE FROM activity_logs");
     this.sql.exec("DELETE FROM objectives");
-  }
-
-  private async seedDemoOffice(): Promise<void> {
-    this.resetOffice();
-    const now = new Date().toISOString();
-
-    const demoReports: ReportPayload[] = [
-      // Command & Media (Crimson Room)
-      {
-        botId: "audience-bot",
-        name: "Audience",
-        role: "Audience Researcher",
-        department: "Command & Media",
-        avatarColor: "#ec4899",
-        deskIndex: 0,
-        status: "working",
-        task: "Reviewing retention curves & viewer feedback",
-        model: "grok-4",
-        done: true,
-        simulated: true,
-        usage: { model: "grok-4", tokensIn: 11200, tokensOut: 3400, latencyMs: 1180 },
-      },
-      {
-        botId: "architect-bot",
-        name: "Architect",
-        role: "Content Strategist",
-        department: "Command & Media",
-        avatarColor: "#eab308",
-        deskIndex: 1,
-        status: "working",
-        task: "Packaging weekly launch brief",
-        model: "grok-4.7",
-        done: true,
-        simulated: true,
-        usage: { model: "grok-4.7", tokensIn: 9400, tokensOut: 2800, latencyMs: 920 },
-      },
-      // Executive Studio (Plum Room)
-      {
-        botId: "mel-chief",
-        name: "Mel",
-        role: "Chief of Staff",
-        department: "Executive Studio",
-        avatarColor: "#f97316",
-        deskIndex: 2,
-        status: "working",
-        task: "Coordinating morning priorities across 6 teams",
-        model: "grok-4.20-multi-agent",
-        done: true,
-        simulated: true,
-        usage: { model: "grok-4.20-multi-agent", tokensIn: 14800, tokensOut: 4100, latencyMs: 1650 },
-      },
-      // Analytics Lab (Teal Room)
-      {
-        botId: "stats-bot",
-        name: "Stats",
-        role: "Metrics Analyst",
-        department: "Analytics Lab",
-        avatarColor: "#22c55e",
-        deskIndex: 3,
-        status: "working",
-        task: "Auditing funnel conversion & latency trends",
-        model: "grok-4",
-        done: true,
-        simulated: true,
-        usage: { model: "grok-4", tokensIn: 8900, tokensOut: 2200, latencyMs: 1050 },
-      },
-      {
-        botId: "vidperf-bot",
-        name: "VidPerf",
-        role: "Performance Tracker",
-        department: "Analytics Lab",
-        avatarColor: "#38bdf8",
-        deskIndex: 4,
-        status: "working",
-        task: "Comparing CTR across 4 thumbnail variants",
-        model: "grok-3-mini",
-        done: true,
-        simulated: true,
-        usage: { model: "grok-3-mini", tokensIn: 6200, tokensOut: 1700, latencyMs: 420 },
-      },
-      {
-        botId: "conclusions-bot",
-        name: "Conclusions",
-        role: "Synthesis Agent",
-        department: "Analytics Lab",
-        avatarColor: "#94a3b8",
-        deskIndex: 5,
-        status: "idle",
-        task: "Relaxing in central lounge",
-        model: "grok-3-mini",
-        done: true,
-        simulated: true,
-        usage: { model: "grok-3-mini", tokensIn: 3100, tokensOut: 900, latencyMs: 390 },
-      },
-      // Engineering Lab (Purple Rooms)
-      {
-        botId: "kyle-coo",
-        name: "Kyle",
-        role: "Engineering Lead",
-        department: "Engineering Lab",
-        avatarColor: "#10b981",
-        deskIndex: 6,
-        status: "waiting",
-        task: "PR #142 ready — waiting for deploy sign-off",
-        model: "grok-4.20-multi-agent",
-        done: true,
-        simulated: true,
-        usage: { model: "grok-4.20-multi-agent", tokensIn: 16500, tokensOut: 4900, latencyMs: 1840 },
-        need: {
-          title: "Approve production Worker deploy (PR #142)",
-          description: "All 47 unit tests passed. Ready to roll out edge rate-limiter.",
-          severity: "approval",
-        },
-      },
-      {
-        botId: "systems-bot",
-        name: "Systems",
-        role: "Systems Analyst",
-        department: "Engineering Lab",
-        avatarColor: "#a855f7",
-        deskIndex: 7,
-        status: "working",
-        task: "Profiling Durable Object SQLite query speed",
-        model: "grok-4",
-        done: true,
-        simulated: true,
-        usage: { model: "grok-4", tokensIn: 7600, tokensOut: 2100, latencyMs: 980 },
-      },
-      {
-        botId: "accuracy-bot",
-        name: "Accuracy",
-        role: "QA & Verification",
-        department: "Engineering Lab",
-        avatarColor: "#60a5fa",
-        deskIndex: 8,
-        status: "meeting",
-        collaboratingWith: "architect-bot",
-        task: "Syncing with Architect on test coverage",
-        model: "grok-4.7",
-        done: true,
-        simulated: true,
-        usage: { model: "grok-4.7", tokensIn: 5400, tokensOut: 1500, latencyMs: 740 },
-      },
-      // AI News Desk (Gold Room)
-      {
-        botId: "jacob-news",
-        name: "Jacob",
-        role: "AI News Scout",
-        department: "AI News Desk",
-        avatarColor: "#06b6d4",
-        deskIndex: 9,
-        status: "working",
-        task: "Scanning live X threads & AI announcements",
-        model: "grok-4.7",
-        done: true,
-        simulated: true,
-        usage: { model: "grok-4.7", tokensIn: 8200, tokensOut: 2500, latencyMs: 810 },
-      },
-      {
-        botId: "johnny-editor",
-        name: "Johnny",
-        role: "Topic Curator",
-        department: "AI News Desk",
-        avatarColor: "#818cf8",
-        deskIndex: 10,
-        status: "working",
-        task: "Sorting daily briefing topics by relevance",
-        model: "grok-3-mini",
-        done: true,
-        simulated: true,
-        usage: { model: "grok-3-mini", tokensIn: 4800, tokensOut: 1400, latencyMs: 460 },
-      },
-      // Ops & Finance
-      {
-        botId: "ledger-ops",
-        name: "Ledger",
-        role: "Finance & Billing",
-        department: "Ops & Finance",
-        avatarColor: "#fbbf24",
-        deskIndex: 11,
-        status: "error",
-        task: "Stripe webhook secret expired on invoice sync",
-        model: "grok-4",
-        simulated: true,
-        usage: { model: "grok-4", tokensIn: 3200, tokensOut: 600, latencyMs: 1120, error: true },
-        need: {
-          title: "Update Stripe webhook secret",
-          description: "Received HTTP 400 on /webhooks/stripe. Rotate STRIPE_WHSEC in Secrets.",
-          severity: "error",
-        },
-      },
-      {
-        botId: "planner-ops",
-        name: "Planner",
-        role: "Notion & Sprints",
-        department: "Ops & Finance",
-        avatarColor: "#f43f5e",
-        deskIndex: 12,
-        status: "idle",
-        task: "Taking a coffee break in central lounge",
-        model: "grok-3-mini",
-        done: true,
-        simulated: true,
-        usage: { model: "grok-3-mini", tokensIn: 2400, tokensOut: 800, latencyMs: 370 },
-      },
-      {
-        botId: "thangs-scout",
-        name: "Thangs",
-        role: "Asset Monitor",
-        department: "Ops & Finance",
-        avatarColor: "#e879f9",
-        deskIndex: 13,
-        status: "no_report",
-        task: "Docked in Standby — scheduled nightly cron",
-        model: "grok-3-mini",
-        done: true,
-        simulated: true,
-        usage: { model: "grok-3-mini", tokensIn: 1900, tokensOut: 550, latencyMs: 340 },
-      },
-    ];
-
-    for (const r of demoReports) {
-      await this.handleReport(r);
-    }
-
-    const demoObjectives = [
-      {
-        id: "obj-q4-intel",
-        title: "Daily AI News & Competitor Brief",
-        owner: "jacob-news",
-        progress: 80,
-        target: "20 signals curated",
-        status: "active",
-      },
-      {
-        id: "obj-edge-deploy",
-        title: "Ship Edge Rate-Limiter Middleware (PR #142)",
-        owner: "kyle-coo",
-        progress: 90,
-        target: "Awaiting deploy sign-off",
-        status: "active",
-      },
-      {
-        id: "obj-analytics-audit",
-        title: "Q4 Retention & Funnel Optimization",
-        owner: "stats-bot",
-        progress: 65,
-        target: "4 experiments live",
-        status: "active",
-      },
-    ];
-
-    for (const o of demoObjectives) {
-      this.sql.exec(
-        `INSERT INTO objectives (id, title, owner_bot_id, progress, target_label, status, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        o.id,
-        o.title,
-        o.owner,
-        o.progress,
-        o.target,
-        o.status,
-        now
-      );
-    }
-  }
-
-  private async simulateTick(): Promise<void> {
-    const bots = this.sql
-      .exec<{ id: string; name: string; status: BotStatus; model: string }>(
-        "SELECT id, name, status, model FROM bots"
-      )
-      .toArray();
-
-    if (bots.length === 0) {
-      await this.seedDemoOffice();
-      return;
-    }
-
-    const pick = bots[Math.floor(Math.random() * bots.length)];
-    const statuses: BotStatus[] = ["working", "working", "working", "idle", "meeting", "waiting"];
-    const nextStatus = statuses[Math.floor(Math.random() * statuses.length)];
-    const otherBots = bots.filter((b) => b.id !== pick.id);
-    const partner =
-      nextStatus === "meeting" && otherBots.length > 0
-        ? otherBots[Math.floor(Math.random() * otherBots.length)].id
-        : null;
-
-    const sampleTasks: Record<BotStatus, string[]> = {
-      working: [
-        "Scanning AI news & live X trends",
-        "Comparing two build benchmarks",
-        "Packaging a weekly executive brief",
-        "Scouting new growth opportunities",
-        "Drafting customer onboarding replies",
-      ],
-      idle: [
-        "Grabbing espresso in central lounge",
-        "Waiting for next scheduled trigger",
-      ],
-      meeting: [
-        "Reviewing sprint handoff in conference room",
-        "Coordinating campaign priorities with team",
-      ],
-      waiting: ["Waiting for human sign-off on external publish"],
-      error: ["API rate limit exceeded — retrying"],
-      no_report: ["No report received"],
-    };
-
-    const tasks = sampleTasks[nextStatus];
-    const task = tasks[Math.floor(Math.random() * tasks.length)];
-
-    await this.handleReport({
-      botId: pick.id,
-      status: nextStatus,
-      task,
-      collaboratingWith: partner,
-      done: nextStatus === "idle",
-      simulated: true,
-      usage: {
-        model: pick.model,
-        tokensIn: 600 + Math.floor(Math.random() * 2600),
-        tokensOut: 200 + Math.floor(Math.random() * 900),
-        latencyMs: 380 + Math.floor(Math.random() * 1100),
-      },
-      need:
-        nextStatus === "waiting"
-          ? {
-              title: `Approve action from ${pick.name}`,
-              description: `${pick.name} is ready to publish an external update and requests confirmation.`,
-              severity: "approval",
-            }
-          : undefined,
-    });
   }
 }
 
