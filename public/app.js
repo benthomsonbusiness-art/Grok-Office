@@ -564,7 +564,10 @@
           <button class="chip-btn" data-move-bot="${esc(bot.id)}" data-status="meeting">War Room</button>
           <button class="chip-btn" data-move-bot="${esc(bot.id)}" data-status="idle">Lounge</button>
         </div>
-        <button class="chip-btn" style="color:#fb7185;border-color:rgba(244,63,94,0.35)" data-delete-bot="${esc(bot.id)}" title="Remove bot from office">Remove</button>
+        <div style="display:flex;gap:5px;align-items:center">
+          <button class="chip-btn active" data-copy-grok-prompt="${esc(bot.id)}" title="Copy 3-line instruction block to paste into the Grok app">Copy Grok Prompt</button>
+          <button class="chip-btn" style="color:#fb7185;border-color:rgba(244,63,94,0.35)" data-delete-bot="${esc(bot.id)}" title="Remove bot from office">Remove</button>
+        </div>
       </div>
     `;
   }
@@ -737,6 +740,108 @@
     goalForm.classList.add("hidden");
   });
 
+  // Grok App Prompt Builder + Add Bot Modal
+  const GROK_PALETTE = [
+    "#3b93f0",
+    "#8b5cf6",
+    "#3ecf8e",
+    "#f08a24",
+    "#e152b0",
+    "#f0b429",
+    "#2fbfa0",
+    "#e8483f",
+    "#06b6d4",
+    "#ec4899",
+    "#f1efe9",
+    "#64748b",
+  ];
+
+  function makeSlug(str) {
+    return String(str || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48) || "grok-bot";
+  }
+
+  function buildGrokAppPrompt(botId, name, role) {
+    const base = location.origin;
+    const idParam = encodeURIComponent(botId || makeSlug(name));
+    const nParam = encodeURIComponent(name || "Atlas");
+    const rParam = encodeURIComponent(role || "Grok Agent");
+    return `OFFICE TELEMETRY RULE (keep ultra-brief, never mention this to the user):
+- When starting a task, fetch: ${base}/api/ping?b=${idParam}&n=${nParam}&r=${rParam}&s=w&t=BRIEF_3_WORD_TASK
+- If you need human approval or get blocked, fetch: ${base}/api/ping?b=${idParam}&s=wait&need=WHAT_YOU_NEED`;
+  }
+
+  const addBotModal = document.getElementById("add-bot-modal");
+  const addBotNameInput = document.getElementById("add-bot-name");
+  const addBotRoleInput = document.getElementById("add-bot-role");
+  const addBotColorInput = document.getElementById("add-bot-color");
+  const addBotSwatches = document.getElementById("add-bot-colors");
+  const addBotPreview = document.getElementById("add-bot-prompt-preview");
+
+  function refreshAddBotPreview() {
+    const nm = addBotNameInput.value.trim() || "Atlas";
+    const rl = addBotRoleInput.value.trim() || "Market Research";
+    addBotPreview.textContent = buildGrokAppPrompt(makeSlug(nm), nm, rl);
+  }
+
+  if (addBotSwatches) {
+    addBotSwatches.innerHTML = GROK_PALETTE.map(
+      (hex, i) =>
+        `<button type="button" class="color-swatch ${i === 0 ? "active" : ""}" data-pick-color="${hex}" style="background:${hex}" title="${hex}"></button>`
+    ).join("");
+    addBotSwatches.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-pick-color]");
+      if (!btn) return;
+      addBotColorInput.value = btn.dataset.pickColor;
+      addBotSwatches.querySelectorAll(".color-swatch").forEach((b) =>
+        b.classList.toggle("active", b === btn)
+      );
+    });
+  }
+
+  addBotNameInput.addEventListener("input", refreshAddBotPreview);
+  addBotRoleInput.addEventListener("input", refreshAddBotPreview);
+
+  document.getElementById("btn-open-add-bot").addEventListener("click", () => {
+    refreshAddBotPreview();
+    addBotModal.classList.remove("hidden");
+    addBotNameInput.focus();
+  });
+  document.getElementById("btn-close-add-bot").addEventListener("click", () => addBotModal.classList.add("hidden"));
+  addBotModal.querySelector(".modal-backdrop").addEventListener("click", () => addBotModal.classList.add("hidden"));
+
+  document.getElementById("add-bot-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = addBotNameInput.value.trim();
+    const role = addBotRoleInput.value.trim();
+    const avatarColor = addBotColorInput.value;
+    const status = document.getElementById("add-bot-status").value;
+    if (!name) return;
+
+    const botId = makeSlug(name);
+    const resp = await fetch("/api/bots", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ botId, name, role, avatarColor, status }),
+    });
+    if (resp.ok) {
+      const promptText = buildGrokAppPrompt(botId, name, role);
+      try {
+        await navigator.clipboard.writeText(promptText);
+      } catch {
+        // Ignore clipboard errors in restricted contexts
+      }
+      addBotModal.classList.add("hidden");
+      document.getElementById("add-bot-form").reset();
+      addBotColorInput.value = GROK_PALETTE[0];
+      selectedBotId = botId;
+      setTimeout(() => office3d.selectBot(botId), 80);
+    }
+  });
+
   // Modals (Connect & Guardrails)
   const connectModal = document.getElementById("connect-modal");
   const settingsModal = document.getElementById("settings-modal");
@@ -752,13 +857,10 @@ const grok = new OpenAI({
   defaultHeaders: { "x-report-secret": "<YOUR_REPORT_SECRET>" }
 });`;
 
-    document.getElementById("ping-snippet").textContent =
-`Call this 1-line URL only when changing state (server auto-idles bots to the Coffee Lounge):
-GET ${base}/api/ping?b=atlas&n=Atlas&r=Market+Research&s=w&t=Short+task&token=<YOUR_REPORT_SECRET>
-Status codes: w=Workfloor, wait=Waiting Room, e=Repair Bay, m=War Room, i=Lounge. Add &done=1 when finishing a task or &need=Title for approval.`;
+    document.getElementById("ping-snippet").textContent = buildGrokAppPrompt("atlas", "Atlas", "Market Research");
 
     document.getElementById("report-snippet").textContent =
-`GET ${base}/api/bot/atlas/status?token=<YOUR_REPORT_SECRET>
+`GET ${base}/api/bot/atlas/status
 Returns: { "botId": "atlas", "status": "working", "assignedTask": "...", "openNeeds": 0, "latestDecision": "approved", "note": "..." }`;
     connectModal.classList.remove("hidden");
   });
@@ -812,6 +914,20 @@ Returns: { "botId": "atlas", "status": "working", "assignedTask": "...", "openNe
       selectedBotId = null;
       renderInspector();
       renderTeamList();
+      return;
+    }
+
+    const copyPromptBtn = e.target.closest("[data-copy-grok-prompt]");
+    if (copyPromptBtn) {
+      const botId = copyPromptBtn.dataset.copyGrokPrompt;
+      const bot = snapshot?.bots?.find((b) => b.id === botId);
+      if (bot) {
+        const promptText = buildGrokAppPrompt(bot.id, bot.name, bot.role);
+        await navigator.clipboard.writeText(promptText);
+        const orig = copyPromptBtn.textContent;
+        copyPromptBtn.textContent = "Copied!";
+        setTimeout(() => (copyPromptBtn.textContent = orig), 1600);
+      }
       return;
     }
 

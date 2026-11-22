@@ -85,6 +85,7 @@
           <div class="sb-head">
             <span class="sb-title">TEAM <strong id="team-count">0</strong></span>
             <div style="display:flex;gap:10px;align-items:center">
+              <button id="btn-open-add-bot" class="link-btn" style="font-weight:700">+ Add Bot</button>
               <button id="btn-seed-mini" class="link-btn">Seed demo</button>
               <button id="btn-clear-demo" class="link-btn danger-link" title="Clear all demo/simulated bots & reset office">Clear data</button>
             </div>
@@ -97,7 +98,7 @@
             <button class="fpill" data-filter="idle">Idle</button>
           </div>
           <div id="team-list" class="team-list">
-            <div class="empty-msg">No bots online. Click <strong>Simulate</strong> or <strong>+ Connect</strong>.</div>
+            <div class="empty-msg">No bots yet. Click <strong>+ Add Bot</strong> to create one for the Grok app.</div>
           </div>
         </div>
 
@@ -265,27 +266,70 @@
     </section>
   </div>
 
+  <!-- Add Grok Bot Modal (Create Bot + Generate Grok App Prompt) -->
+  <div id="add-bot-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-card modal-sm">
+      <div class="modal-header">
+        <h3>Add Grok Bot to Office</h3>
+        <button id="btn-close-add-bot" class="btn-icon">✕</button>
+      </div>
+      <form id="add-bot-form" class="settings-form">
+        <label>
+          <span>Bot Name</span>
+          <input id="add-bot-name" type="text" placeholder="e.g., Atlas" required maxlength="40" />
+        </label>
+        <label>
+          <span>Role / Specialty</span>
+          <input id="add-bot-role" type="text" placeholder="e.g., Market Research" required maxlength="48" />
+        </label>
+        <label>
+          <span>Grok Bot Color</span>
+          <div id="add-bot-colors" class="color-swatch-row"></div>
+          <input id="add-bot-color" type="hidden" value="#3b93f0" />
+        </label>
+        <label>
+          <span>Starting Room</span>
+          <select id="add-bot-status" class="modal-select">
+            <option value="idle">Cyber Coffee Lounge (Idle)</option>
+            <option value="working">Workfloor (Active)</option>
+            <option value="meeting">War Room (Meeting)</option>
+            <option value="no_report">Standby Dock (Sleeping)</option>
+          </select>
+        </label>
+        <div class="prompt-preview-box">
+          <div class="prompt-preview-head">
+            <span>Paste into your Grok Bot's Instructions:</span>
+            <button type="button" class="link-btn copy-btn" data-target="add-bot-prompt-preview">Copy Prompt</button>
+          </div>
+          <pre id="add-bot-prompt-preview" class="code-block" style="margin:6px 0 0;font-size:0.74rem"></pre>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%;margin-top:4px">Add Bot &amp; Copy Grok App Prompt</button>
+      </form>
+    </div>
+  </div>
+
   <!-- Connect Grok Bot Modal -->
   <div id="connect-modal" class="modal hidden">
     <div class="modal-backdrop"></div>
     <div class="modal-card">
       <div class="modal-header">
-        <h3>Connect Grok Bots (Minimal Token Usage)</h3>
+        <h3>Connect Your Grok Bots</h3>
         <button id="btn-close-connect" class="btn-icon">✕</button>
       </div>
       <div class="modal-body">
         <div class="connect-opt">
-          <h4>1. Zero-Token Auto-Tracking Proxy (Custom Grok Scripts)</h4>
-          <p class="muted">Point your xAI / OpenAI SDK <code>baseURL</code> here — tokens, cost, latency, errors, and budget circuit-breakers work automatically with <strong>0 extra Grok prompts</strong>:</p>
-          <pre id="proxy-snippet" class="code-block"></pre>
-          <button class="btn btn-secondary copy-btn" data-target="proxy-snippet">Copy SDK Snippet</button>
+          <h4>1. Grok App System Prompt (No Coding Required)</h4>
+          <p class="muted">Create your bot with <strong>+ Add Bot</strong> in the sidebar, then paste these 3 lines at the bottom of your bot's instructions in the Grok app (auto-idles to the Lounge after 5m with 0 extra tokens):</p>
+          <pre id="ping-snippet" class="code-block"></pre>
+          <button class="btn btn-secondary copy-btn" data-target="ping-snippet">Copy Grok App Instructions</button>
         </div>
 
         <div class="connect-opt">
-          <h4>2. One-Line Ping (Hosted xAI Grok Bots)</h4>
-          <p class="muted">Tiny URL call so Grok barely spends tokens. Server automatically moves idle bots to the Coffee Lounge:</p>
-          <pre id="ping-snippet" class="code-block"></pre>
-          <button class="btn btn-secondary copy-btn" data-target="ping-snippet">Copy 1-Line Ping</button>
+          <h4>2. Zero-Token Auto-Tracking Proxy (Python / Node Scripts)</h4>
+          <p class="muted">If you run custom scripts, point your xAI / OpenAI SDK <code>baseURL</code> here — tokens, cost, latency, errors, and budget circuit-breakers log automatically with <strong>0 extra prompts</strong>:</p>
+          <pre id="proxy-snippet" class="code-block"></pre>
+          <button class="btn btn-secondary copy-btn" data-target="proxy-snippet">Copy SDK Snippet</button>
         </div>
 
         <div class="connect-opt">

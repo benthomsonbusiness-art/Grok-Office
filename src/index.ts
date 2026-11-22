@@ -457,6 +457,47 @@ export class OfficeHub extends DurableObject<Env> {
       return jsonResponse({ ok: true, ...result });
     }
 
+    if (url.pathname === "/api/bots" && request.method === "POST") {
+      let body: {
+        botId?: string;
+        name?: string;
+        role?: string;
+        avatarColor?: string;
+        status?: BotStatus;
+        task?: string;
+        model?: string;
+      } = {};
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return jsonResponse({ error: "Invalid JSON" }, 400);
+      }
+      const name = clampText(body.name, 40);
+      if (!name) {
+        return jsonResponse({ error: "Bot name is required" }, 400);
+      }
+      const rawSlug = name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 48);
+      const botId = clampText(body.botId, 64) || rawSlug || `grok-${crypto.randomUUID().slice(0, 6)}`;
+      const status = normalizeStatus(body.status, "idle");
+      const task = clampText(body.task, 200) || (status === "working" ? "Active in Workfloor" : "Standing by in Lounge");
+      const result = await this.handleReport({
+        botId,
+        name,
+        role: clampText(body.role, 48) || "Grok Agent",
+        avatarColor: body.avatarColor,
+        status,
+        task,
+        model: clampText(body.model, 64) || "grok-4",
+        message: `Added ${name} (${clampText(body.role, 48) || "Grok Agent"}) to HQ`,
+      });
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true, ...result });
+    }
+
     const botStatusMatch = url.pathname.match(/^\/api\/bot\/([^/]+)\/status$/);
     if (botStatusMatch && request.method === "GET") {
       if (!(await isReportAuthorized(request, this.env))) {
