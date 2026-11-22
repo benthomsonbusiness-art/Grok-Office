@@ -80,6 +80,8 @@ export interface OfficeSettings {
   dailyCostCapUsd: number;
   dailyTaskTarget: number;
   autoIdleMinutes: number;
+  hardBudgetStop: boolean;
+  alertWebhookUrl: string;
 }
 
 export interface UsageByModel {
@@ -95,6 +97,7 @@ export interface UsageBucket {
   tokens: number;
   costUsd: number;
   requests: number;
+  errors: number;
 }
 
 export interface OfficeSnapshot {
@@ -116,6 +119,7 @@ export interface OfficeSnapshot {
     todayCostUsd: number;
     todayTasksCompleted: number;
     usageRemainingPct: number;
+    budgetLocked: boolean;
     byModel: UsageByModel[];
     timeline: UsageBucket[];
   };

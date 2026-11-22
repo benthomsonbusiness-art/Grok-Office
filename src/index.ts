@@ -82,6 +82,8 @@ const DEFAULT_SETTINGS: OfficeSettings = {
   dailyCostCapUsd: 10.0,
   dailyTaskTarget: 30,
   autoIdleMinutes: 5,
+  hardBudgetStop: false,
+  alertWebhookUrl: "",
 };
 
 const DEPARTMENTS = [
@@ -204,6 +206,7 @@ export class OfficeHub extends DurableObject<Env> {
         level TEXT NOT NULL DEFAULT 'info',
         message TEXT NOT NULL,
         simulated INTEGER NOT NULL DEFAULT 0,
+        task_done INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL
       );
 
@@ -265,6 +268,9 @@ export class OfficeHub extends DurableObject<Env> {
     if (!logCols.includes("simulated")) {
       this.sql.exec("ALTER TABLE activity_logs ADD COLUMN simulated INTEGER NOT NULL DEFAULT 0");
     }
+    if (!logCols.includes("task_done")) {
+      this.sql.exec("ALTER TABLE activity_logs ADD COLUMN task_done INTEGER NOT NULL DEFAULT 0");
+    }
   }
 
   async alarm(): Promise<void> {
@@ -303,7 +309,8 @@ export class OfficeHub extends DurableObject<Env> {
           "info",
           `Walked to Lounge (auto-idle after ${settings.autoIdleMinutes}m)`,
           false,
-          now
+          now,
+          0
         );
         changed = true;
       } else if (bot.status === "idle" && lastSeen < noReportCutoffMs) {
@@ -353,6 +360,36 @@ export class OfficeHub extends DurableObject<Env> {
 
     if (url.pathname === "/api/snapshot" && request.method === "GET") {
       return jsonResponse(this.getSnapshot());
+    }
+
+    if (url.pathname === "/api/guardrail-check" && request.method === "GET") {
+      const settings = this.getSettings();
+      const todayPrefix = new Date().toISOString().slice(0, 10);
+      const todayTotals = this.sql
+        .exec<{ tokens: number; cost: number }>(
+          `SELECT COALESCE(SUM(tokens_in + tokens_out), 0) as tokens, COALESCE(SUM(cost_usd), 0) as cost
+           FROM usage_events WHERE created_at >= ?`,
+          `${todayPrefix}T00:00:00.000Z`
+        )
+        .one();
+      const todayTokens = todayTotals?.tokens ?? 0;
+      const todayCostUsd = Number((todayTotals?.cost ?? 0).toFixed(4));
+      const overCost = settings.dailyCostCapUsd > 0 && todayCostUsd >= settings.dailyCostCapUsd;
+      const overTok = settings.dailyTokenCap > 0 && todayTokens >= settings.dailyTokenCap;
+      const blocked = Boolean(settings.hardBudgetStop && (overCost || overTok));
+      return jsonResponse({
+        blocked,
+        hardBudgetStop: settings.hardBudgetStop,
+        todayTokens,
+        todayCostUsd,
+        dailyTokenCap: settings.dailyTokenCap,
+        dailyCostCapUsd: settings.dailyCostCapUsd,
+        reason: overCost
+          ? `Daily spend cap reached ($${todayCostUsd.toFixed(2)} / $${settings.dailyCostCapUsd.toFixed(2)})`
+          : overTok
+          ? `Daily token cap reached (${todayTokens.toLocaleString()} / ${settings.dailyTokenCap.toLocaleString()})`
+          : null,
+      });
     }
 
     if (url.pathname === "/api/ping" && (request.method === "GET" || request.method === "POST")) {
@@ -426,21 +463,42 @@ export class OfficeHub extends DurableObject<Env> {
         return jsonResponse({ error: "Unauthorized" }, 401);
       }
       const botId = decodeURIComponent(botStatusMatch[1]);
+      const botRow = this.sql
+        .exec<{ status: BotStatus; task: string; role: string }>(
+          "SELECT status, task, role FROM bots WHERE id = ?",
+          botId
+        )
+        .toArray()[0];
       const needs = this.listNeeds(botId, null);
       const openNeeds = needs.filter((n) => n.status === "open").length;
       const latest = needs[0];
       return jsonResponse({
         botId,
+        status: botRow?.status ?? null,
+        assignedTask: botRow?.task ?? null,
+        role: botRow?.role ?? null,
         openNeeds,
         latestDecision: latest ? latest.status : null,
         note: latest?.resolutionNote ?? null,
       });
     }
 
+    const botDeleteMatch = url.pathname.match(/^\/api\/bots\/([^/]+)$/);
+    if (botDeleteMatch && request.method === "DELETE") {
+      const botId = decodeURIComponent(botDeleteMatch[1]);
+      this.sql.exec("DELETE FROM bots WHERE id = ?", botId);
+      this.sql.exec("DELETE FROM pending_needs WHERE bot_id = ? AND status = 'open'", botId);
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true, deletedBotId: botId });
+    }
+
     const botCmdMatch = url.pathname.match(/^\/api\/bots\/([^/]+)\/command$/);
     if (botCmdMatch && request.method === "POST") {
       const botId = decodeURIComponent(botCmdMatch[1]);
       let body: {
+        name?: string;
+        role?: string;
+        avatarColor?: string;
         status?: BotStatus;
         task?: string;
         deskIndex?: number;
@@ -454,12 +512,19 @@ export class OfficeHub extends DurableObject<Env> {
       }
       const result = await this.handleReport({
         botId,
+        name: body.name,
+        role: body.role,
+        avatarColor: body.avatarColor,
         status: body.status,
         task: body.task,
         deskIndex: body.deskIndex,
         department: body.department,
         collaboratingWith: body.collaboratingWith,
-        message: body.status ? `Moved bot → ${body.status}` : "Updated bot assignment",
+        message: body.task
+          ? `HQ assigned task: "${clampText(body.task, 120)}"`
+          : body.status
+          ? `Moved bot → ${body.status}`
+          : "Updated bot profile from HQ",
       });
       this.broadcastSnapshot();
       return jsonResponse({ ok: true, ...result });
@@ -601,11 +666,16 @@ export class OfficeHub extends DurableObject<Env> {
         return jsonResponse({ error: "Invalid JSON" }, 400);
       }
       const cur = this.getSettings();
+      const rawWebhook = clampText(body.alertWebhookUrl ?? cur.alertWebhookUrl, 300);
+      const safeWebhook = rawWebhook && isSafeCallbackUrl(rawWebhook) ? rawWebhook : "";
       const next: OfficeSettings = {
         dailyTokenCap: Math.max(1000, Math.round(Number(body.dailyTokenCap ?? cur.dailyTokenCap))),
         dailyCostCapUsd: Math.max(0.1, Number(body.dailyCostCapUsd ?? cur.dailyCostCapUsd)),
         dailyTaskTarget: Math.max(1, Math.round(Number(body.dailyTaskTarget ?? cur.dailyTaskTarget))),
         autoIdleMinutes: Math.max(1, Math.min(120, Math.round(Number(body.autoIdleMinutes ?? cur.autoIdleMinutes)))),
+        hardBudgetStop:
+          body.hardBudgetStop !== undefined ? Boolean(body.hardBudgetStop) : cur.hardBudgetStop,
+        alertWebhookUrl: safeWebhook,
       };
       for (const [k, v] of Object.entries(next)) {
         this.sql.exec(
@@ -662,7 +732,7 @@ export class OfficeHub extends DurableObject<Env> {
     if (url.pathname === "/api/demo/reset" && request.method === "POST") {
       this.resetOffice();
       this.broadcastSnapshot();
-      return jsonResponse({ ok: true });
+      return jsonResponse({ ok: true, snapshot: this.getSnapshot() });
     }
 
     return jsonResponse({ error: "Not found" }, 404);
@@ -692,6 +762,28 @@ export class OfficeHub extends DurableObject<Env> {
         // Ignore broken sockets
       }
     }
+  }
+
+  private fireAlertWebhook(title: string, detail: string, severity: string, botName: string): void {
+    const settings = this.getSettings();
+    const url = settings.alertWebhookUrl;
+    if (!url || !isSafeCallbackUrl(url)) return;
+    const payload = {
+      content: `**[Grok Bot HQ — ${severity.toUpperCase()}]** **${botName}**: ${title}${detail ? `\n> ${detail}` : ""}`,
+      text: `[Grok Bot HQ — ${severity.toUpperCase()}] ${botName}: ${title}${detail ? ` — ${detail}` : ""}`,
+      botName,
+      severity,
+      title,
+      detail,
+      timestamp: new Date().toISOString(),
+    };
+    this.ctx.waitUntil(
+      fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      }).catch(() => {})
+    );
   }
 
   private async handleReport(payload: ReportPayload): Promise<{ botId: string; needId?: string }> {
@@ -875,6 +967,9 @@ export class OfficeHub extends DurableObject<Env> {
       const rawCallback = payload.need.callbackUrl;
       const safeCallback =
         rawCallback && isSafeCallbackUrl(rawCallback) ? rawCallback : null;
+      const sev = payload.need.severity ?? (status === "error" ? "error" : "approval");
+      const needTitle = clampText(payload.need.title, 140);
+      const needDesc = clampText(payload.need.description, 400);
 
       this.sql.exec(
         `INSERT INTO pending_needs (
@@ -888,12 +983,18 @@ export class OfficeHub extends DurableObject<Env> {
         createdNeedId,
         botId,
         name,
-        clampText(payload.need.title, 140),
-        clampText(payload.need.description, 400),
-        payload.need.severity ?? (status === "error" ? "error" : "approval"),
+        needTitle,
+        needDesc,
+        sev,
         safeCallback,
         now
       );
+
+      if (!payload.simulated) {
+        this.fireAlertWebhook(needTitle, needDesc, sev, name);
+      }
+    } else if (status === "error" && !payload.simulated) {
+      this.fireAlertWebhook(task || "Agent reported error state", "", "error", name);
     }
 
     if (addedTokens > 0 || addedCost > 0) {
@@ -924,7 +1025,8 @@ export class OfficeHub extends DurableObject<Env> {
       logLevel,
       logMessage,
       payload.simulated === true,
-      now
+      now,
+      completedIncrement
     );
 
     if (status === "working" || status === "meeting") {
@@ -950,26 +1052,36 @@ export class OfficeHub extends DurableObject<Env> {
 
     if (costRatio >= 1.0) {
       const alertId = `budget-cost-100-${todayPrefix}`;
+      const title = `Daily spend cap reached ($${(todayStats?.cost ?? 0).toFixed(2)} / $${settings.dailyCostCapUsd.toFixed(2)})`;
+      const desc = settings.hardBudgetStop
+        ? "Hard Budget Circuit-Breaker is ACTIVE: Proxy calls are paused until tomorrow or cap is raised."
+        : "Automatic office guardrail triggered. Review bot activity or raise the daily cap in Guardrails.";
       this.sql.exec(
         `INSERT OR IGNORE INTO pending_needs (
            id, bot_id, bot_name, title, description, severity, status, created_at
          ) VALUES (?, 'system', 'Office Guardrail', ?, ?, 'budget', 'open', ?)`,
         alertId,
-        `Daily spend cap reached ($${(todayStats?.cost ?? 0).toFixed(2)} / $${settings.dailyCostCapUsd.toFixed(2)})`,
-        "Automatic office guardrail triggered. Review bot activity or raise the daily cap in Guardrails.",
+        title,
+        desc,
         now
       );
+      this.fireAlertWebhook(title, desc, "budget", "Office Guardrail");
     } else if (tokenRatio >= 1.0) {
       const alertId = `budget-tok-100-${todayPrefix}`;
+      const title = `Daily token cap reached (${(todayStats?.tokens ?? 0).toLocaleString()} tokens)`;
+      const desc = settings.hardBudgetStop
+        ? "Hard Budget Circuit-Breaker is ACTIVE: Proxy calls are paused until tomorrow or cap is raised."
+        : "Automatic office guardrail triggered. Consider routing high-volume bots to grok-3-mini.";
       this.sql.exec(
         `INSERT OR IGNORE INTO pending_needs (
            id, bot_id, bot_name, title, description, severity, status, created_at
          ) VALUES (?, 'system', 'Office Guardrail', ?, ?, 'budget', 'open', ?)`,
         alertId,
-        `Daily token cap reached (${(todayStats?.tokens ?? 0).toLocaleString()} tokens)`,
-        "Automatic office guardrail triggered. Consider routing high-volume bots to grok-3-mini.",
+        title,
+        desc,
         now
       );
+      this.fireAlertWebhook(title, desc, "budget", "Office Guardrail");
     }
   }
 
@@ -981,11 +1093,12 @@ export class OfficeHub extends DurableObject<Env> {
     level: LogLevel,
     message: string,
     simulated = false,
-    createdAt = new Date().toISOString()
+    createdAt = new Date().toISOString(),
+    taskDone = 0
   ): void {
     this.sql.exec(
-      `INSERT INTO activity_logs (id, bot_id, bot_name, bot_color, status, level, message, simulated, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO activity_logs (id, bot_id, bot_name, bot_color, status, level, message, simulated, task_done, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       crypto.randomUUID(),
       botId,
       botName,
@@ -994,13 +1107,14 @@ export class OfficeHub extends DurableObject<Env> {
       level,
       message,
       simulated ? 1 : 0,
+      taskDone > 0 ? 1 : 0,
       createdAt
     );
 
     this.sql.exec(`
       DELETE FROM activity_logs
       WHERE id NOT IN (
-        SELECT id FROM activity_logs ORDER BY created_at DESC LIMIT 200
+        SELECT id FROM activity_logs ORDER BY created_at DESC LIMIT 250
       )
     `);
   }
@@ -1015,6 +1129,8 @@ export class OfficeHub extends DurableObject<Env> {
       dailyCostCapUsd: Number(map.get("dailyCostCapUsd") ?? DEFAULT_SETTINGS.dailyCostCapUsd),
       dailyTaskTarget: Number(map.get("dailyTaskTarget") ?? DEFAULT_SETTINGS.dailyTaskTarget),
       autoIdleMinutes: Number(map.get("autoIdleMinutes") ?? DEFAULT_SETTINGS.autoIdleMinutes),
+      hardBudgetStop: map.get("hardBudgetStop") === "true",
+      alertWebhookUrl: map.get("alertWebhookUrl") ?? DEFAULT_SETTINGS.alertWebhookUrl,
     };
   }
 
@@ -1158,7 +1274,8 @@ export class OfficeHub extends DurableObject<Env> {
       action === "reject" ? "warn" : "success",
       `Human ${newStatus} "${existing.title}"${note ? ` — "${note}"` : ""}`,
       false,
-      now
+      now,
+      0
     );
 
     if (existing.callback_url && isSafeCallbackUrl(existing.callback_url)) {
@@ -1251,7 +1368,7 @@ export class OfficeHub extends DurableObject<Env> {
         message: string;
         simulated: number;
         created_at: string;
-      }>("SELECT * FROM activity_logs ORDER BY created_at DESC LIMIT 60")
+      }>("SELECT * FROM activity_logs ORDER BY created_at DESC LIMIT 80")
       .toArray()
       .map((l) => ({
         id: l.id,
@@ -1294,7 +1411,16 @@ export class OfficeHub extends DurableObject<Env> {
       )
       .one();
 
+    const todayTasksRow = this.sql
+      .exec<{ done_cnt: number }>(
+        `SELECT COALESCE(SUM(task_done), 0) as done_cnt
+         FROM activity_logs WHERE created_at >= ?`,
+        `${todayPrefix}T00:00:00.000Z`
+      )
+      .one();
+
     const totalTasksCompleted = bots.reduce((acc, b) => acc + b.tasksCompleted, 0);
+    const todayTasksCompleted = todayTasksRow?.done_cnt ?? totalTasksCompleted;
     const totalRequests = totals?.requests ?? 0;
     const errorRatePct =
       totalRequests > 0
@@ -1308,6 +1434,9 @@ export class OfficeHub extends DurableObject<Env> {
     const usageRemainingPct = Math.max(
       0,
       Math.min(100, Math.round((1 - Math.max(tokenUsedRatio, costUsedRatio)) * 100))
+    );
+    const budgetLocked = Boolean(
+      settings.hardBudgetStop && (tokenUsedRatio >= 1.0 || costUsedRatio >= 1.0)
     );
 
     const byModel: UsageByModel[] = this.sql
@@ -1342,32 +1471,38 @@ export class OfficeHub extends DurableObject<Env> {
         tokens_in: number;
         tokens_out: number;
         cost_usd: number;
+        is_error: number;
         created_at: string;
       }>(
-        `SELECT tokens_in, tokens_out, cost_usd, created_at
+        `SELECT tokens_in, tokens_out, cost_usd, is_error, created_at
          FROM usage_events
          ORDER BY created_at DESC
-         LIMIT 80`
+         LIMIT 120`
       )
       .toArray()
       .reverse();
 
+    // Strictly chronological buckets keyed by YYYY-MM-DDTHH:M5
     const bucketMap = new Map<string, UsageBucket>();
     for (const ev of recentEvents) {
       const d = new Date(ev.created_at);
-      const label = `${String(d.getUTCHours()).padStart(2, "0")}:${String(
-        Math.floor(d.getUTCMinutes() / 5) * 5
-      ).padStart(2, "0")}`;
-      const cur = bucketMap.get(label) ?? {
+      const dayKey = ev.created_at.slice(5, 10);
+      const hh = String(d.getUTCHours()).padStart(2, "0");
+      const mm = String(Math.floor(d.getUTCMinutes() / 5) * 5).padStart(2, "0");
+      const sortKey = `${dayKey} ${hh}:${mm}`;
+      const label = `${hh}:${mm}`;
+      const cur = bucketMap.get(sortKey) ?? {
         label,
         tokens: 0,
         costUsd: 0,
         requests: 0,
+        errors: 0,
       };
       cur.tokens += ev.tokens_in + ev.tokens_out;
       cur.costUsd = Number((cur.costUsd + ev.cost_usd).toFixed(4));
       cur.requests += 1;
-      bucketMap.set(label, cur);
+      cur.errors += ev.is_error ? 1 : 0;
+      bucketMap.set(sortKey, cur);
     }
 
     const lastBotUpdateAt =
@@ -1395,10 +1530,11 @@ export class OfficeHub extends DurableObject<Env> {
         avgLatencyMs: Math.round(totals?.avg_latency ?? 0),
         todayTokens,
         todayCostUsd,
-        todayTasksCompleted: totalTasksCompleted,
+        todayTasksCompleted,
         usageRemainingPct,
+        budgetLocked,
         byModel,
-        timeline: Array.from(bucketMap.values()).slice(-12),
+        timeline: Array.from(bucketMap.values()).slice(-14),
       },
       lastBotUpdateAt,
       serverTime: new Date().toISOString(),
@@ -1755,6 +1891,32 @@ async function handleXaiProxy(
   botId: string,
   restPath: string
 ): Promise<Response> {
+  const stub = env.OFFICE_HUB.get(env.OFFICE_HUB.idFromName("hq"));
+
+  // Check Hard Budget Circuit-Breaker before forwarding to xAI
+  try {
+    const guardResp = await stub.fetch("https://internal/api/guardrail-check");
+    if (guardResp.ok) {
+      const guardData = (await guardResp.json()) as { blocked?: boolean; reason?: string };
+      if (guardData.blocked) {
+        return withSecurityHeaders(
+          jsonResponse(
+            {
+              error: {
+                message: `Grok Bot HQ Guardrail Circuit-Breaker: ${guardData.reason || "Daily cap reached"}`,
+                type: "office_budget_cap_exceeded",
+                code: "daily_budget_cap_reached",
+              },
+            },
+            429
+          )
+        );
+      }
+    }
+  } catch {
+    // Non-blocking if check fails
+  }
+
   const upstreamBase = (env.AI_GATEWAY_BASE_URL ?? "https://api.x.ai/v1").replace(/\/+$/, "");
   const url = new URL(request.url);
   const upstreamUrl = `${upstreamBase}${restPath}${url.search}`;
@@ -1816,7 +1978,6 @@ async function handleXaiProxy(
           // Ignore parse errors
         }
 
-        const stub = env.OFFICE_HUB.get(env.OFFICE_HUB.idFromName("hq"));
         const headers: Record<string, string> = { "content-type": "application/json" };
         if (env.REPORT_SECRET) headers["x-report-secret"] = env.REPORT_SECRET;
 

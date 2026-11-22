@@ -3,8 +3,13 @@
   let selectedBotId = null;
   let activeView = "office";
   let teamFilter = "all";
+  let actFilter = "all";
+  let actSearch = "";
   let chartMode = "tokens";
   let simTimer = null;
+  let soundEnabled = localStorage.getItem("grok_hq_chime") !== "off";
+  let knownOpenNeedIds = new Set();
+  let firstSnapshotLoaded = false;
 
   const stageEl = document.getElementById("office-3d-stage");
   const labelLayer = document.getElementById("label-layer");
@@ -14,6 +19,7 @@
     selectedBotId = botId;
     renderInspector();
     renderTeamList();
+    if (actFilter === "bot") renderActivity();
   });
 
   function esc(str) {
@@ -54,6 +60,45 @@
     el.classList.toggle("danger", pct >= 90);
   }
 
+  // Synthesize a subtle Argon chime using Web Audio API (zero external audio files needed)
+  function playAlertChime(isError = false) {
+    if (!soundEnabled) return;
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = isError ? "sawtooth" : "sine";
+      osc.frequency.setValueAtTime(isError ? 420 : 587.33, now);
+      osc.frequency.exponentialRampToValueAtTime(isError ? 280 : 880, now + 0.22);
+      gain.gain.setValueAtTime(0.08, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.26);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.28);
+    } catch {
+      // Ignore browser autoplay restrictions
+    }
+  }
+
+  const soundBtn = document.getElementById("btn-sound-toggle");
+  function updateSoundBtn() {
+    if (!soundBtn) return;
+    soundBtn.textContent = soundEnabled ? "🔔 Chime: On" : "🔕 Chime: Off";
+  }
+  updateSoundBtn();
+  if (soundBtn) {
+    soundBtn.addEventListener("click", () => {
+      soundEnabled = !soundEnabled;
+      localStorage.setItem("grok_hq_chime", soundEnabled ? "on" : "off");
+      updateSoundBtn();
+      if (soundEnabled) playAlertChime(false);
+    });
+  }
+
   function connectWS() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const wsDot = document.getElementById("ws-dot");
@@ -89,6 +134,28 @@
 
   function applySnapshot(data) {
     snapshot = data;
+
+    // Detect newly arrived open Pending Needs for audio chime & tab badge
+    const openNeeds = (data.pendingNeeds || []).filter((n) => n.status === "open");
+    let newUrgent = false;
+    let newIsError = false;
+    openNeeds.forEach((n) => {
+      if (!knownOpenNeedIds.has(n.id)) {
+        knownOpenNeedIds.add(n.id);
+        if (firstSnapshotLoaded) {
+          newUrgent = true;
+          if (n.severity === "error" || n.severity === "budget") newIsError = true;
+        }
+      }
+    });
+    firstSnapshotLoaded = true;
+    if (newUrgent) playAlertChime(newIsError);
+
+    document.title =
+      openNeeds.length > 0
+        ? `(${openNeeds.length}) Grok Bot HQ — Argon 3D Command Center`
+        : "Grok Bot HQ — Argon 3D Command Center";
+
     office3d.updateBots(data.bots || [], data.usageSummary);
     renderAll();
   }
@@ -127,12 +194,19 @@
 
     document.getElementById("last-update-label").textContent = timeAgo(lastBotUpdateAt);
     document.getElementById("usage-left-pill").textContent =
-      `Budget ${usageSummary?.usageRemainingPct ?? 100}% left`;
+      usageSummary?.budgetLocked
+        ? "CAP LOCKED (429)"
+        : `Budget ${usageSummary?.usageRemainingPct ?? 100}% left`;
 
     const isSim = Boolean(simTimer) || snapshot.activityLogs.some((l) => l.simulated);
     const pill = document.getElementById("mode-pill");
-    pill.textContent = isSim ? "SIMULATED" : "LIVE";
-    pill.className = `mode-pill ${isSim ? "sim" : "live"}`;
+    if (usageSummary?.budgetLocked) {
+      pill.textContent = "CAP STOP";
+      pill.className = "mode-pill locked";
+    } else {
+      pill.textContent = isSim ? "SIMULATED" : "LIVE";
+      pill.className = `mode-pill ${isSim ? "sim" : "live"}`;
+    }
   }
 
   function miniGrokIcon(color) {
@@ -162,7 +236,7 @@
       <div class="team-row ${selectedBotId === b.id ? "selected" : ""}" data-select-bot="${esc(b.id)}">
         ${miniGrokIcon(b.avatarColor)}
         <div class="team-info">
-          <div class="team-name">${esc(b.name)} <span class="muted" style="font-weight:500;font-size:0.75rem">· ${esc(b.role)}</span></div>
+          <div class="team-name">${esc(b.name)} <span class="muted" style="font-weight:500;font-size:0.74rem">· ${esc(b.role)}</span></div>
           <div class="team-sub">${esc(b.task || "Standing by")}</div>
         </div>
         <span class="st-pill st-${esc(b.status)}">${esc(statusLabel(b.status))}</span>
@@ -171,32 +245,48 @@
       .join("");
   }
 
+  // 3. Interactive Activity Log Explorer & Filtering
   function renderActivity() {
     const logs = snapshot.activityLogs || [];
     const el = document.getElementById("activity-list");
-    if (logs.length === 0) {
-      el.innerHTML = `<div class="empty-msg">No activity yet.</div>`;
+    const q = actSearch.trim().toLowerCase();
+
+    const filtered = logs.filter((l) => {
+      if (actFilter === "error" && l.level !== "error" && l.status !== "error") return false;
+      if (actFilter === "warn" && l.level !== "warn" && l.status !== "waiting") return false;
+      if (actFilter === "success" && l.level !== "success") return false;
+      if (actFilter === "bot" && selectedBotId && l.botId !== selectedBotId) return false;
+      if (q) {
+        const hay = `${l.botName} ${l.message} ${l.status}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      el.innerHTML = `<div class="empty-msg">No matching activity logs.</div>`;
       return;
     }
 
-    el.innerHTML = logs
-      .slice(0, 20)
+    el.innerHTML = filtered
+      .slice(0, 50)
       .map((l) => {
         const ts = new Date(l.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
         return `
-        <div class="act-item">
-          <span class="bot-sq" style="background:${esc(l.botColor || "#38bdf8")};margin-top:5px"></span>
+        <div class="act-item lvl-${esc(l.level || "info")}" data-select-bot="${esc(l.botId)}">
+          <span class="bot-sq" style="background:${esc(l.botColor || "#38bdf8")};margin-top:4px"></span>
           <div style="min-width:0;flex:1">
             <div><strong>${esc(l.botName)}</strong> — ${esc(l.message)}</div>
-            <div class="act-meta">${esc(ts)}</div>
+            <div class="act-meta">${esc(ts)} · ${esc(timeAgo(l.createdAt))}</div>
           </div>
         </div>`;
       })
       .join("");
   }
 
+  // 2. Per-Agent Performance Leaderboard & Metrics Page
   function renderMetricsPage() {
-    const { bots, objectives = [], settings, usageSummary } = snapshot;
+    const { bots = [], objectives = [], settings, usageSummary } = snapshot;
 
     // 4 Hero KPI Cards
     const costCap = settings?.dailyCostCapUsd || 10;
@@ -205,14 +295,14 @@
     document.getElementById("m-budget-pct").textContent = `${remPct}%`;
     setBar("m-budget-bar", (todayCost / costCap) * 100);
     document.getElementById("m-budget-foot").textContent =
-      `$${todayCost.toFixed(2)} spent of $${costCap.toFixed(2)} daily cap`;
+      `$${todayCost.toFixed(2)} spent of $${costCap.toFixed(2)} daily cap${usageSummary.budgetLocked ? " (LOCKED)" : ""}`;
 
     const taskTarget = settings?.dailyTaskTarget || 30;
     const tasksDone = usageSummary.todayTasksCompleted ?? 0;
     const taskPct = Math.round((tasksDone / taskTarget) * 100);
     document.getElementById("m-tasks-val").textContent = `${tasksDone} / ${taskTarget}`;
     setBar("m-tasks-bar", taskPct);
-    document.getElementById("m-tasks-foot").textContent = `${taskPct}% of daily target`;
+    document.getElementById("m-tasks-foot").textContent = `${taskPct}% of daily target (${usageSummary.totalTasksCompleted ?? 0} total)`;
 
     const tokCap = settings?.dailyTokenCap || 500000;
     const todayTok = usageSummary.todayTokens ?? 0;
@@ -224,6 +314,41 @@
     document.getElementById("m-latency-val").textContent = `${usageSummary.avgLatencyMs} ms`;
     document.getElementById("m-health-foot").textContent =
       `${usageSummary.errorRatePct ?? 0}% error rate · ${usageSummary.totalRequests} requests`;
+
+    // Per-Agent Performance & Spend Leaderboard
+    const leaderTbody = document.getElementById("agent-leaderboard-tbody");
+    if (bots.length === 0) {
+      leaderTbody.innerHTML = `<tr><td colspan="10" class="muted">No agents registered yet. Click <strong>Simulate</strong> or <strong>+ Connect</strong>.</td></tr>`;
+    } else {
+      const sortedBots = [...bots].sort(
+        (a, b) => b.costTotalUsd - a.costTotalUsd || b.tasksCompleted - a.tasksCompleted
+      );
+      leaderTbody.innerHTML = sortedBots
+        .map(
+          (b) => `
+          <tr data-jump-bot="${esc(b.id)}">
+            <td>
+              <div style="display:flex;align-items:center;gap:9px">
+                ${miniGrokIcon(b.avatarColor)}
+                <div>
+                  <div style="font-weight:700">${esc(b.name)}</div>
+                  <div class="muted" style="font-size:0.75rem">${esc(b.role)}</div>
+                </div>
+              </div>
+            </td>
+            <td><span class="st-pill st-${esc(b.status)}">${esc(statusLabel(b.status))}</span></td>
+            <td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(b.task)}">${esc(b.task || "Standing by")}</td>
+            <td><span class="model-chip">${esc(b.model)}</span></td>
+            <td><strong>${b.tasksCompleted}</strong></td>
+            <td>${b.requestsTotal}</td>
+            <td>${formatNum(b.tokensTotal)}</td>
+            <td><strong>$${b.costTotalUsd.toFixed(4)}</strong></td>
+            <td>${b.errorCount > 0 ? `<span style="color:#fb7185;font-weight:700">${b.errorCount}</span>` : `<span class="muted">0</span>`}</td>
+            <td class="muted">${esc(timeAgo(b.lastSeenAt))}</td>
+          </tr>`
+        )
+        .join("");
+    }
 
     // Goals Grid
     const ownerSel = document.getElementById("goal-owner-select");
@@ -264,7 +389,7 @@
         .join("");
     }
 
-    // Usage Chart
+    // Usage Chart (Chronological with request count & error highlighting)
     const chartEl = document.getElementById("usage-chart");
     const timeline = usageSummary.timeline || [];
     if (timeline.length === 0) {
@@ -276,9 +401,10 @@
         .map((t) => {
           const v = chartMode === "tokens" ? t.tokens : t.costUsd;
           const pct = Math.max(8, Math.round((v / maxVal) * 100));
+          const errTag = t.errors > 0 ? ` · ${t.errors} err` : "";
           return `
-          <div class="bar-col" title="${esc(t.label)}: ${formatNum(t.tokens)} tokens ($${t.costUsd.toFixed(4)})">
-            <div class="bar-fill" style="height:${pct}%"></div>
+          <div class="bar-col" title="${esc(t.label)}: ${formatNum(t.tokens)} tokens · $${t.costUsd.toFixed(4)} · ${t.requests} req${errTag}">
+            <div class="bar-fill ${t.errors > 0 ? "has-err" : ""}" style="height:${pct}%"></div>
             <div class="bar-label">${esc(t.label)}</div>
           </div>`;
         })
@@ -342,6 +468,7 @@
       .join("");
   }
 
+  // 1. Rich Per-Bot Telemetry Inspector & Inline Approvals
   function renderInspector() {
     const el = document.getElementById("bot-inspector");
     if (!snapshot || !selectedBotId) {
@@ -353,22 +480,91 @@
       el.classList.add("hidden");
       return;
     }
+
+    const botOpenNeed = (snapshot.pendingNeeds || []).find(
+      (n) => n.botId === bot.id && n.status === "open"
+    );
+    const botLogs = (snapshot.activityLogs || [])
+      .filter((l) => l.botId === bot.id)
+      .slice(0, 4);
+
     el.classList.remove("hidden");
     el.innerHTML = `
       <div class="insp-head">
-        <div>
-          <span class="insp-name">${esc(bot.name)}</span>
-          <span class="st-pill st-${esc(bot.status)}" style="margin-left:8px">${esc(statusLabel(bot.status))}</span>
-          <div style="font-size:0.76rem;color:var(--cyan);font-weight:600;margin-top:2px">${esc(bot.role || "Grok Bot")}</div>
+        <div style="display:flex;align-items:center;gap:10px">
+          ${miniGrokIcon(bot.avatarColor)}
+          <div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span class="insp-name">${esc(bot.name)}</span>
+              <span class="st-pill st-${esc(bot.status)}">${esc(statusLabel(bot.status))}</span>
+            </div>
+            <div style="font-size:0.75rem;color:var(--cyan);font-weight:600;margin-top:2px">
+              ${esc(bot.role || "Grok Bot")} · <span class="muted">${esc(bot.model)} · ${esc(timeAgo(bot.lastSeenAt))}</span>
+            </div>
+          </div>
         </div>
-        <button id="btn-close-insp" class="btn-icon">✕</button>
+        <button id="btn-close-insp" class="btn-icon" title="Close inspector">✕</button>
       </div>
+
       <div class="insp-task">${esc(bot.task || "Standing by")}</div>
+
+      <div class="insp-kpis">
+        <div class="insp-kpi"><span>Tasks</span><strong>${bot.tasksCompleted}</strong></div>
+        <div class="insp-kpi"><span>Tokens</span><strong>${formatNum(bot.tokensTotal)}</strong></div>
+        <div class="insp-kpi"><span>Spend</span><strong>$${bot.costTotalUsd.toFixed(3)}</strong></div>
+        <div class="insp-kpi"><span>Errors</span><strong style="${bot.errorCount > 0 ? "color:#fb7185" : ""}">${bot.errorCount}</strong></div>
+      </div>
+
+      ${
+        botOpenNeed
+          ? `<div class="insp-need-box ${botOpenNeed.severity === "error" ? "err" : ""}">
+              <div style="font-size:0.78rem;font-weight:700">${esc(botOpenNeed.title)}</div>
+              ${botOpenNeed.description ? `<div style="font-size:0.73rem;color:#cbd5e1">${esc(botOpenNeed.description)}</div>` : ""}
+              <div style="display:flex;gap:6px;margin-top:2px">
+                <input class="insp-input" type="text" placeholder="Note…" data-note-for="${esc(botOpenNeed.id)}" />
+                <button class="btn btn-approve" style="padding:4px 9px;font-size:0.74rem" data-resolve="${esc(botOpenNeed.id)}" data-action="approve">Approve</button>
+                <button class="btn btn-reject" style="padding:4px 9px;font-size:0.74rem" data-resolve="${esc(botOpenNeed.id)}" data-action="reject">Reject</button>
+              </div>
+            </div>`
+          : ""
+      }
+
+      <div class="insp-form">
+        <div class="insp-form-row">
+          <input id="insp-task-input" class="insp-input" type="text" placeholder="Assign new task or note…" value="${esc(bot.task)}" />
+          <button class="chip-btn active" data-save-bot-task="${esc(bot.id)}">Assign</button>
+        </div>
+        <div class="insp-form-row">
+          <input id="insp-role-input" class="insp-input" type="text" placeholder="Role title…" value="${esc(bot.role)}" />
+          <button class="chip-btn" data-save-bot-role="${esc(bot.id)}">Update Role</button>
+        </div>
+      </div>
+
+      ${
+        botLogs.length > 0
+          ? `<div class="insp-logs">
+              <div style="font-size:0.68rem;font-weight:800;color:var(--muted);text-transform:uppercase">Recent Bot Activity</div>
+              ${botLogs
+                .map(
+                  (l) => `
+                <div class="insp-log-item">
+                  <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(l.message)}</span>
+                  <span class="muted" style="flex-shrink:0">${esc(timeAgo(l.createdAt))}</span>
+                </div>`
+                )
+                .join("")}
+            </div>`
+          : ""
+      }
+
       <div class="insp-moves">
-        <button class="chip-btn" data-move-bot="${esc(bot.id)}" data-status="working">Workfloor</button>
-        <button class="chip-btn" data-move-bot="${esc(bot.id)}" data-status="waiting">Waiting</button>
-        <button class="chip-btn" data-move-bot="${esc(bot.id)}" data-status="meeting">War Room</button>
-        <button class="chip-btn" data-move-bot="${esc(bot.id)}" data-status="idle">Lounge</button>
+        <div style="display:flex;gap:4px;flex-wrap:wrap">
+          <button class="chip-btn" data-move-bot="${esc(bot.id)}" data-status="working">Workfloor</button>
+          <button class="chip-btn" data-move-bot="${esc(bot.id)}" data-status="waiting">Waiting</button>
+          <button class="chip-btn" data-move-bot="${esc(bot.id)}" data-status="meeting">War Room</button>
+          <button class="chip-btn" data-move-bot="${esc(bot.id)}" data-status="idle">Lounge</button>
+        </div>
+        <button class="chip-btn" style="color:#fb7185;border-color:rgba(244,63,94,0.35)" data-delete-bot="${esc(bot.id)}" title="Remove bot from office">Remove</button>
       </div>
     `;
   }
@@ -427,6 +623,23 @@
     fetch("/api/demo/seed", { method: "POST" });
   });
 
+  // Clear Demo / Office Data
+  async function clearOfficeData() {
+    if (simTimer) {
+      clearInterval(simTimer);
+      simTimer = null;
+      const simBtn = document.getElementById("btn-sim");
+      simBtn.textContent = "Simulate";
+      simBtn.classList.remove("active");
+    }
+    selectedBotId = null;
+    knownOpenNeedIds.clear();
+    await fetch("/api/demo/reset", { method: "POST" });
+  }
+
+  document.getElementById("btn-clear-demo").addEventListener("click", clearOfficeData);
+  document.getElementById("btn-reset-metrics").addEventListener("click", clearOfficeData);
+
   document.getElementById("btn-reset-view").addEventListener("click", () => {
     document.querySelectorAll("[data-room]").forEach((b) =>
       b.classList.toggle("active", b.dataset.room === "all")
@@ -479,6 +692,21 @@
     });
   });
 
+  // Activity Explorer Filter Pills & Search
+  document.querySelectorAll("[data-act-filter]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      actFilter = btn.dataset.actFilter;
+      document.querySelectorAll("[data-act-filter]").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      renderActivity();
+    });
+  });
+
+  document.getElementById("act-search-input").addEventListener("input", (e) => {
+    actSearch = e.target.value;
+    renderActivity();
+  });
+
   document.querySelectorAll("[data-chart-mode]").forEach((btn) => {
     btn.addEventListener("click", () => {
       chartMode = btn.dataset.chartMode;
@@ -526,28 +754,32 @@ const grok = new OpenAI({
 
     document.getElementById("ping-snippet").textContent =
 `Call this 1-line URL only when changing state (server auto-idles bots to the Coffee Lounge):
-GET ${base}/api/ping?b=atlas&s=w&t=Short+task&token=<YOUR_REPORT_SECRET>
-Status codes: w=Workfloor, wait=Waiting Room, e=Repair Bay, m=War Room, i=Lounge. Add &need=Title for approval.`;
+GET ${base}/api/ping?b=atlas&n=Atlas&r=Market+Research&s=w&t=Short+task&token=<YOUR_REPORT_SECRET>
+Status codes: w=Workfloor, wait=Waiting Room, e=Repair Bay, m=War Room, i=Lounge. Add &done=1 when finishing a task or &need=Title for approval.`;
 
     document.getElementById("report-snippet").textContent =
-`POST ${base}/api/report
-Authorization: Bearer <YOUR_REPORT_SECRET>
-{
-  "b": "atlas", "name": "Atlas", "s": "wait",
-  "t": "Ready to publish report",
-  "need": { "title": "Approve publish?", "severity": "approval" }
-}`;
+`GET ${base}/api/bot/atlas/status?token=<YOUR_REPORT_SECRET>
+Returns: { "botId": "atlas", "status": "working", "assignedTask": "...", "openNeeds": 0, "latestDecision": "approved", "note": "..." }`;
     connectModal.classList.remove("hidden");
   });
   document.getElementById("btn-close-connect").addEventListener("click", () => connectModal.classList.add("hidden"));
   connectModal.querySelector(".modal-backdrop").addEventListener("click", () => connectModal.classList.add("hidden"));
 
   document.getElementById("btn-open-guardrails").addEventListener("click", () => {
-    const s = snapshot?.settings ?? { dailyCostCapUsd: 10, dailyTokenCap: 500000, dailyTaskTarget: 30, autoIdleMinutes: 5 };
+    const s = snapshot?.settings ?? {
+      dailyCostCapUsd: 10,
+      dailyTokenCap: 500000,
+      dailyTaskTarget: 30,
+      autoIdleMinutes: 5,
+      hardBudgetStop: false,
+      alertWebhookUrl: "",
+    };
     document.getElementById("set-cost-cap").value = s.dailyCostCapUsd;
     document.getElementById("set-token-cap").value = s.dailyTokenCap;
     document.getElementById("set-task-target").value = s.dailyTaskTarget;
     document.getElementById("set-auto-idle").value = s.autoIdleMinutes;
+    document.getElementById("set-hard-stop").checked = Boolean(s.hardBudgetStop);
+    document.getElementById("set-webhook-url").value = s.alertWebhookUrl || "";
     settingsModal.classList.remove("hidden");
   });
   document.getElementById("btn-close-settings").addEventListener("click", () => settingsModal.classList.add("hidden"));
@@ -563,6 +795,8 @@ Authorization: Bearer <YOUR_REPORT_SECRET>
         dailyTokenCap: Number(document.getElementById("set-token-cap").value),
         dailyTaskTarget: Number(document.getElementById("set-task-target").value),
         autoIdleMinutes: Number(document.getElementById("set-auto-idle").value),
+        hardBudgetStop: document.getElementById("set-hard-stop").checked,
+        alertWebhookUrl: document.getElementById("set-webhook-url").value.trim(),
       }),
     });
     settingsModal.classList.add("hidden");
@@ -581,9 +815,53 @@ Authorization: Bearer <YOUR_REPORT_SECRET>
       return;
     }
 
+    const jumpRow = e.target.closest("[data-jump-bot]");
+    if (jumpRow) {
+      const botId = jumpRow.dataset.jumpBot;
+      switchView("office");
+      setTimeout(() => office3d.selectBot(botId), 60);
+      return;
+    }
+
     const row = e.target.closest("[data-select-bot]");
     if (row) {
       office3d.selectBot(row.dataset.selectBot);
+      return;
+    }
+
+    const saveTaskBtn = e.target.closest("[data-save-bot-task]");
+    if (saveTaskBtn) {
+      const botId = saveTaskBtn.dataset.saveBotTask;
+      const taskInput = document.getElementById("insp-task-input");
+      if (taskInput) {
+        await fetch(`/api/bots/${encodeURIComponent(botId)}/command`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ task: taskInput.value.trim() }),
+        });
+      }
+      return;
+    }
+
+    const saveRoleBtn = e.target.closest("[data-save-bot-role]");
+    if (saveRoleBtn) {
+      const botId = saveRoleBtn.dataset.saveBotRole;
+      const roleInput = document.getElementById("insp-role-input");
+      if (roleInput && roleInput.value.trim()) {
+        await fetch(`/api/bots/${encodeURIComponent(botId)}/command`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ role: roleInput.value.trim() }),
+        });
+      }
+      return;
+    }
+
+    const delBotBtn = e.target.closest("[data-delete-bot]");
+    if (delBotBtn) {
+      const botId = delBotBtn.dataset.deleteBot;
+      selectedBotId = null;
+      await fetch(`/api/bots/${encodeURIComponent(botId)}`, { method: "DELETE" });
       return;
     }
 

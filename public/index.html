@@ -39,6 +39,7 @@
           <button class="seg-btn" data-cam="fixed">Fixed</button>
         </div>
 
+        <button id="btn-sound-toggle" class="btn btn-secondary" title="Toggle alert chime when bots need approval or hit an error">🔔 Chime: On</button>
         <button id="btn-sim" class="btn btn-sim">Simulate</button>
         <button id="btn-connect" class="btn btn-primary">+ Connect</button>
       </div>
@@ -51,11 +52,11 @@
         <div id="label-layer" class="label-layer"></div>
         <div id="bot-tooltip" class="bot-tooltip hidden"></div>
 
-        <!-- Minimal Top-Left Status Bar (1 clean line, zero subtext clutter) -->
+        <!-- Minimal Top-Left Status Bar -->
         <div class="stage-chip-bar">
           <span id="mode-pill" class="mode-pill live">LIVE</span>
           <span id="usage-left-pill" class="chip-text">Budget 100% left</span>
-          <button id="btn-reset-view" class="chip-btn">Reset</button>
+          <button id="btn-reset-view" class="chip-btn">Camera</button>
           <button id="btn-toggle-labels" class="chip-btn active">Names</button>
           <button id="btn-clean-view" class="chip-btn">Clean view</button>
         </div>
@@ -74,16 +75,19 @@
         <!-- Exit Clean View Pill -->
         <button id="btn-exit-clean" class="exit-clean-btn hidden">Exit clean view</button>
 
-        <!-- Crisp Selected Bot Control Card -->
+        <!-- Rich Per-Bot Telemetry & Inline Command Inspector -->
         <aside id="bot-inspector" class="bot-inspector hidden"></aside>
       </div>
 
-      <!-- Clean, Breathable Right Sidebar -->
+      <!-- Clean, Breathable Right Sidebar with Interactive Activity Explorer -->
       <aside class="sidebar">
         <div class="sb-section sb-team">
           <div class="sb-head">
             <span class="sb-title">TEAM <strong id="team-count">0</strong></span>
-            <button id="btn-seed-mini" class="link-btn">Seed demo</button>
+            <div style="display:flex;gap:10px;align-items:center">
+              <button id="btn-seed-mini" class="link-btn">Seed demo</button>
+              <button id="btn-clear-demo" class="link-btn danger-link" title="Clear all demo/simulated bots & reset office">Clear data</button>
+            </div>
           </div>
           <div class="filter-row" id="team-filters">
             <button class="fpill active" data-filter="all">All</button>
@@ -99,9 +103,17 @@
 
         <div class="sb-section sb-feed">
           <div class="sb-head">
-            <span class="sb-title">ACTIVITY</span>
+            <span class="sb-title">ACTIVITY EXPLORER</span>
             <span id="last-update-label" class="sb-time">Waiting…</span>
           </div>
+          <div class="filter-row" id="act-filters">
+            <button class="fpill active" data-act-filter="all">All</button>
+            <button class="fpill" data-act-filter="error">Errors</button>
+            <button class="fpill" data-act-filter="warn">Approvals</button>
+            <button class="fpill" data-act-filter="success">Done</button>
+            <button class="fpill" data-act-filter="bot" id="act-filter-bot-pill">Selected</button>
+          </div>
+          <input id="act-search-input" class="act-search" type="search" placeholder="Search logs, tasks, or bot name…" />
           <div id="activity-list" class="activity-list">
             <div class="empty-msg">No activity yet.</div>
           </div>
@@ -109,16 +121,17 @@
       </aside>
     </section>
 
-    <!-- VIEW 2: FULL-PAGE GOALS & METRICS DASHBOARD (Zero Clutter, Crystal Clear) -->
+    <!-- VIEW 2: FULL-PAGE GOALS & METRICS DASHBOARD -->
     <section id="view-metrics" class="view-panel page-view">
       <div class="page-container">
         <div class="page-header">
           <div>
             <h2>Goals &amp; Metrics</h2>
-            <p class="page-lead">Track daily targets, token budgets, and active team objectives.</p>
+            <p class="page-lead">Track daily targets, token budgets, per-agent performance, and active team objectives.</p>
           </div>
           <div class="page-actions">
-            <button id="btn-open-guardrails" class="btn btn-secondary">⚙ Guardrails</button>
+            <button id="btn-open-guardrails" class="btn btn-secondary">⚙ Guardrails &amp; Alerts</button>
+            <button id="btn-reset-metrics" class="btn btn-reject">Clear Office Data</button>
             <a href="/api/export.csv" class="btn btn-secondary">↓ Export CSV</a>
           </div>
         </div>
@@ -150,6 +163,37 @@
             <div class="hero-label">Fleet Speed &amp; Health</div>
             <div class="hero-value" id="m-latency-val">0 ms</div>
             <div class="hero-foot" id="m-health-foot">0% error rate · 0 requests</div>
+          </div>
+        </div>
+
+        <!-- Per-Agent Performance & Spend Leaderboard -->
+        <div class="card-panel">
+          <div class="card-panel-head">
+            <div>
+              <h3>Agent Performance &amp; Spend Leaderboard</h3>
+              <span class="muted" style="font-size:0.84rem">Click any agent row to jump straight to them in the 3D Office.</span>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="data-table leaderboard-table">
+              <thead>
+                <tr>
+                  <th>Agent &amp; Role</th>
+                  <th>Room / State</th>
+                  <th>Current Task</th>
+                  <th>Model</th>
+                  <th>Tasks Done</th>
+                  <th>Requests</th>
+                  <th>Tokens</th>
+                  <th>Total Spend</th>
+                  <th>Errors</th>
+                  <th>Last Seen</th>
+                </tr>
+              </thead>
+              <tbody id="agent-leaderboard-tbody">
+                <tr><td colspan="10" class="muted">No agents registered yet.</td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
 
@@ -232,7 +276,7 @@
       <div class="modal-body">
         <div class="connect-opt">
           <h4>1. Zero-Token Auto-Tracking Proxy (Custom Grok Scripts)</h4>
-          <p class="muted">Point your xAI / OpenAI SDK <code>baseURL</code> here — tokens, cost, latency, and errors log automatically with <strong>0 extra Grok prompts</strong>:</p>
+          <p class="muted">Point your xAI / OpenAI SDK <code>baseURL</code> here — tokens, cost, latency, errors, and budget circuit-breakers work automatically with <strong>0 extra Grok prompts</strong>:</p>
           <pre id="proxy-snippet" class="code-block"></pre>
           <button class="btn btn-secondary copy-btn" data-target="proxy-snippet">Copy SDK Snippet</button>
         </div>
@@ -245,20 +289,21 @@
         </div>
 
         <div class="connect-opt">
-          <h4>3. Approval Queue JSON (Optional)</h4>
+          <h4>3. Poll Assigned Tasks &amp; Approval Decisions (Optional)</h4>
+          <p class="muted">Check if you approved a bot's request or assigned it a new task from the 3D Inspector:</p>
           <pre id="report-snippet" class="code-block"></pre>
-          <button class="btn btn-secondary copy-btn" data-target="report-snippet">Copy JSON</button>
+          <button class="btn btn-secondary copy-btn" data-target="report-snippet">Copy Status Check</button>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Guardrails Modal -->
+  <!-- Guardrails & Alerts Modal -->
   <div id="settings-modal" class="modal hidden">
     <div class="modal-backdrop"></div>
     <div class="modal-card modal-sm">
       <div class="modal-header">
-        <h3>Office Guardrails &amp; Auto-Idle</h3>
+        <h3>Office Guardrails, Circuit-Breaker &amp; Alerts</h3>
         <button id="btn-close-settings" class="btn-icon">✕</button>
       </div>
       <form id="settings-form" class="settings-form">
@@ -266,6 +311,14 @@
         <label><span>Daily Token Cap</span><input id="set-token-cap" type="number" step="10000" min="1000" required /></label>
         <label><span>Daily Tasks Goal</span><input id="set-task-target" type="number" step="1" min="1" required /></label>
         <label><span>Auto-Idle to Lounge (minutes)</span><input id="set-auto-idle" type="number" step="1" min="1" max="120" required /></label>
+        <label class="checkbox-label">
+          <input id="set-hard-stop" type="checkbox" />
+          <span><strong>Hard Budget Circuit-Breaker</strong> (Block <code>/proxy/*</code> calls with HTTP 429 when daily cap is reached)</span>
+        </label>
+        <label>
+          <span>Outbound Alert Webhook URL (Discord / Slack / HTTPS)</span>
+          <input id="set-webhook-url" type="url" placeholder="https://discord.com/api/webhooks/..." />
+        </label>
         <button type="submit" class="btn btn-primary" style="width:100%;margin-top:8px">Save Guardrails</button>
       </form>
     </div>
