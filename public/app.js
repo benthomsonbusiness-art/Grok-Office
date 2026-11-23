@@ -22,6 +22,19 @@
   let inspectorRenderDeferred = false;
   let fleetRenderDeferred = false;
   let needsRenderDeferred = false;
+  let tasksRenderDeferred = false;
+  let taskListFilter = "all";
+  let taskStatusFilter = "open";
+  let editingTaskId = null;
+  let gtasksDraftSecret =
+    localStorage.getItem("grok_hq_gtasks_secret") ||
+    (() => {
+      const bytes = new Uint8Array(18);
+      crypto.getRandomValues(bytes);
+      const val = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+      localStorage.setItem("grok_hq_gtasks_secret", val);
+      return val;
+    })();
   let cmdSelectedIndex = 0;
   let cmdItems = [];
 
@@ -388,6 +401,14 @@
         fleetRenderDeferred = false;
         renderFleet();
       }
+    } else if (activeView === "tasks") {
+      const tasksEl = document.getElementById("view-tasks");
+      if (!force && isEditingInside(tasksEl)) {
+        tasksRenderDeferred = true;
+      } else {
+        tasksRenderDeferred = false;
+        renderTasksPage();
+      }
     } else if (activeView === "metrics") {
       renderMetricsPage();
     } else if (activeView === "needs") {
@@ -410,6 +431,10 @@
       if (fleetRenderDeferred && activeView === "fleet" && !isEditingInside(document.getElementById("fleet-grid"))) {
         fleetRenderDeferred = false;
         renderFleet();
+      }
+      if (tasksRenderDeferred && activeView === "tasks" && !isEditingInside(document.getElementById("view-tasks"))) {
+        tasksRenderDeferred = false;
+        renderTasksPage();
       }
       if (needsRenderDeferred && activeView === "needs" && !isEditingInside(document.getElementById("needs-grid"))) {
         needsRenderDeferred = false;
@@ -458,6 +483,13 @@
     const navBadge = document.getElementById("nav-needs-badge");
     navBadge.textContent = String(openNeeds);
     navBadge.classList.toggle("hidden", openNeeds === 0);
+
+    const openTasksCount = (snapshot.tasks || []).filter((t) => t.status !== "completed").length;
+    const tasksBadge = document.getElementById("nav-tasks-badge");
+    if (tasksBadge) {
+      tasksBadge.textContent = String(openTasksCount);
+      tasksBadge.classList.toggle("hidden", openTasksCount === 0);
+    }
 
     const lastUpdEl = document.getElementById("last-update-label");
     lastUpdEl.textContent = timeAgo(lastBotUpdateAt);
@@ -1363,6 +1395,12 @@
     if (viewName === "office" && typeof office3d.handleResize === "function") {
       setTimeout(() => office3d.handleResize(), 40);
     }
+    if (viewName === "tasks" && snapshot?.googleTasksSync?.connected) {
+      const lastMs = snapshot.googleTasksSync.lastSyncAt ? Date.parse(snapshot.googleTasksSync.lastSyncAt) : 0;
+      if (!Number.isFinite(lastMs) || Date.now() - lastMs > 45_000) {
+        fetch("/api/tasks/sync", { method: "POST" }).catch(() => {});
+      }
+    }
   }
 
   document.querySelectorAll("[data-view]").forEach((btn) => {
@@ -1415,6 +1453,7 @@
     [
       { title: "Go to 3D Office", subtitle: "Live 3D command stage", icon: ICONS.box, view: "office" },
       { title: "Go to Fleet", subtitle: "Check-in freshness & queued orders", icon: ICONS.cpu, view: "fleet" },
+      { title: "Go to Tasks", subtitle: "Google Tasks two-way sync & bot dispatch", icon: ICONS.check, view: "tasks" },
       { title: "Go to Goals & Metrics", subtitle: "Throughput, runs, spend & objectives", icon: ICONS.chart, view: "metrics" },
       { title: "Go to Pending Needs", subtitle: "Open approvals & escalations", icon: ICONS.bell, view: "needs" },
     ].forEach((n) => {
@@ -1429,6 +1468,7 @@
     });
 
     items.push(
+      { group: "Actions", title: "Connect Google Tasks", subtitle: "Two-way auto-sync via private Apps Script bridge", iconHtml: `<span class="kpi-ico">${ICONS.check}</span>`, keywords: "google tasks sync connect import calendar", run: () => openGTasksModal() },
       { group: "Actions", title: "Add New Grok Bot", subtitle: "Create bot & copy check-in prompt", iconHtml: `<span class="kpi-ico">${ICONS.plus}</span>`, keywords: "add new create bot grok", run: () => openAddBotModal() },
       { group: "Actions", title: "Connect Guide", subtitle: "View Grok App prompt & SDK proxy snippets", iconHtml: `<span class="kpi-ico">${ICONS.link}</span>`, keywords: "connect prompt instructions proxy sdk", run: () => openConnectModal() },
       { group: "Actions", title: "Guardrails & Alerts", subtitle: "Budget caps, circuit-breaker, Discord/Slack webhook", iconHtml: `<span class="kpi-ico">${ICONS.sliders}</span>`, keywords: "guardrails settings budget cap webhook alerts", run: () => openGuardrailsModal() },
@@ -2357,6 +2397,518 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       if (ts) el.textContent = timeAgo(ts);
     });
   }, 15000);
+
+  // =========================================================================
+  // UNIFIED TASKS & TWO-WAY GOOGLE TASKS SYNC
+  // =========================================================================
+  const gtasksModal = document.getElementById("gtasks-modal");
+  const gtasksScriptEl = document.getElementById("gtasks-script-code");
+  const gtasksUrlInput = document.getElementById("gtasks-url-input");
+  const gtasksSecretInput = document.getElementById("gtasks-secret-input");
+  const gtasksDisconnectBtn = document.getElementById("btn-gtasks-disconnect");
+
+  function buildGoogleTasksAppsScript(secret) {
+    const safeSec = String(secret || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    return `const SECRET = "${safeSec}";
+
+function doPost(e) {
+  try {
+    const body = JSON.parse(e.postData.contents || "{}");
+    if (!SECRET || body.secret !== SECRET) return out({ ok: false, error: "Unauthorized" });
+    const act = body.action || "list";
+
+    if (act === "list") {
+      const listsRes = Tasks.Tasklists.list({ maxResults: 50 });
+      const lists = (listsRes.items || []).map(l => ({ id: l.id, title: l.title, updated: l.updated }));
+      const tasks = [];
+      lists.forEach(l => {
+        const res = Tasks.Tasks.list(l.id, { maxResults: 100, showCompleted: true, showHidden: true });
+        (res.items || []).forEach(t => {
+          if (!t.title) return;
+          tasks.push({
+            id: t.id, listId: l.id, title: t.title, notes: t.notes || "",
+            due: t.due || null, status: t.status || "needsAction",
+            completed: t.completed || null, position: t.position || "", updated: t.updated || ""
+          });
+        });
+      });
+      return out({ ok: true, lists, tasks });
+    }
+
+    if (act === "create") {
+      const resource = { title: body.title, notes: body.notes || "" };
+      if (body.due) resource.due = toRfc3339(body.due);
+      const created = Tasks.Tasks.insert(resource, body.listId || "@default");
+      return out({ ok: true, task: { id: created.id, listId: body.listId || "@default", title: created.title, notes: created.notes || "", due: created.due || null, status: created.status || "needsAction", updated: created.updated || "" } });
+    }
+
+    if (act === "update") {
+      const resource = { title: body.title, notes: body.notes || "", status: body.status || "needsAction" };
+      resource.due = body.due ? toRfc3339(body.due) : null;
+      if (resource.status === "needsAction") resource.completed = null;
+      const updated = Tasks.Tasks.patch(resource, body.listId, body.taskId);
+      return out({ ok: true, task: { id: updated.id, listId: body.listId, title: updated.title, notes: updated.notes || "", due: updated.due || null, status: updated.status || "needsAction", updated: updated.updated || "" } });
+    }
+
+    if (act === "delete") {
+      Tasks.Tasks.remove(body.listId, body.taskId);
+      return out({ ok: true });
+    }
+    return out({ ok: false, error: "Unknown action" });
+  } catch (err) {
+    return out({ ok: false, error: String(err && err.message || err) });
+  }
+}
+
+function toRfc3339(d) {
+  return String(d).length === 10 ? d + "T00:00:00.000Z" : String(d);
+}
+
+function out(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}`;
+  }
+
+  function refreshGTasksScriptPreview() {
+    if (!gtasksScriptEl) return;
+    const sec = (gtasksSecretInput?.value || gtasksDraftSecret).trim();
+    gtasksScriptEl.textContent = buildGoogleTasksAppsScript(sec);
+  }
+
+  function openGTasksModal() {
+    if (!gtasksModal) return;
+    const syncState = snapshot?.googleTasksSync;
+    if (gtasksSecretInput) gtasksSecretInput.value = gtasksDraftSecret;
+    refreshGTasksScriptPreview();
+    if (gtasksDisconnectBtn) {
+      gtasksDisconnectBtn.classList.toggle("hidden", !syncState?.connected);
+    }
+    gtasksModal.classList.remove("hidden");
+  }
+
+  gtasksSecretInput?.addEventListener("input", () => {
+    const val = gtasksSecretInput.value.trim();
+    if (val) {
+      gtasksDraftSecret = val;
+      localStorage.setItem("grok_hq_gtasks_secret", val);
+    }
+    refreshGTasksScriptPreview();
+  });
+
+  document.getElementById("btn-open-gtasks-modal")?.addEventListener("click", openGTasksModal);
+  document.getElementById("btn-close-gtasks")?.addEventListener("click", () => gtasksModal?.classList.add("hidden"));
+  gtasksModal?.querySelector(".modal-backdrop")?.addEventListener("click", () => gtasksModal.classList.add("hidden"));
+
+  document.getElementById("btn-gtasks-sync")?.addEventListener("click", async () => {
+    const btn = document.getElementById("btn-gtasks-sync");
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Syncing…";
+    const res = await apiFetch("/api/tasks/sync", { method: "POST" }, "Google Tasks sync failed");
+    btn.disabled = false;
+    btn.textContent = orig;
+    if (res.ok) {
+      try {
+        const d = await res.json();
+        showToast(`Synced ${d.syncedCount ?? 0} Google Tasks`, "success");
+      } catch {
+        showToast("Google Tasks synced", "success");
+      }
+    }
+  });
+
+  document.getElementById("gtasks-config-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const submitBtn = document.getElementById("btn-gtasks-submit");
+    const bridgeUrl = gtasksUrlInput ? gtasksUrlInput.value.trim() : "";
+    const secret = gtasksSecretInput ? gtasksSecretInput.value.trim() : "";
+    if (!bridgeUrl || !secret) return;
+    gtasksDraftSecret = secret;
+    localStorage.setItem("grok_hq_gtasks_secret", secret);
+    const orig = submitBtn.textContent;
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Connecting & syncing…";
+    const res = await apiFetch(
+      "/api/tasks/config",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ bridgeUrl, secret }),
+      },
+      "Could not connect Google Tasks"
+    );
+    submitBtn.disabled = false;
+    submitBtn.textContent = orig;
+    if (res.ok) {
+      gtasksModal?.classList.add("hidden");
+      try {
+        const d = await res.json();
+        showToast(`Google Tasks connected — imported ${d.syncedCount ?? 0} tasks`, "success");
+      } catch {
+        showToast("Google Tasks connected & synced", "success");
+      }
+    }
+  });
+
+  gtasksDisconnectBtn?.addEventListener("click", async () => {
+    const ok = await askConfirm({
+      title: "Disconnect Google Tasks?",
+      message: "This removes the bridge URL and clears cached Google Tasks from Grok Bot HQ (nothing is deleted in your Google account).",
+      confirmLabel: "Disconnect",
+      danger: true,
+    });
+    if (!ok) return;
+    const res = await apiFetch(
+      "/api/tasks/config",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ disconnect: true }),
+      },
+      "Could not disconnect"
+    );
+    if (res.ok) {
+      if (gtasksUrlInput) gtasksUrlInput.value = "";
+      gtasksModal?.classList.add("hidden");
+      showToast("Google Tasks disconnected", "info");
+    }
+  });
+
+  function formatDueChip(dueIso, isCompleted) {
+    if (!dueIso) return "";
+    const datePart = String(dueIso).slice(0, 10);
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    let cls = "";
+    let label = datePart;
+    if (!isCompleted && datePart < todayStr) {
+      cls = "overdue";
+      label = `Overdue · ${datePart}`;
+    } else if (datePart === todayStr) {
+      cls = isCompleted ? "" : "due-soon";
+      label = "Due Today";
+    } else if (datePart === tomorrow) {
+      cls = isCompleted ? "" : "due-soon";
+      label = "Due Tomorrow";
+    } else {
+      label = `Due ${datePart}`;
+    }
+    return `<span class="task-chip ${cls}">${esc(label)}</span>`;
+  }
+
+  function renderTasksPage() {
+    if (!snapshot) return;
+    const tasks = snapshot.tasks || [];
+    const lists = snapshot.taskLists || [{ id: "local", title: "My Tasks" }];
+    const bots = snapshot.bots || [];
+    const sync = snapshot.googleTasksSync || { connected: false, lastSyncAt: null, error: null };
+
+    // Sync header controls
+    const syncPill = document.getElementById("gtasks-sync-pill");
+    const syncBtn = document.getElementById("btn-gtasks-sync");
+    const openBtn = document.getElementById("btn-open-gtasks-modal");
+    const errBanner = document.getElementById("gtasks-error-banner");
+
+    if (syncPill) {
+      if (sync.error) {
+        syncPill.className = "sync-pill error";
+        syncPill.textContent = "Sync error";
+      } else if (sync.connected) {
+        syncPill.className = "sync-pill connected";
+        syncPill.textContent = sync.lastSyncAt ? `Google Synced · ${timeAgo(sync.lastSyncAt)}` : "Google Connected";
+        if (sync.lastSyncAt) syncPill.dataset.liveTs = sync.lastSyncAt;
+      } else {
+        syncPill.className = "sync-pill";
+        syncPill.textContent = "Local tasks · Not synced";
+        delete syncPill.dataset.liveTs;
+      }
+    }
+    if (syncBtn) syncBtn.classList.toggle("hidden", !sync.connected);
+    if (openBtn) {
+      openBtn.textContent = sync.connected ? "Google Sync Settings" : "Connect Google Tasks";
+      openBtn.className = sync.connected ? "btn btn-secondary" : "btn btn-primary";
+    }
+    if (errBanner) {
+      if (sync.error) {
+        errBanner.textContent = `Google Tasks sync issue: ${sync.error}`;
+        errBanner.classList.remove("hidden");
+      } else {
+        errBanner.classList.add("hidden");
+      }
+    }
+
+    // KPIs
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const openTasks = tasks.filter((t) => t.status !== "completed");
+    const dueCount = openTasks.filter((t) => t.due && String(t.due).slice(0, 10) <= todayStr).length;
+    const botAssignedCount = openTasks.filter((t) => Boolean(t.assignedBotId)).length;
+    const doneCount = tasks.length - openTasks.length;
+
+    const setTxt = (id, v) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = String(v);
+    };
+    setTxt("tasks-kpi-open", openTasks.length);
+    setTxt("tasks-kpi-due", dueCount);
+    setTxt("tasks-kpi-bots", botAssignedCount);
+    setTxt("tasks-kpi-done", doneCount);
+
+    // Populate composer dropdowns while preserving current selection
+    const listSel = document.getElementById("task-create-list");
+    if (listSel) {
+      const prev = listSel.value;
+      listSel.innerHTML = lists.map((l) => `<option value="${esc(l.id)}">${esc(l.title)}</option>`).join("");
+      if (lists.some((l) => l.id === prev)) listSel.value = prev;
+    }
+    const botSel = document.getElementById("task-create-bot");
+    if (botSel) {
+      const prev = botSel.value;
+      botSel.innerHTML =
+        `<option value="">No bot (personal)</option>` +
+        bots.map((b) => `<option value="${esc(b.id)}">Dispatch → ${esc(b.name)}</option>`).join("");
+      if (bots.some((b) => b.id === prev)) botSel.value = prev;
+    }
+
+    // List filter pills
+    const listMap = new Map(lists.map((l) => [l.id, l.title]));
+    if (taskListFilter !== "all" && !listMap.has(taskListFilter)) taskListFilter = "all";
+    const pillsEl = document.getElementById("tasks-list-pills");
+    if (pillsEl) {
+      pillsEl.innerHTML =
+        `<button class="chip-btn ${taskListFilter === "all" ? "active" : ""}" data-task-list="all">All Lists <span class="mono">${openTasks.length}</span></button>` +
+        lists
+          .map((l) => {
+            const cnt = openTasks.filter((t) => t.listId === l.id).length;
+            return `<button class="chip-btn ${taskListFilter === l.id ? "active" : ""}" data-task-list="${esc(l.id)}">${esc(l.title)} <span class="mono">${cnt}</span></button>`;
+          })
+          .join("");
+    }
+
+    // Status filter tabs active state
+    document.querySelectorAll("[data-task-filter]").forEach((b) =>
+      b.classList.toggle("active", b.dataset.taskFilter === taskStatusFilter)
+    );
+
+    // Filter tasks
+    const next3Days = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
+    const visible = tasks.filter((t) => {
+      if (taskListFilter !== "all" && t.listId !== taskListFilter) return false;
+      if (taskStatusFilter === "open") return t.status !== "completed";
+      if (taskStatusFilter === "completed") return t.status === "completed";
+      if (taskStatusFilter === "bots") return t.status !== "completed" && Boolean(t.assignedBotId);
+      if (taskStatusFilter === "due") return t.status !== "completed" && Boolean(t.due) && String(t.due).slice(0, 10) <= next3Days;
+      return true;
+    });
+
+    const container = document.getElementById("tasks-list-container");
+    if (!container) return;
+    if (visible.length === 0) {
+      container.innerHTML = emptyStateHtml({
+        icon: ICONS.check,
+        title: taskStatusFilter === "completed" ? "No completed tasks yet" : "No tasks in this view",
+        subtitle: sync.connected
+          ? "Add a task above — it saves directly to Google Tasks and updates automatically."
+          : "Add a local task above, or click Connect Google Tasks to import and two-way sync your Google Tasks.",
+      });
+      return;
+    }
+
+    const botOptionsHtml = (selectedId) =>
+      `<option value="">Assign bot…</option>` +
+      bots
+        .map((b) => `<option value="${esc(b.id)}" ${b.id === selectedId ? "selected" : ""}>${esc(b.name)}</option>`)
+        .join("");
+
+    container.innerHTML = visible
+      .map((t) => {
+        const isDone = t.status === "completed";
+        const isEditing = editingTaskId === t.id;
+        const listTitle = listMap.get(t.listId) || "My Tasks";
+        const dueDateVal = t.due ? String(t.due).slice(0, 10) : "";
+        return `<article class="task-row-card ${isDone ? "completed" : ""}">
+          <div class="task-row-main">
+            <button class="task-check-btn ${isDone ? "checked" : ""}" data-toggle-task="${esc(t.id)}" data-next-status="${isDone ? "needsAction" : "completed"}" title="${isDone ? "Mark incomplete" : "Mark complete"}">${isDone ? "✓" : ""}</button>
+            <div class="task-row-body">
+              <div class="task-row-title">${esc(t.title)}</div>
+              ${t.notes ? `<div class="task-row-notes">${esc(t.notes)}</div>` : ""}
+              <div class="task-row-meta">
+                <span class="task-chip ${t.source === "google" ? "google" : ""}">${t.source === "google" ? "Google · " : ""}${esc(listTitle)}</span>
+                ${formatDueChip(t.due, isDone)}
+                ${t.assignedBotName ? `<span class="task-chip bot-chip">Bot: ${esc(t.assignedBotName)}</span>` : ""}
+              </div>
+            </div>
+            <div class="task-row-actions">
+              ${
+                bots.length > 0 && !isDone
+                  ? `<select class="task-assign-select" data-assign-task-bot="${esc(t.id)}" title="Dispatch task directly to a Grok bot">${botOptionsHtml(t.assignedBotId)}</select>`
+                  : ""
+              }
+              <button class="btn btn-secondary" style="padding:4px 9px;font-size:0.74rem" data-edit-task="${esc(t.id)}">${isEditing ? "Close" : "Edit"}</button>
+              <button class="link-btn danger-link" style="font-size:0.78rem;padding:4px 6px" data-delete-task="${esc(t.id)}" title="Delete task">✕</button>
+            </div>
+          </div>
+          ${
+            isEditing
+              ? `<form class="task-edit-form" data-save-task-edit="${esc(t.id)}">
+                  <div class="task-edit-row">
+                    <input type="text" name="title" value="${esc(t.title)}" required maxlength="200" placeholder="Task title…" />
+                    <input type="date" name="due" value="${esc(dueDateVal)}" />
+                    <button type="submit" class="btn btn-primary" style="padding:6px 12px;font-size:0.76rem">Save</button>
+                    <button type="button" class="btn btn-secondary" style="padding:6px 10px;font-size:0.76rem" data-cancel-task-edit>Cancel</button>
+                  </div>
+                  <textarea name="notes" rows="2" maxlength="1000" placeholder="Notes / details (syncs to Google Tasks notes)…">${esc(t.notes || "")}</textarea>
+                </form>`
+              : ""
+          }
+        </article>`;
+      })
+      .join("");
+  }
+
+  document.getElementById("task-create-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const titleEl = document.getElementById("task-create-title");
+    const listEl = document.getElementById("task-create-list");
+    const dueEl = document.getElementById("task-create-due");
+    const botEl = document.getElementById("task-create-bot");
+    const title = titleEl ? titleEl.value.trim() : "";
+    if (!title) return;
+    const res = await apiFetch(
+      "/api/tasks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          listId: listEl ? listEl.value : undefined,
+          title,
+          due: dueEl && dueEl.value ? dueEl.value : null,
+          assignedBotId: botEl && botEl.value ? botEl.value : null,
+        }),
+      },
+      "Could not add task"
+    );
+    if (res.ok) {
+      titleEl.value = "";
+      if (dueEl) dueEl.value = "";
+      if (botEl) botEl.value = "";
+      titleEl.blur();
+      tasksRenderDeferred = false;
+      showToast(snapshot?.googleTasksSync?.connected ? "Task added & synced to Google Tasks" : "Task added", "success");
+    }
+  });
+
+  document.addEventListener("submit", async (e) => {
+    const editForm = e.target.closest("[data-save-task-edit]");
+    if (!editForm) return;
+    e.preventDefault();
+    const taskId = editForm.dataset.saveTaskEdit;
+    const title = editForm.querySelector('[name="title"]')?.value.trim() || "";
+    const due = editForm.querySelector('[name="due"]')?.value || null;
+    const notes = editForm.querySelector('[name="notes"]')?.value.trim() || "";
+    if (!title) return;
+    const res = await apiFetch(
+      `/api/tasks/${encodeURIComponent(taskId)}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title, due, notes }),
+      },
+      "Could not save task"
+    );
+    if (res.ok) {
+      editingTaskId = null;
+      tasksRenderDeferred = false;
+      showToast("Task updated", "success");
+    }
+  });
+
+  document.addEventListener("change", async (e) => {
+    const assignSel = e.target.closest("[data-assign-task-bot]");
+    if (!assignSel) return;
+    const taskId = assignSel.dataset.assignTaskBot;
+    const botId = assignSel.value || null;
+    const res = await apiFetch(
+      `/api/tasks/${encodeURIComponent(taskId)}/assign`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ botId }),
+      },
+      "Could not assign task"
+    );
+    if (res.ok) {
+      assignSel.blur();
+      tasksRenderDeferred = false;
+      showToast(botId ? "Task dispatched to bot's command queue" : "Unassigned bot from task", botId ? "success" : "info");
+    }
+  });
+
+  document.addEventListener("click", async (e) => {
+    const listBtn = e.target.closest("[data-task-list]");
+    if (listBtn) {
+      taskListFilter = listBtn.dataset.taskList;
+      renderTasksPage();
+      return;
+    }
+    const filterBtn = e.target.closest("[data-task-filter]");
+    if (filterBtn) {
+      taskStatusFilter = filterBtn.dataset.taskFilter;
+      renderTasksPage();
+      return;
+    }
+    const toggleBtn = e.target.closest("[data-toggle-task]");
+    if (toggleBtn) {
+      const taskId = toggleBtn.dataset.toggleTask;
+      const nextStatus = toggleBtn.dataset.nextStatus;
+      const res = await apiFetch(
+        `/api/tasks/${encodeURIComponent(taskId)}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ status: nextStatus }),
+        },
+        "Could not update task status"
+      );
+      if (res.ok) {
+        showToast(nextStatus === "completed" ? "Task completed" : "Task reopened", "success");
+      }
+      return;
+    }
+    const editBtn = e.target.closest("[data-edit-task]");
+    if (editBtn) {
+      const id = editBtn.dataset.editTask;
+      editingTaskId = editingTaskId === id ? null : id;
+      tasksRenderDeferred = false;
+      renderTasksPage();
+      return;
+    }
+    if (e.target.closest("[data-cancel-task-edit]")) {
+      editingTaskId = null;
+      tasksRenderDeferred = false;
+      renderTasksPage();
+      return;
+    }
+    const delTaskBtn = e.target.closest("[data-delete-task]");
+    if (delTaskBtn) {
+      const taskId = delTaskBtn.dataset.deleteTask;
+      const res = await apiFetch(
+        `/api/tasks/${encodeURIComponent(taskId)}`,
+        { method: "DELETE" },
+        "Could not delete task"
+      );
+      if (res.ok) {
+        if (editingTaskId === taskId) editingTaskId = null;
+        showToast("Task deleted", "info");
+      }
+      return;
+    }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && gtasksModal && !gtasksModal.classList.contains("hidden")) {
+      gtasksModal.classList.add("hidden");
+    }
+  });
 
   fetchSnapshotFallback();
   connectWS();

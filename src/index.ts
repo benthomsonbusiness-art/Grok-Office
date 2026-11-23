@@ -15,6 +15,10 @@ import type {
   BotOrders,
   BotRecord,
   BotStatus,
+  GoogleTaskItem,
+  GoogleTaskList,
+  GoogleTaskStatus,
+  GoogleTasksSyncState,
   GrokShape,
   LogLevel,
   NeedSeverity,
@@ -38,6 +42,18 @@ export interface Env {
   REPORT_SECRET?: string;
   OFFICE_PASSWORD?: string;
   AI_GATEWAY_BASE_URL?: string;
+  GOOGLE_TASKS_BRIDGE_URL?: string;
+  GOOGLE_TASKS_BRIDGE_SECRET?: string;
+}
+
+function isValidGoogleTasksBridgeUrl(rawUrl: string): boolean {
+  if (!isSafeCallbackUrl(rawUrl)) return false;
+  try {
+    const u = new URL(rawUrl);
+    return u.hostname.toLowerCase() === "script.google.com" && u.pathname.startsWith("/macros/");
+  } catch {
+    return false;
+  }
 }
 
 const DEFAULT_COLORS = [
@@ -267,11 +283,32 @@ export class OfficeHub extends DurableObject<Env> {
         value TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS google_task_lists (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS google_tasks (
+        id TEXT PRIMARY KEY,
+        list_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        notes TEXT NOT NULL DEFAULT '',
+        due TEXT,
+        status TEXT NOT NULL DEFAULT 'needsAction',
+        completed_at TEXT,
+        position TEXT NOT NULL DEFAULT '',
+        assigned_bot_id TEXT,
+        source TEXT NOT NULL DEFAULT 'local',
+        updated_at TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_needs_status ON pending_needs(status, created_at);
       CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at);
       CREATE INDEX IF NOT EXISTS idx_logs_created ON activity_logs(created_at);
       CREATE INDEX IF NOT EXISTS idx_runs_started ON task_runs(started_at);
       CREATE INDEX IF NOT EXISTS idx_queue_bot ON task_queue(bot_id, status, created_at);
+      CREATE INDEX IF NOT EXISTS idx_gtasks_list ON google_tasks(list_id, status, updated_at);
     `);
 
     const botCols = this.sql
@@ -508,6 +545,17 @@ export class OfficeHub extends DurableObject<Env> {
           need.bot_name
         );
         changed = true;
+      }
+    }
+
+    // Periodic Google Tasks two-way background sync (every 2 minutes when connected)
+    const gtCfg = this.getGoogleTasksConfig();
+    if (gtCfg.bridgeUrl) {
+      needNextAlarm = true;
+      const lastSyncMs = gtCfg.lastSyncAt ? Date.parse(gtCfg.lastSyncAt) : 0;
+      if (!Number.isFinite(lastSyncMs) || nowMs - lastSyncMs >= 120_000) {
+        const synced = await this.syncGoogleTasks();
+        if (synced.ok) changed = true;
       }
     }
 
@@ -1131,6 +1179,280 @@ export class OfficeHub extends DurableObject<Env> {
       return jsonResponse({ ok: true, settings: next });
     }
 
+    if (url.pathname === "/api/tasks/config" && request.method === "POST") {
+      let body: { bridgeUrl?: string; secret?: string; disconnect?: boolean };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return jsonResponse({ error: "Invalid JSON" }, 400);
+      }
+      if (body.disconnect) {
+        this.saveSettingKey("google_tasks_url", "");
+        this.saveSettingKey("google_tasks_secret", "");
+        this.saveSettingKey("google_tasks_error", "");
+        this.sql.exec("DELETE FROM google_tasks WHERE source = 'google'");
+        this.sql.exec("DELETE FROM google_task_lists WHERE id != 'local'");
+        this.broadcastSnapshot();
+        return jsonResponse({ ok: true, connected: false });
+      }
+      const bridgeUrl = clampText(body.bridgeUrl, 400);
+      const secret = clampText(body.secret, 160);
+      if (!bridgeUrl || !isValidGoogleTasksBridgeUrl(bridgeUrl)) {
+        return jsonResponse(
+          { error: "Bridge URL must be a valid https://script.google.com/macros/s/.../exec URL" },
+          400
+        );
+      }
+      this.saveSettingKey("google_tasks_url", bridgeUrl);
+      if (secret) {
+        this.saveSettingKey("google_tasks_secret", secret);
+      }
+      const synced = await this.syncGoogleTasks();
+      await this.ensureAlarmScheduled();
+      this.broadcastSnapshot();
+      if (!synced.ok) {
+        return jsonResponse({ ok: false, error: synced.error || "Could not connect to Google Tasks bridge" }, 502);
+      }
+      return jsonResponse({ ok: true, connected: true, syncedCount: synced.count });
+    }
+
+    if (url.pathname === "/api/tasks/sync" && request.method === "POST") {
+      const cfg = this.getGoogleTasksConfig();
+      if (!cfg.bridgeUrl) {
+        return jsonResponse({ error: "Google Tasks is not connected yet" }, 400);
+      }
+      const synced = await this.syncGoogleTasks();
+      await this.ensureAlarmScheduled();
+      this.broadcastSnapshot();
+      if (!synced.ok) {
+        return jsonResponse({ ok: false, error: synced.error || "Sync failed" }, 502);
+      }
+      return jsonResponse({ ok: true, syncedCount: synced.count });
+    }
+
+    if (url.pathname === "/api/tasks" && request.method === "POST") {
+      let body: {
+        listId?: string;
+        title?: string;
+        notes?: string;
+        due?: string | null;
+        assignedBotId?: string | null;
+      };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return jsonResponse({ error: "Invalid JSON" }, 400);
+      }
+      const title = clampText(body.title, 200);
+      if (!title) return jsonResponse({ error: "title is required" }, 400);
+      const notes = clampText(body.notes, 1000);
+      const due = body.due ? clampText(body.due, 40) : null;
+      const assignedBotId = clampText(body.assignedBotId, 64) || null;
+      const now = new Date().toISOString();
+      const cfg = this.getGoogleTasksConfig();
+      const lists = this.listGoogleTaskLists();
+      const listId = clampText(body.listId, 120) || lists[0]?.id || "local";
+
+      let taskId = `local-${crypto.randomUUID()}`;
+      let source: "google" | "local" = "local";
+      let resolvedListId = listId;
+      let resolvedDue = due;
+
+      if (cfg.bridgeUrl && listId !== "local") {
+        const res = await this.callGoogleTasksBridge("create", {
+          listId,
+          title,
+          notes,
+          due: due || undefined,
+        });
+        if (!res.ok) {
+          return jsonResponse({ error: res.error || "Google Tasks create failed" }, 502);
+        }
+        const created = res.task;
+        if (created?.id) {
+          taskId = String(created.id);
+          source = "google";
+          resolvedListId = created.listId ? String(created.listId) : listId;
+          resolvedDue = created.due ? String(created.due) : due;
+        }
+      } else {
+        this.sql.exec(
+          `INSERT OR IGNORE INTO google_task_lists (id, title, updated_at) VALUES ('local', 'My Tasks', ?)`,
+          now
+        );
+        resolvedListId = "local";
+      }
+
+      this.sql.exec(
+        `INSERT INTO google_tasks (id, list_id, title, notes, due, status, completed_at, position, assigned_bot_id, source, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'needsAction', NULL, '', ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           list_id = excluded.list_id,
+           title = excluded.title,
+           notes = excluded.notes,
+           due = excluded.due,
+           assigned_bot_id = excluded.assigned_bot_id,
+           source = excluded.source,
+           updated_at = excluded.updated_at`,
+        taskId,
+        resolvedListId,
+        title,
+        notes,
+        resolvedDue,
+        assignedBotId,
+        source,
+        now
+      );
+
+      if (assignedBotId) {
+        this.enqueueTaskForBot(assignedBotId, title);
+      }
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true, id: taskId, source });
+    }
+
+    const taskAssignMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/assign$/);
+    if (taskAssignMatch && request.method === "POST") {
+      const taskId = decodeURIComponent(taskAssignMatch[1]);
+      let body: { botId?: string | null };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return jsonResponse({ error: "Invalid JSON" }, 400);
+      }
+      const row = this.sql
+        .exec<{ id: string; title: string; notes: string }>(
+          "SELECT id, title, notes FROM google_tasks WHERE id = ?",
+          taskId
+        )
+        .toArray()[0];
+      if (!row) return jsonResponse({ error: "Task not found" }, 404);
+      const botId = clampText(body.botId, 64) || null;
+      if (botId) {
+        const botExists = this.sql
+          .exec<{ id: string }>("SELECT id FROM bots WHERE id = ?", botId)
+          .toArray()[0];
+        if (!botExists) return jsonResponse({ error: "Bot not found" }, 404);
+      }
+      this.sql.exec(
+        "UPDATE google_tasks SET assigned_bot_id = ?, updated_at = ? WHERE id = ?",
+        botId,
+        new Date().toISOString(),
+        taskId
+      );
+      if (botId) {
+        const cmdText = row.notes ? `${row.title} — ${clampText(row.notes, 100)}` : row.title;
+        this.enqueueTaskForBot(botId, clampText(cmdText, 200));
+      }
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true });
+    }
+
+    const taskItemMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)$/);
+    if (taskItemMatch && request.method === "PATCH") {
+      const taskId = decodeURIComponent(taskItemMatch[1]);
+      const existing = this.sql
+        .exec<{
+          id: string;
+          list_id: string;
+          title: string;
+          notes: string;
+          due: string | null;
+          status: GoogleTaskStatus;
+          completed_at: string | null;
+          assigned_bot_id: string | null;
+          source: "google" | "local";
+        }>("SELECT * FROM google_tasks WHERE id = ?", taskId)
+        .toArray()[0];
+      if (!existing) return jsonResponse({ error: "Task not found" }, 404);
+
+      let body: {
+        title?: string;
+        notes?: string;
+        due?: string | null;
+        status?: GoogleTaskStatus;
+        assignedBotId?: string | null;
+      };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return jsonResponse({ error: "Invalid JSON" }, 400);
+      }
+
+      const nextTitle = body.title !== undefined ? clampText(body.title, 200) || existing.title : existing.title;
+      const nextNotes = body.notes !== undefined ? clampText(body.notes, 1000) : existing.notes;
+      const nextDue = body.due !== undefined ? (body.due ? clampText(body.due, 40) : null) : existing.due;
+      const nextStatus: GoogleTaskStatus =
+        body.status === "completed" || body.status === "needsAction" ? body.status : existing.status;
+      const now = new Date().toISOString();
+      const nextCompletedAt =
+        nextStatus === "completed" ? existing.completed_at ?? now : null;
+      const nextAssignedBotId =
+        body.assignedBotId !== undefined
+          ? clampText(body.assignedBotId, 64) || null
+          : existing.assigned_bot_id;
+
+      const cfg = this.getGoogleTasksConfig();
+      if (cfg.bridgeUrl && existing.source === "google") {
+        const res = await this.callGoogleTasksBridge("update", {
+          listId: existing.list_id,
+          taskId: existing.id,
+          title: nextTitle,
+          notes: nextNotes,
+          due: nextDue,
+          status: nextStatus,
+        });
+        if (!res.ok) {
+          return jsonResponse({ error: res.error || "Google Tasks update failed" }, 502);
+        }
+      }
+
+      this.sql.exec(
+        `UPDATE google_tasks
+         SET title = ?, notes = ?, due = ?, status = ?, completed_at = ?, assigned_bot_id = ?, updated_at = ?
+         WHERE id = ?`,
+        nextTitle,
+        nextNotes,
+        nextDue,
+        nextStatus,
+        nextCompletedAt,
+        nextAssignedBotId,
+        now,
+        taskId
+      );
+
+      if (nextAssignedBotId && nextAssignedBotId !== existing.assigned_bot_id) {
+        this.enqueueTaskForBot(nextAssignedBotId, nextTitle);
+      }
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true });
+    }
+
+    if (taskItemMatch && request.method === "DELETE") {
+      const taskId = decodeURIComponent(taskItemMatch[1]);
+      const existing = this.sql
+        .exec<{ id: string; list_id: string; source: "google" | "local" }>(
+          "SELECT id, list_id, source FROM google_tasks WHERE id = ?",
+          taskId
+        )
+        .toArray()[0];
+      if (!existing) return jsonResponse({ error: "Task not found" }, 404);
+
+      const cfg = this.getGoogleTasksConfig();
+      if (cfg.bridgeUrl && existing.source === "google") {
+        const res = await this.callGoogleTasksBridge("delete", {
+          listId: existing.list_id,
+          taskId: existing.id,
+        });
+        if (!res.ok) {
+          return jsonResponse({ error: res.error || "Google Tasks delete failed" }, 502);
+        }
+      }
+      this.sql.exec("DELETE FROM google_tasks WHERE id = ?", taskId);
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true });
+    }
+
     if (url.pathname === "/api/export.csv" && request.method === "GET") {
       const rows = this.sql
         .exec<{
@@ -1620,6 +1942,35 @@ export class OfficeHub extends DurableObject<Env> {
           .toArray()[0];
         if (frontQ && frontQ.task.trim().toLowerCase() === reportedTaskNorm) {
           this.sql.exec("UPDATE task_queue SET status = 'dispatched' WHERE id = ?", frontQ.id);
+        }
+        if (payload.done === true) {
+          const matchedGTask = this.sql
+            .exec<{ id: string; list_id: string; title: string; notes: string; due: string | null; source: "google" | "local" }>(
+              "SELECT id, list_id, title, notes, due, source FROM google_tasks WHERE assigned_bot_id = ? AND status = 'needsAction' AND lower(trim(title)) = ? LIMIT 1",
+              botId,
+              reportedTaskNorm
+            )
+            .toArray()[0];
+          if (matchedGTask) {
+            this.sql.exec(
+              "UPDATE google_tasks SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?",
+              now,
+              now,
+              matchedGTask.id
+            );
+            if (matchedGTask.source === "google") {
+              this.ctx.waitUntil(
+                this.callGoogleTasksBridge("update", {
+                  listId: matchedGTask.list_id,
+                  taskId: matchedGTask.id,
+                  title: matchedGTask.title,
+                  notes: matchedGTask.notes,
+                  due: matchedGTask.due,
+                  status: "completed",
+                }).catch(() => {})
+              );
+            }
+          }
         }
       }
 
@@ -2354,12 +2705,31 @@ export class OfficeHub extends DurableObject<Env> {
           )
         : null;
 
+    const gtCfg = this.getGoogleTasksConfig();
+    let bridgeHost: string | null = null;
+    if (gtCfg.bridgeUrl) {
+      try {
+        bridgeHost = new URL(gtCfg.bridgeUrl).hostname;
+      } catch {
+        bridgeHost = null;
+      }
+    }
+    const googleTasksSync: GoogleTasksSyncState = {
+      connected: Boolean(gtCfg.bridgeUrl),
+      lastSyncAt: gtCfg.lastSyncAt,
+      error: gtCfg.error,
+      bridgeHost,
+    };
+
     return {
       bots,
       pendingNeeds,
       activityLogs,
       recentRuns,
       objectives,
+      taskLists: this.listGoogleTaskLists(),
+      tasks: this.listGoogleTasks(bots),
+      googleTasksSync,
       settings,
       usageSummary: {
         totalTokens: (totals?.tokens_in ?? 0) + (totals?.tokens_out ?? 0),
@@ -2387,6 +2757,286 @@ export class OfficeHub extends DurableObject<Env> {
       lastBotUpdateAt,
       serverTime: new Date().toISOString(),
     };
+  }
+
+  private saveSettingKey(key: string, value: string): void {
+    this.sql.exec(
+      `INSERT INTO office_settings (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      key,
+      value
+    );
+  }
+
+  private getGoogleTasksConfig(): {
+    bridgeUrl: string;
+    secret: string;
+    lastSyncAt: string | null;
+    error: string | null;
+  } {
+    const rows = this.sql
+      .exec<{ key: string; value: string }>(
+        "SELECT key, value FROM office_settings WHERE key IN ('google_tasks_url', 'google_tasks_secret', 'google_tasks_last_sync', 'google_tasks_error')"
+      )
+      .toArray();
+    const map = new Map(rows.map((r) => [r.key, r.value]));
+    const envUrl = clampText(this.env.GOOGLE_TASKS_BRIDGE_URL, 400);
+    const dbUrl = clampText(map.get("google_tasks_url"), 400);
+    const bridgeUrl = envUrl && isValidGoogleTasksBridgeUrl(envUrl) ? envUrl : dbUrl;
+    const secret = clampText(this.env.GOOGLE_TASKS_BRIDGE_SECRET, 160) || clampText(map.get("google_tasks_secret"), 160);
+    return {
+      bridgeUrl,
+      secret,
+      lastSyncAt: map.get("google_tasks_last_sync") || null,
+      error: map.get("google_tasks_error") || null,
+    };
+  }
+
+  private enqueueTaskForBot(botId: string, taskText: string): void {
+    const clean = clampText(taskText, 200);
+    if (!clean) return;
+    const dup = this.sql
+      .exec<{ id: string }>(
+        "SELECT id FROM task_queue WHERE bot_id = ? AND status = 'queued' AND lower(trim(task)) = lower(trim(?)) LIMIT 1",
+        botId,
+        clean
+      )
+      .toArray()[0];
+    if (!dup) {
+      this.sql.exec(
+        "INSERT INTO task_queue (id, bot_id, task, status, created_at) VALUES (?, ?, ?, 'queued', ?)",
+        crypto.randomUUID(),
+        botId,
+        clean,
+        new Date().toISOString()
+      );
+    }
+  }
+
+  private async callGoogleTasksBridge(
+    action: "list" | "create" | "update" | "delete",
+    payload: Record<string, unknown>
+  ): Promise<{
+    ok: boolean;
+    error?: string;
+    lists?: Array<{ id: string; title: string; updated?: string }>;
+    tasks?: Array<{
+      id: string;
+      listId: string;
+      title: string;
+      notes?: string;
+      due?: string | null;
+      status?: string;
+      completed?: string | null;
+      position?: string;
+      updated?: string;
+    }>;
+    task?: {
+      id: string;
+      listId?: string;
+      title?: string;
+      notes?: string;
+      due?: string | null;
+      status?: string;
+      updated?: string;
+    };
+  }> {
+    const cfg = this.getGoogleTasksConfig();
+    if (!cfg.bridgeUrl || !isValidGoogleTasksBridgeUrl(cfg.bridgeUrl)) {
+      return { ok: false, error: "Google Tasks bridge URL is not configured" };
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12_000);
+    try {
+      const resp = await fetch(cfg.bridgeUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        redirect: "follow",
+        signal: controller.signal,
+        body: JSON.stringify({
+          secret: cfg.secret,
+          action,
+          ...payload,
+        }),
+      });
+      const text = await resp.text();
+      if (!resp.ok) {
+        return { ok: false, error: `Bridge returned HTTP ${resp.status}` };
+      }
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        return {
+          ok: false,
+          error: "Bridge returned HTML instead of JSON — check Apps Script deployment access is set to 'Anyone'",
+        };
+      }
+      if (parsed.ok === false || parsed.error) {
+        return { ok: false, error: clampText(parsed.error, 200) || "Bridge rejected request" };
+      }
+      return { ok: true, ...(parsed as Record<string, unknown>) } as ReturnType<
+        OfficeHub["callGoogleTasksBridge"]
+      > extends Promise<infer R>
+        ? R
+        : never;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Network error";
+      return { ok: false, error: clampText(msg, 180) };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async syncGoogleTasks(): Promise<{ ok: boolean; count: number; error?: string }> {
+    const res = await this.callGoogleTasksBridge("list", {});
+    const now = new Date().toISOString();
+    if (!res.ok) {
+      this.saveSettingKey("google_tasks_error", res.error || "Sync failed");
+      return { ok: false, count: 0, error: res.error };
+    }
+
+    const lists = Array.isArray(res.lists) ? res.lists : [];
+    const tasks = Array.isArray(res.tasks) ? res.tasks : [];
+
+    // Preserve any bot assignments attached to existing Google tasks
+    const existingAssign = new Map(
+      this.sql
+        .exec<{ id: string; assigned_bot_id: string | null }>(
+          "SELECT id, assigned_bot_id FROM google_tasks WHERE assigned_bot_id IS NOT NULL"
+        )
+        .toArray()
+        .map((r) => [r.id, r.assigned_bot_id])
+    );
+
+    const seenListIds = new Set<string>();
+    for (const l of lists) {
+      const id = clampText(l.id, 120);
+      const title = clampText(l.title, 100) || "Tasks";
+      if (!id) continue;
+      seenListIds.add(id);
+      this.sql.exec(
+        `INSERT INTO google_task_lists (id, title, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET title = excluded.title, updated_at = excluded.updated_at`,
+        id,
+        title,
+        l.updated || now
+      );
+    }
+
+    const existingLists = this.sql
+      .exec<{ id: string }>("SELECT id FROM google_task_lists WHERE id != 'local'")
+      .toArray();
+    for (const row of existingLists) {
+      if (!seenListIds.has(row.id)) {
+        this.sql.exec("DELETE FROM google_task_lists WHERE id = ?", row.id);
+      }
+    }
+
+    const seenTaskIds = new Set<string>();
+    for (const t of tasks) {
+      const id = clampText(t.id, 160);
+      const listId = clampText(t.listId, 120);
+      const title = clampText(t.title, 200);
+      if (!id || !listId || !title) continue;
+      seenTaskIds.add(id);
+      const status: GoogleTaskStatus = t.status === "completed" ? "completed" : "needsAction";
+      const due = t.due ? clampText(t.due, 40) : null;
+      const notes = clampText(t.notes, 1000);
+      const completedAt = t.completed ? clampText(t.completed, 40) : status === "completed" ? now : null;
+      const position = clampText(t.position, 40);
+      const assignedBotId = existingAssign.get(id) ?? null;
+
+      this.sql.exec(
+        `INSERT INTO google_tasks (id, list_id, title, notes, due, status, completed_at, position, assigned_bot_id, source, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'google', ?)
+         ON CONFLICT(id) DO UPDATE SET
+           list_id = excluded.list_id,
+           title = excluded.title,
+           notes = excluded.notes,
+           due = excluded.due,
+           status = excluded.status,
+           completed_at = excluded.completed_at,
+           position = excluded.position,
+           source = 'google',
+           updated_at = excluded.updated_at`,
+        id,
+        listId,
+        title,
+        notes,
+        due,
+        status,
+        completedAt,
+        position,
+        assignedBotId,
+        t.updated || now
+      );
+    }
+
+    const existingGoogleTasks = this.sql
+      .exec<{ id: string }>("SELECT id FROM google_tasks WHERE source = 'google'")
+      .toArray();
+    for (const row of existingGoogleTasks) {
+      if (!seenTaskIds.has(row.id)) {
+        this.sql.exec("DELETE FROM google_tasks WHERE id = ?", row.id);
+      }
+    }
+
+    this.saveSettingKey("google_tasks_last_sync", now);
+    this.saveSettingKey("google_tasks_error", "");
+    return { ok: true, count: seenTaskIds.size };
+  }
+
+  private listGoogleTaskLists(): GoogleTaskList[] {
+    const rows = this.sql
+      .exec<{ id: string; title: string; updated_at: string }>(
+        "SELECT id, title, updated_at FROM google_task_lists ORDER BY CASE WHEN id = 'local' THEN 1 ELSE 0 END, title ASC"
+      )
+      .toArray();
+    if (rows.length === 0) {
+      return [{ id: "local", title: "My Tasks", updatedAt: new Date().toISOString() }];
+    }
+    return rows.map((r) => ({ id: r.id, title: r.title, updatedAt: r.updated_at }));
+  }
+
+  private listGoogleTasks(bots: BotRecord[]): GoogleTaskItem[] {
+    const botNames = new Map(bots.map((b) => [b.id, b.name]));
+    return this.sql
+      .exec<{
+        id: string;
+        list_id: string;
+        title: string;
+        notes: string;
+        due: string | null;
+        status: GoogleTaskStatus;
+        completed_at: string | null;
+        position: string;
+        assigned_bot_id: string | null;
+        source: "google" | "local";
+        updated_at: string;
+      }>(
+        `SELECT * FROM google_tasks
+         ORDER BY CASE WHEN status = 'needsAction' THEN 0 ELSE 1 END,
+                  CASE WHEN due IS NULL OR due = '' THEN 1 ELSE 0 END,
+                  due ASC,
+                  updated_at DESC
+         LIMIT 300`
+      )
+      .toArray()
+      .map((r) => ({
+        id: r.id,
+        listId: r.list_id,
+        title: r.title,
+        notes: r.notes,
+        due: r.due,
+        status: r.status === "completed" ? "completed" : "needsAction",
+        completedAt: r.completed_at,
+        position: r.position,
+        assignedBotId: r.assigned_bot_id,
+        assignedBotName: r.assigned_bot_id ? botNames.get(r.assigned_bot_id) ?? r.assigned_bot_id : null,
+        source: r.source === "google" ? "google" : "local",
+        updatedAt: r.updated_at,
+      }));
   }
 
   private resetOffice(): void {

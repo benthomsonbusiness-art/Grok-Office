@@ -141,12 +141,45 @@ export interface UsageBucket {
   errors: number;
 }
 
+export type GoogleTaskStatus = "needsAction" | "completed";
+
+export interface GoogleTaskList {
+  id: string;
+  title: string;
+  updatedAt: string;
+}
+
+export interface GoogleTaskItem {
+  id: string;
+  listId: string;
+  title: string;
+  notes: string;
+  due: string | null;
+  status: GoogleTaskStatus;
+  completedAt: string | null;
+  position: string;
+  assignedBotId: string | null;
+  assignedBotName: string | null;
+  source: "google" | "local";
+  updatedAt: string;
+}
+
+export interface GoogleTasksSyncState {
+  connected: boolean;
+  lastSyncAt: string | null;
+  error: string | null;
+  bridgeHost: string | null;
+}
+
 export interface OfficeSnapshot {
   bots: BotRecord[];
   pendingNeeds: PendingNeed[];
   activityLogs: ActivityLog[];
   recentRuns: TaskRun[];
   objectives: Objective[];
+  taskLists: GoogleTaskList[];
+  tasks: GoogleTaskItem[];
+  googleTasksSync: GoogleTasksSyncState;
   settings: OfficeSettings;
   usageSummary: {
     totalTokens: number;

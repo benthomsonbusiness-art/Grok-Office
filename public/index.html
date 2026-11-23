@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&family=Space+Grotesk:wght@600;700&display=swap" />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2307090e'/%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='6.5' fill='none' stroke='%23ffffff' stroke-opacity='0.22'/%3E%3Cpath d='M18.2 6.8L10.2 17.4h5.3l-1.3 7.8 8-10.6h-5.3l1.3-7.8z' fill='%2338bdf8'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="/styles.css?v=6" />
+  <link rel="stylesheet" href="/styles.css?v=7" />
 </head>
 <body>
   <div id="app-root" class="app-root">
@@ -38,6 +38,11 @@
             <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
             <span>Fleet</span>
             <span id="nav-fleet-badge" class="nav-badge hidden">0</span>
+          </button>
+          <button class="nav-tab" data-view="tasks">
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            <span>Tasks</span>
+            <span id="nav-tasks-badge" class="nav-badge hidden">0</span>
           </button>
           <button class="nav-tab" data-view="metrics">
             <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
@@ -476,6 +481,78 @@
         </div>
       </div>
     </section>
+
+    <!-- VIEW 4: UNIFIED TASKS & TWO-WAY GOOGLE TASKS SYNC -->
+    <section id="view-tasks" class="view-panel page-view">
+      <div class="page-container">
+        <div class="page-header">
+          <div>
+            <h1>Tasks &amp; Google Sync</h1>
+            <p class="page-lead">Manage Google Tasks and local tasks in one place — add, edit, complete, or dispatch any task straight to a Grok bot.</p>
+          </div>
+          <div class="page-actions" style="align-items:center">
+            <span id="gtasks-sync-pill" class="sync-pill">Local only</span>
+            <button id="btn-gtasks-sync" class="btn btn-secondary hidden" title="Pull latest changes from Google Tasks">Sync Now</button>
+            <button id="btn-open-gtasks-modal" class="btn btn-primary">Connect Google Tasks</button>
+          </div>
+        </div>
+
+        <div id="gtasks-error-banner" class="gtasks-error-banner hidden"></div>
+
+        <!-- Tasks KPI Strip -->
+        <div class="hero-kpis fleet-kpis">
+          <div class="hero-card kpi-sky">
+            <div class="hero-top-row"><span class="hero-label">Open Tasks</span></div>
+            <div id="tasks-kpi-open" class="hero-value mono">0</div>
+            <div class="hero-sub">Across all active lists</div>
+          </div>
+          <div class="hero-card kpi-amber">
+            <div class="hero-top-row"><span class="hero-label">Due Today / Overdue</span></div>
+            <div id="tasks-kpi-due" class="hero-value mono">0</div>
+            <div class="hero-sub">Needs attention soon</div>
+          </div>
+          <div class="hero-card kpi-green">
+            <div class="hero-top-row"><span class="hero-label">Assigned to Bots</span></div>
+            <div id="tasks-kpi-bots" class="hero-value mono">0</div>
+            <div class="hero-sub">Dispatched into bot queues</div>
+          </div>
+          <div class="hero-card kpi-violet">
+            <div class="hero-top-row"><span class="hero-label">Completed</span></div>
+            <div id="tasks-kpi-done" class="hero-value mono">0</div>
+            <div class="hero-sub">Synced with Google Tasks</div>
+          </div>
+        </div>
+
+        <!-- Quick-Add Task Composer -->
+        <div class="card-panel">
+          <form id="task-create-form" class="task-create-form">
+            <select id="task-create-list" aria-label="Task list"></select>
+            <input id="task-create-title" type="text" placeholder="Add a task (syncs live to Google Tasks when connected)…" required maxlength="200" />
+            <input id="task-create-due" type="date" aria-label="Due date" title="Optional due date" />
+            <select id="task-create-bot" aria-label="Assign to Grok bot">
+              <option value="">No bot (personal)</option>
+            </select>
+            <button type="submit" class="btn btn-primary">+ Add Task</button>
+          </form>
+        </div>
+
+        <!-- List & Status Filter Bar -->
+        <div class="tasks-toolbar">
+          <div id="tasks-list-pills" class="pill-row"></div>
+          <div class="segmented" id="tasks-status-tabs" role="tablist">
+            <button class="seg-btn active" data-task-filter="open" role="tab">Open</button>
+            <button class="seg-btn" data-task-filter="due" role="tab">Due Soon</button>
+            <button class="seg-btn" data-task-filter="bots" role="tab">With Bots</button>
+            <button class="seg-btn" data-task-filter="completed" role="tab">Completed</button>
+          </div>
+        </div>
+
+        <!-- Tasks List -->
+        <div id="tasks-list-container" class="tasks-list-container">
+          <div class="empty-msg">No tasks yet — add one above or connect Google Tasks.</div>
+        </div>
+      </div>
+    </section>
   </div>
 
   <!-- Toast Notification Stack -->
@@ -662,7 +739,61 @@
     </div>
   </div>
 
-  <script src="/office3d.bundle.js?v=6"></script>
-  <script src="/app.js?v=6"></script>
+  <!-- Connect Google Tasks Modal (Zero-OAuth Apps Script Bridge) -->
+  <div id="gtasks-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="Connect Google Tasks">
+    <div class="modal-backdrop"></div>
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h3>Connect Google Tasks (Two-Way Auto-Sync)</h3>
+        <button id="btn-close-gtasks" class="btn-icon">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="muted" style="margin-top:0">
+          Connects directly to your Google account via a private Google Apps Script bridge — <strong>no Google Cloud project, no OAuth expiry, instant two-way sync</strong>, plus automatic background refresh every 2 minutes.
+        </p>
+
+        <div class="connect-opt">
+          <div class="prompt-preview-head" style="margin-bottom:8px">
+            <h4 style="margin:0">Step 1 — Copy Your Private Bridge Script</h4>
+            <div style="display:flex;gap:8px;align-items:center">
+              <a class="btn btn-secondary" href="https://script.google.com/home/start" target="_blank" rel="noopener noreferrer" style="padding:5px 10px;font-size:0.75rem;text-decoration:none">Open Apps Script ↗</a>
+              <button type="button" class="btn btn-primary copy-btn" data-target="gtasks-script-code" style="padding:5px 11px;font-size:0.75rem">Copy Script</button>
+            </div>
+          </div>
+          <pre id="gtasks-script-code" class="code-block" style="max-height:175px;overflow:auto"></pre>
+        </div>
+
+        <div class="connect-opt">
+          <h4>Step 2 — Deploy Once in Apps Script (60 seconds)</h4>
+          <ol class="gtasks-steps">
+            <li>Click <strong>New project</strong> at <code>script.google.com</code> and replace the default code with the script you just copied.</li>
+            <li>In the left sidebar next to <strong>Services</strong>, click <strong>+</strong> → select <strong>Tasks API</strong> → click <strong>Add</strong>.</li>
+            <li>Click <strong>Deploy → New deployment</strong> → gear icon → <strong>Web app</strong> → set <strong>Execute as: Me</strong> and <strong>Who has access: Anyone</strong> → click <strong>Deploy</strong>, authorize once, and copy the Web App URL.</li>
+          </ol>
+        </div>
+
+        <div class="connect-opt">
+          <h4>Step 3 — Paste Web App URL &amp; Connect</h4>
+          <form id="gtasks-config-form" class="settings-form">
+            <label>
+              <span>Apps Script Web App URL</span>
+              <input id="gtasks-url-input" type="url" placeholder="https://script.google.com/macros/s/AKfycb.../exec" required />
+            </label>
+            <label>
+              <span>Shared Secret (auto-embedded in Step 1 script above)</span>
+              <input id="gtasks-secret-input" type="text" required autocomplete="off" />
+            </label>
+            <div style="display:flex;gap:9px;margin-top:4px">
+              <button id="btn-gtasks-submit" type="submit" class="btn btn-primary" style="flex:1">Connect &amp; Sync Google Tasks</button>
+              <button id="btn-gtasks-disconnect" type="button" class="btn btn-reject hidden">Disconnect</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/office3d.bundle.js?v=7"></script>
+  <script src="/app.js?v=7"></script>
 </body>
 </html>
