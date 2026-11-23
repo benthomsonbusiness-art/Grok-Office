@@ -3,40 +3,71 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Grok Bot HQ — Argon 3D Command Center</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%2306b6d4'/%3E%3Cstop offset='100%25' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='9' fill='%23050816'/%3E%3Crect x='2' y='2' width='28' height='28' rx='7.5' fill='url(%23g)'/%3E%3Cpath d='M17.8 6.5L9.8 17.5h5.5l-1.1 8 8-11h-5.5l1.1-8z' fill='%23ffffff'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="/styles.css" />
+  <title>Grok Bot HQ — Mission Control</title>
+  <meta name="description" content="Real-time 3D virtual office and fleet command center for Grok AI agents." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&family=Space+Grotesk:wght@600;700&display=swap" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23090b10'/%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='6.5' fill='none' stroke='%23ffffff' stroke-opacity='0.22'/%3E%3Cpath d='M18.2 6.8L10.2 17.4h5.3l-1.3 7.8 8-10.6h-5.3l1.3-7.8z' fill='%2338bdf8'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/styles.css?v=3" />
 </head>
 <body>
   <div id="app-root" class="app-root">
-    <!-- Streamlined Single-Row Navigation Header -->
+    <!-- Obsidian Frosted-Glass Command Header -->
     <header id="topbar" class="topbar">
       <div class="topbar-left">
         <div class="brand">
-          <span class="brand-mark" aria-hidden="true">⚡</span>
-          <span class="brand-name">Grok Bot HQ</span>
-          <span id="ws-dot" class="ws-dot" title="Connection status"></span>
+          <span class="brand-mark" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          </span>
+          <div class="brand-text">
+            <span class="brand-name">Grok Bot HQ</span>
+            <span class="brand-live-tag">
+              <span id="ws-dot" class="ws-dot" title="Connection status"></span>
+              <span id="ws-label">LIVE</span>
+            </span>
+          </div>
         </div>
 
         <nav class="main-nav" id="main-nav" aria-label="Main navigation">
-          <button class="nav-tab active" data-view="office">3D Office</button>
-          <button class="nav-tab" data-view="fleet">Fleet <span id="nav-fleet-badge" class="nav-badge hidden">0</span></button>
-          <button class="nav-tab" data-view="metrics">Goals &amp; Metrics</button>
+          <button class="nav-tab active" data-view="office">
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+            <span>3D Office</span>
+          </button>
+          <button class="nav-tab" data-view="fleet">
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
+            <span>Fleet</span>
+            <span id="nav-fleet-badge" class="nav-badge hidden">0</span>
+          </button>
+          <button class="nav-tab" data-view="metrics">
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+            <span>Goals &amp; Metrics</span>
+          </button>
           <button class="nav-tab" data-view="needs">
-            Pending Needs <span id="nav-needs-badge" class="nav-badge hidden">0</span>
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+            <span>Pending Needs</span>
+            <span id="nav-needs-badge" class="nav-badge hidden">0</span>
           </button>
         </nav>
       </div>
 
       <div class="topbar-right">
         <button id="btn-cmd-palette" class="cmd-trigger" title="Open Command Palette (Ctrl+K / ⌘K)">
-          <span class="cmd-trigger-label">Search or jump…</span>
+          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <span class="cmd-trigger-label">Search bots or actions…</span>
           <kbd>⌘K</kbd>
         </button>
-        <button id="btn-sound-toggle" class="icon-btn active" title="Alert chime: On (click to mute)" aria-label="Toggle alert chime">🔔</button>
-        <button id="btn-topbar-guardrails" class="icon-btn" title="Guardrails, Budget Caps &amp; Alerts" aria-label="Open Guardrails">⚙</button>
-        <button id="btn-shortcuts" class="icon-btn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
-        <button id="btn-connect" class="btn btn-primary">+ Connect</button>
+        <button id="btn-sound-toggle" class="icon-btn active" title="Alert chime: On (click to mute)" aria-label="Toggle alert chime"></button>
+        <button id="btn-topbar-guardrails" class="icon-btn" title="Guardrails, Budget Caps &amp; Alerts" aria-label="Open Guardrails">
+          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+        </button>
+        <button id="btn-shortcuts" class="icon-btn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
+          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        </button>
+        <button id="btn-connect" class="btn btn-primary">
+          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <span>Connect</span>
+        </button>
       </div>
     </header>
 
@@ -54,16 +85,20 @@
           <button id="btn-ws-retry" class="ws-banner-btn" type="button">Retry</button>
         </div>
 
-        <!-- Top-Left Status & View Bar -->
+        <!-- Top-Left Frosted Telemetry & View Pill -->
         <div class="stage-chip-bar">
-          <span id="mode-pill" class="mode-pill live">LIVE</span>
-          <span id="usage-left-pill" class="chip-text num">Budget 100% left</span>
-          <button id="btn-reset-view" class="chip-btn" title="Reset camera view (0)">Camera</button>
+          <span id="mode-pill" class="mode-pill live"><span class="live-pulse"></span>LIVE</span>
+          <div class="stage-budget-wrap" title="Daily budget remaining">
+            <span id="usage-left-pill" class="chip-text mono">100% left</span>
+            <span class="mini-meter"><i id="stage-budget-fill" style="width:100%"></i></span>
+          </div>
+          <span class="hud-divider"></span>
+          <button id="btn-reset-view" class="chip-btn" title="Reset camera view (0)">Reset cam</button>
           <button id="btn-toggle-labels" class="chip-btn active" title="Toggle floating bot nameplates">Names</button>
-          <button id="btn-clean-view" class="chip-btn" title="Hide HUD for full-screen 3D">Clean view</button>
+          <button id="btn-clean-view" class="chip-btn" title="Hide HUD for full-screen 3D">Focus 3D</button>
         </div>
 
-        <!-- Top-Right Contextual 3D Stage Controls (Moved out of global topbar) -->
+        <!-- Top-Right Contextual 3D Stage Controls -->
         <div class="stage-controls-bar office-only">
           <div class="segmented segmented-compact" id="lighting-group" title="3D office lighting">
             <button class="seg-btn" data-light="day">Day</button>
@@ -73,38 +108,42 @@
           </div>
 
           <div class="segmented segmented-compact" id="camera-group" title="Camera orbit mode">
-            <button class="seg-btn active" data-cam="rotate">Rotate</button>
+            <button class="seg-btn active" data-cam="rotate">Orbit</button>
             <button class="seg-btn" data-cam="fixed">Fixed</button>
           </div>
 
-          <button id="btn-toggle-sidebar" class="chip-btn sidebar-toggle-btn" title="Collapse / expand sidebar ([)" aria-label="Toggle right sidebar">◧</button>
+          <button id="btn-toggle-sidebar" class="chip-btn sidebar-toggle-btn" title="Collapse / expand sidebar ([)" aria-label="Toggle right sidebar"></button>
         </div>
 
-        <!-- Bottom-Center Interactive Room Jumper Bar (Click any room or press 0-6) -->
+        <!-- Bottom-Center Frosted Room Jumper Dock -->
         <div class="room-bar" id="room-bar">
-          <button class="room-pill active" data-room="all">All <strong id="cnt-all" class="num">0</strong></button>
-          <button class="room-pill" data-room="working"><i class="dot green"></i>Workfloor <strong id="cnt-working" class="num">0</strong></button>
-          <button class="room-pill" data-room="waiting"><i class="dot amber"></i>Waiting <strong id="cnt-waiting" class="num">0</strong></button>
-          <button class="room-pill" data-room="error"><i class="dot red"></i>Repair Bay <strong id="cnt-error" class="num">0</strong></button>
-          <button class="room-pill" data-room="meeting"><i class="dot purple"></i>War Room <strong id="cnt-meeting" class="num">0</strong></button>
-          <button class="room-pill" data-room="idle"><i class="dot blue"></i>Lounge <strong id="cnt-idle" class="num">0</strong></button>
-          <button class="room-pill" data-room="no_report"><i class="dot hollow"></i>Standby <strong id="cnt-noreport" class="num">0</strong></button>
+          <button class="room-pill active" data-room="all"><span class="room-key">0</span>All <strong id="cnt-all" class="mono">0</strong></button>
+          <button class="room-pill" data-room="working"><i class="dot green"></i>Workfloor <strong id="cnt-working" class="mono">0</strong></button>
+          <button class="room-pill" data-room="waiting"><i class="dot amber"></i>Waiting <strong id="cnt-waiting" class="mono">0</strong></button>
+          <button class="room-pill" data-room="error"><i class="dot red"></i>Repair <strong id="cnt-error" class="mono">0</strong></button>
+          <button class="room-pill" data-room="meeting"><i class="dot indigo"></i>War Room <strong id="cnt-meeting" class="mono">0</strong></button>
+          <button class="room-pill" data-room="idle"><i class="dot blue"></i>Lounge <strong id="cnt-idle" class="mono">0</strong></button>
+          <button class="room-pill" data-room="no_report"><i class="dot hollow"></i>Standby <strong id="cnt-noreport" class="mono">0</strong></button>
         </div>
 
         <!-- Exit Clean View Pill -->
-        <button id="btn-exit-clean" class="exit-clean-btn hidden">Exit clean view</button>
+        <button id="btn-exit-clean" class="exit-clean-btn hidden">Exit Focus 3D</button>
       </div>
 
-      <!-- Collapsible Right Sidebar with Interactive Activity Explorer -->
+      <!-- Collapsible Obsidian Sidebar with Fleet Health Strip + Activity Timeline -->
       <aside class="sidebar" id="office-sidebar">
         <div class="sb-section sb-team">
           <div class="sb-head">
-            <span class="sb-title">TEAM <strong id="team-count" class="num">0</strong></span>
+            <span class="sb-title">FLEET ROSTER <strong id="team-count" class="mono">0</strong></span>
             <div class="sb-head-actions">
               <button id="btn-open-add-bot" class="link-btn" style="font-weight:700">+ Add Bot</button>
-              <button id="btn-clear-demo" class="link-btn danger-link" title="Reset all bots and office history">Reset office</button>
+              <button id="btn-clear-demo" class="link-btn danger-link" title="Reset all bots and office history">Reset</button>
             </div>
           </div>
+
+          <!-- Proportional Live Fleet Health Bar -->
+          <div id="team-health-bar" class="health-bar" title="Fleet distribution by room/state"></div>
+
           <div class="filter-row" id="team-filters">
             <button class="fpill active" data-filter="all">All</button>
             <button class="fpill" data-filter="working">Working</button>
@@ -113,14 +152,14 @@
             <button class="fpill" data-filter="idle">Idle</button>
           </div>
           <div id="team-list" class="team-list">
-            <div class="empty-msg">No bots yet. Click <strong>+ Add Bot</strong> to create one for the Grok app.</div>
+            <div class="empty-msg">Loading fleet…</div>
           </div>
         </div>
 
         <div class="sb-section sb-feed">
           <div class="sb-head">
-            <span class="sb-title">ACTIVITY EXPLORER</span>
-            <span id="last-update-label" class="sb-time num">Waiting…</span>
+            <span class="sb-title">LIVE TIMELINE</span>
+            <span id="last-update-label" class="sb-time mono">Waiting…</span>
           </div>
           <div class="filter-row" id="act-filters">
             <button class="fpill active" data-act-filter="all">All</button>
@@ -129,50 +168,70 @@
             <button class="fpill" data-act-filter="success">Done</button>
             <button class="fpill" data-act-filter="bot" id="act-filter-bot-pill">Selected</button>
           </div>
-          <input id="act-search-input" class="act-search" type="search" placeholder="Search logs, tasks, or bot name…" />
+          <input id="act-search-input" class="act-search" type="search" placeholder="Filter events, tasks, or bot name…" />
           <div id="activity-list" class="activity-list">
             <div class="empty-msg">No activity yet.</div>
           </div>
         </div>
       </aside>
 
-      <!-- Right-Edge Slide-Over Docked Bot Inspector (Never blocks 3D canvas) -->
+      <!-- Right-Edge Slide-Over Docked Bot Inspector -->
       <aside id="bot-inspector" class="bot-inspector hidden" aria-label="Bot Inspector"></aside>
     </section>
 
-    <!-- VIEW: FLEET — who is linked, what they last reported, what HQ will send back -->
+    <!-- VIEW: FLEET — Mission Control Board -->
     <section id="view-fleet" class="view-panel page-view">
       <div class="page-container">
         <div class="page-header">
           <div>
-            <h2>Fleet</h2>
-            <p class="page-lead">Every linked Grok bot, how fresh its last update is, and the orders HQ will hand back on the next check-in.</p>
+            <h1>Fleet Command</h1>
+            <p class="page-lead">Live check-in freshness, active tasks, and queued orders delivered on each bot's next ping.</p>
           </div>
           <div class="page-actions">
+            <button id="btn-fleet-connect" class="btn btn-secondary">Connect Guide</button>
             <button id="btn-fleet-add" class="btn btn-primary">+ Add Bot</button>
-            <button id="btn-fleet-connect" class="btn btn-secondary">Connect instructions</button>
           </div>
         </div>
 
         <div class="hero-kpis fleet-kpis">
-          <div class="hero-card">
-            <div class="hero-label">Linked</div>
-            <div class="hero-value num" id="fleet-linked">0</div>
+          <div class="hero-card kpi-sky">
+            <div class="hero-top-row">
+              <span class="hero-label">Linked Agents</span>
+              <span class="kpi-ico">
+                <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/></svg>
+              </span>
+            </div>
+            <div class="hero-value mono" id="fleet-linked">0</div>
             <div class="hero-foot" id="fleet-linked-foot">No bots yet</div>
           </div>
-          <div class="hero-card">
-            <div class="hero-label">Checking in</div>
-            <div class="hero-value num" id="fleet-fresh">0</div>
+          <div class="hero-card kpi-emerald">
+            <div class="hero-top-row">
+              <span class="hero-label">Healthy Check-ins</span>
+              <span class="kpi-ico">
+                <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+              </span>
+            </div>
+            <div class="hero-value mono" id="fleet-fresh">0</div>
             <div class="hero-foot" id="fleet-fresh-foot">Fresh inside their window</div>
           </div>
-          <div class="hero-card">
-            <div class="hero-label">Waiting on you</div>
-            <div class="hero-value num" id="fleet-waiting">0</div>
-            <div class="hero-foot">Open approvals and questions</div>
+          <div class="hero-card kpi-amber">
+            <div class="hero-top-row">
+              <span class="hero-label">Waiting on You</span>
+              <span class="kpi-ico">
+                <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              </span>
+            </div>
+            <div class="hero-value mono" id="fleet-waiting">0</div>
+            <div class="hero-foot">Open approvals &amp; alerts</div>
           </div>
-          <div class="hero-card">
-            <div class="hero-label">Budget left</div>
-            <div class="hero-value num" id="fleet-budget">100%</div>
+          <div class="hero-card kpi-neutral">
+            <div class="hero-top-row">
+              <span class="hero-label">Daily Budget Left</span>
+              <span class="kpi-ico">
+                <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              </span>
+            </div>
+            <div class="hero-value mono" id="fleet-budget">100%</div>
             <div class="hero-foot" id="fleet-budget-foot">Daily cap</div>
           </div>
         </div>
@@ -190,73 +249,132 @@
 
         <div class="card-panel">
           <div class="card-panel-head">
-            <h3>Latest updates</h3>
+            <h3>Latest Check-Ins</h3>
           </div>
           <div id="fleet-updates" class="fleet-updates"></div>
         </div>
       </div>
     </section>
 
-    <!-- VIEW 2: FULL-PAGE GOALS & METRICS DASHBOARD -->
+    <!-- VIEW 2: GOALS & METRICS DASHBOARD -->
     <section id="view-metrics" class="view-panel page-view">
       <div class="page-container">
         <div class="page-header">
           <div>
-            <h2>Goals &amp; Metrics</h2>
-            <p class="page-lead">Track daily targets, token budgets, per-agent performance, and active team objectives.</p>
+            <h1>Goals &amp; Telemetry</h1>
+            <p class="page-lead">Track fleet throughput, run quality, token spend, and shared objectives in real time.</p>
           </div>
           <div class="page-actions">
-            <button id="btn-open-guardrails" class="btn btn-secondary">⚙ Guardrails &amp; Alerts</button>
+            <button id="btn-open-guardrails" class="btn btn-secondary">Guardrails &amp; Alerts</button>
+            <a href="/api/export.csv" class="btn btn-secondary">Export CSV</a>
             <button id="btn-reset-metrics" class="btn btn-reject">Clear Office Data</button>
-            <a href="/api/export.csv" class="btn btn-secondary">↓ Export CSV</a>
           </div>
         </div>
 
-        <!-- Daily Executive Digest Strip -->
+        <!-- Executive Digest Strip -->
         <div id="daily-digest-bar" class="digest-strip">
-          <div class="digest-item"><span>Cost / Completed Task</span><strong id="dig-cost-per-task" class="num">$0.00</strong></div>
-          <div class="digest-item"><span>Fleet Quality 👍</span><strong id="dig-quality" class="num">—</strong></div>
-          <div class="digest-item"><span>Approvals Resolved Today</span><strong id="dig-approvals" class="num">0</strong></div>
-          <div class="digest-item"><span>Failed Runs Today</span><strong id="dig-failed" class="num">0</strong></div>
+          <div class="digest-item"><span>Cost / Completed Task</span><strong id="dig-cost-per-task" class="mono">$0.00</strong></div>
+          <div class="digest-item"><span>Fleet Quality</span><strong id="dig-quality" class="mono">—</strong></div>
+          <div class="digest-item"><span>Approvals Resolved</span><strong id="dig-approvals" class="mono">0</strong></div>
+          <div class="digest-item"><span>Failed Runs Today</span><strong id="dig-failed" class="mono">0</strong></div>
           <div class="digest-item"><span>Top Contributor</span><strong id="dig-top-bot">—</strong></div>
         </div>
 
-        <!-- 4 Spacious Hero KPI Cards -->
+        <!-- 4 Executive Hero KPI Cards (with live circular budget gauge) -->
         <div class="hero-kpis">
-          <div class="hero-card">
-            <div class="hero-label">Daily Budget Left</div>
-            <div class="hero-value num" id="m-budget-pct">100%</div>
-            <div class="pbar lg"><div id="m-budget-bar" class="pbar-fill purple"></div></div>
-            <div class="hero-foot num" id="m-budget-foot">$0.00 of $10.00 cap</div>
+          <div class="hero-card kpi-sky hero-card-ring">
+            <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:8px">
+              <div class="hero-label">Daily Budget Left</div>
+              <div class="hero-value mono" id="m-budget-pct">100%</div>
+              <div class="pbar lg"><div id="m-budget-bar" class="pbar-fill blue"></div></div>
+              <div class="hero-foot mono" id="m-budget-foot">$0.00 of $10.00 cap</div>
+            </div>
+            <div id="m-budget-ring" class="kpi-ring-slot" aria-hidden="true"></div>
           </div>
 
-          <div class="hero-card">
-            <div class="hero-label">Daily Tasks Goal</div>
-            <div class="hero-value num" id="m-tasks-val">0 / 30</div>
+          <div class="hero-card kpi-emerald">
+            <div class="hero-top-row">
+              <span class="hero-label">Daily Tasks Goal</span>
+              <span class="kpi-ico">
+                <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="20 6 9 17 4 12"/></svg>
+              </span>
+            </div>
+            <div class="hero-value mono" id="m-tasks-val">0 / 30</div>
             <div class="pbar lg"><div id="m-tasks-bar" class="pbar-fill green"></div></div>
-            <div class="hero-foot num" id="m-tasks-foot">0% of daily target</div>
+            <div class="hero-foot mono" id="m-tasks-foot">0% of daily target</div>
           </div>
 
-          <div class="hero-card">
-            <div class="hero-label">Tokens Today</div>
-            <div class="hero-value num" id="m-tokens-val">0</div>
+          <div class="hero-card kpi-neutral">
+            <div class="hero-top-row">
+              <span class="hero-label">Tokens Today</span>
+              <span class="kpi-ico">
+                <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+              </span>
+            </div>
+            <div class="hero-value mono" id="m-tokens-val">0</div>
             <div class="pbar lg"><div id="m-tokens-bar" class="pbar-fill blue"></div></div>
-            <div class="hero-foot num" id="m-tokens-foot">0 in · 0 out</div>
+            <div class="hero-foot mono" id="m-tokens-foot">0 in · 0 out</div>
           </div>
 
-          <div class="hero-card">
-            <div class="hero-label">Fleet Speed &amp; Health</div>
-            <div class="hero-value num" id="m-latency-val">0 ms</div>
-            <div class="hero-foot num" id="m-health-foot">p95 0 ms · 0% errors · 0 req</div>
+          <div class="hero-card kpi-amber">
+            <div class="hero-top-row">
+              <span class="hero-label">Fleet Speed &amp; Health</span>
+              <span class="kpi-ico">
+                <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+              </span>
+            </div>
+            <div class="hero-value mono" id="m-latency-val">0 ms</div>
+            <div class="hero-foot mono" id="m-health-foot">p95 0 ms · 0% errors · 0 req</div>
           </div>
         </div>
 
-        <!-- Per-Agent Performance & Spend Leaderboard (Sortable Columns) -->
+        <!-- Activity & Usage Analytics (Always Populated!) + Fleet / Model Donut -->
+        <div class="metrics-two-col">
+          <div class="card-panel">
+            <div class="card-panel-head">
+              <div>
+                <h3 id="usage-chart-title">Fleet Activity &amp; Usage</h3>
+                <span class="muted" style="font-size:0.8rem" id="usage-chart-sub">Hover any column for detailed run &amp; spend telemetry</span>
+              </div>
+              <div class="segmented">
+                <button class="seg-btn active" data-chart-mode="runs">Runs</button>
+                <button class="seg-btn" data-chart-mode="tokens">Tokens</button>
+                <button class="seg-btn" data-chart-mode="cost">Spend $</button>
+              </div>
+            </div>
+            <div id="usage-chart" class="usage-chart"></div>
+          </div>
+
+          <div class="card-panel">
+            <div class="card-panel-head">
+              <h3 id="donut-panel-title">Fleet Breakdown</h3>
+              <div class="segmented">
+                <button class="seg-btn active" data-donut-mode="fleet">Fleet Status</button>
+                <button class="seg-btn" data-donut-mode="model">By Model</button>
+              </div>
+            </div>
+            <div class="model-split">
+              <div id="model-donut-wrap" class="model-donut-wrap"></div>
+              <div class="table-scroll" style="flex:1">
+                <table class="data-table">
+                  <thead id="model-thead">
+                    <tr><th>Group</th><th class="num-col">Count</th><th class="num-col">Tasks</th><th class="num-col">Share</th></tr>
+                  </thead>
+                  <tbody id="model-tbody">
+                    <tr><td colspan="4" class="muted">Loading…</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sortable Per-Agent Performance & Spend Leaderboard -->
         <div class="card-panel">
           <div class="card-panel-head">
             <div>
-              <h3>Agent Performance &amp; Spend Leaderboard</h3>
-              <span class="muted" style="font-size:0.84rem">Click any column header to sort, or click any agent row to jump straight to them in the 3D Office.</span>
+              <h3>Agent Performance Leaderboard</h3>
+              <span class="muted" style="font-size:0.82rem">Click any column header to sort, or click any row to jump straight to that agent in the 3D Office.</span>
             </div>
           </div>
           <div class="table-scroll">
@@ -267,11 +385,11 @@
                   <th class="sortable" data-sort-col="status">Room / State <span class="sort-ind"></span></th>
                   <th>Current Task</th>
                   <th class="sortable" data-sort-col="model">Model <span class="sort-ind"></span></th>
-                  <th class="sortable num-col" data-sort-col="tasks">Tasks Done <span class="sort-ind"></span></th>
+                  <th class="sortable num-col sort-active" data-sort-col="tasks">Tasks Done <span class="sort-ind">▼</span></th>
                   <th class="sortable num-col" data-sort-col="duration">Avg Dur <span class="sort-ind"></span></th>
                   <th class="sortable num-col" data-sort-col="quality">Quality <span class="sort-ind"></span></th>
                   <th class="sortable num-col" data-sort-col="tokens">Tokens <span class="sort-ind"></span></th>
-                  <th class="sortable num-col sort-active" data-sort-col="cost">Total Spend <span class="sort-ind">▼</span></th>
+                  <th class="sortable num-col" data-sort-col="cost">Total Spend <span class="sort-ind"></span></th>
                   <th class="sortable num-col" data-sort-col="errors">Errors <span class="sort-ind"></span></th>
                   <th class="sortable" data-sort-col="lastSeen">Last Seen <span class="sort-ind"></span></th>
                 </tr>
@@ -288,7 +406,7 @@
           <div class="card-panel-head">
             <div>
               <h3>Recent Runs &amp; Deliverables</h3>
-              <span class="muted" style="font-size:0.84rem">Inspect task duration, open deliverable links, and grade runs (👍 / 👎) to catch silent failures.</span>
+              <span class="muted" style="font-size:0.82rem">Inspect run duration, open deliverable links, and grade outputs to catch silent failures.</span>
             </div>
           </div>
           <div class="table-scroll">
@@ -310,7 +428,7 @@
           </div>
         </div>
 
-        <!-- Prominent Team Goals Section -->
+        <!-- Team Goals Section -->
         <div class="card-panel">
           <div class="card-panel-head">
             <h3>Team Goals &amp; Objectives</h3>
@@ -325,52 +443,19 @@
           </form>
 
           <div id="goals-grid" class="goals-grid">
-            <div class="empty-msg">No goals yet. Click <strong>+ New Goal</strong> above to create one.</div>
-          </div>
-        </div>
-
-        <!-- Usage Analytics (Interactive SVG) & Model Spend Breakdown (SVG Donut + Table) -->
-        <div class="metrics-two-col">
-          <div class="card-panel">
-            <div class="card-panel-head">
-              <h3>Usage Over Time</h3>
-              <div class="segmented">
-                <button class="seg-btn active" data-chart-mode="tokens">Tokens</button>
-                <button class="seg-btn" data-chart-mode="cost">Spend $</button>
-              </div>
-            </div>
-            <div id="usage-chart" class="usage-chart"></div>
-          </div>
-
-          <div class="card-panel">
-            <div class="card-panel-head">
-              <h3>Spend by Model</h3>
-            </div>
-            <div class="model-split">
-              <div id="model-donut-wrap" class="model-donut-wrap"></div>
-              <div class="table-scroll" style="flex:1">
-                <table class="data-table">
-                  <thead>
-                    <tr><th>Model</th><th class="num-col">Requests</th><th class="num-col">Tokens</th><th class="num-col">Est. Cost</th></tr>
-                  </thead>
-                  <tbody id="model-tbody">
-                    <tr><td colspan="4" class="muted">No usage events yet</td></tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            <div class="empty-msg">No goals yet.</div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- VIEW 3: FULL-PAGE PENDING NEEDS & APPROVALS -->
+    <!-- VIEW 3: PENDING NEEDS & APPROVALS -->
     <section id="view-needs" class="view-panel page-view">
       <div class="page-container">
         <div class="page-header">
           <div>
-            <h2>Pending Needs &amp; Approvals</h2>
-            <p class="page-lead">Bots waiting in the Approval Desk or Repair Bay appear here.</p>
+            <h1>Pending Needs &amp; Approvals</h1>
+            <p class="page-lead">Review human-in-the-loop approvals, escalation alerts, and bot blockers.</p>
           </div>
           <div class="page-actions">
             <button id="btn-approve-all" class="btn btn-approve hidden">Approve All Safe</button>
@@ -391,7 +476,7 @@
     <div class="modal-backdrop"></div>
     <div class="modal-card cmd-card">
       <div class="cmd-input-row">
-        <span class="cmd-search-icon" aria-hidden="true">⌘</span>
+        <svg class="ui-ico" style="color:var(--accent)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <input id="cmd-input" class="cmd-input" type="text" placeholder="Jump to a bot, switch tabs, or run an action…" autocomplete="off" />
         <kbd class="cmd-esc">Esc</kbd>
       </div>
@@ -399,7 +484,7 @@
     </div>
   </div>
 
-  <!-- In-App Confirmation Modal (Replaces native window.confirm) -->
+  <!-- In-App Confirmation Modal -->
   <div id="confirm-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
     <div class="modal-backdrop"></div>
     <div class="modal-card modal-xs">
@@ -435,7 +520,7 @@
     </div>
   </div>
 
-  <!-- Add Grok Bot Modal (Create Bot + Generate Grok App Prompt) -->
+  <!-- Add Grok Bot Modal -->
   <div id="add-bot-modal" class="modal hidden">
     <div class="modal-backdrop"></div>
     <div class="modal-card modal-sm">
@@ -567,7 +652,7 @@
     </div>
   </div>
 
-  <script src="/office3d.bundle.js"></script>
-  <script src="/app.js"></script>
+  <script src="/office3d.bundle.js?v=3"></script>
+  <script src="/app.js?v=3"></script>
 </body>
 </html>
