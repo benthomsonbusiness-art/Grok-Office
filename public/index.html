@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Grok Bot HQ — Mission Control</title>
-  <meta name="description" content="Real-time 3D virtual office and fleet command center for Grok AI agents." />
+  <title>Grok Bot HQ — Command Deck</title>
+  <meta name="description" content="Real-time 3D virtual office and fleet command deck for Grok AI agents." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&family=Space+Grotesk:wght@600;700&display=swap" />
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23090b10'/%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='6.5' fill='none' stroke='%23ffffff' stroke-opacity='0.22'/%3E%3Cpath d='M18.2 6.8L10.2 17.4h5.3l-1.3 7.8 8-10.6h-5.3l1.3-7.8z' fill='%2338bdf8'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="/styles.css?v=3" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2307090e'/%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='6.5' fill='none' stroke='%23ffffff' stroke-opacity='0.22'/%3E%3Cpath d='M18.2 6.8L10.2 17.4h5.3l-1.3 7.8 8-10.6h-5.3l1.3-7.8z' fill='%2338bdf8'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/styles.css?v=4" />
 </head>
 <body>
   <div id="app-root" class="app-root">
@@ -71,7 +71,7 @@
       </div>
     </header>
 
-    <!-- VIEW 1: 3D OFFICE + COLLAPSIBLE SIDEBAR + DOCKED INSPECTOR -->
+    <!-- VIEW 1: 3D OFFICE + FULL-HEIGHT TABBED SIDEBAR + DOCKED INSPECTOR -->
     <section id="view-office" class="view-panel active office-layout">
       <div class="stage-wrap">
         <div id="office-3d-stage" class="office-3d-stage"></div>
@@ -89,20 +89,20 @@
         <div class="stage-chip-bar">
           <span id="mode-pill" class="mode-pill live"><span class="live-pulse"></span>LIVE</span>
           <div class="stage-budget-wrap" title="Daily budget remaining">
-            <span id="usage-left-pill" class="chip-text mono">100% left</span>
+            <span id="usage-left-pill" class="chip-text mono">100% budget</span>
             <span class="mini-meter"><i id="stage-budget-fill" style="width:100%"></i></span>
           </div>
           <span class="hud-divider"></span>
-          <button id="btn-reset-view" class="chip-btn" title="Reset camera view (0)">Reset cam</button>
-          <button id="btn-toggle-labels" class="chip-btn active" title="Toggle floating bot nameplates">Names</button>
+          <button id="btn-reset-view" class="chip-btn" title="Reset camera view (0)">Reset</button>
+          <button id="btn-toggle-labels" class="chip-btn active" title="Toggle floating bot nameplates">Labels</button>
           <button id="btn-clean-view" class="chip-btn" title="Hide HUD for full-screen 3D">Focus 3D</button>
         </div>
 
         <!-- Top-Right Contextual 3D Stage Controls -->
         <div class="stage-controls-bar office-only">
-          <div class="segmented segmented-compact" id="lighting-group" title="3D office lighting">
+          <div class="segmented segmented-compact" id="lighting-group" title="3D office lighting atmosphere">
             <button class="seg-btn" data-light="day">Day</button>
-            <button class="seg-btn" data-light="evening">Eve</button>
+            <button class="seg-btn" data-light="evening">Dusk</button>
             <button class="seg-btn active" data-light="night">Night</button>
             <button class="seg-btn" data-light="now">Now</button>
           </div>
@@ -115,35 +115,40 @@
           <button id="btn-toggle-sidebar" class="chip-btn sidebar-toggle-btn" title="Collapse / expand sidebar ([)" aria-label="Toggle right sidebar"></button>
         </div>
 
-        <!-- Bottom-Center Frosted Room Jumper Dock -->
+        <!-- Bottom-Center Guaranteed Single-Row Room Jumper Dock -->
         <div class="room-bar" id="room-bar">
           <button class="room-pill active" data-room="all"><span class="room-key">0</span>All <strong id="cnt-all" class="mono">0</strong></button>
-          <button class="room-pill" data-room="working"><i class="dot green"></i>Workfloor <strong id="cnt-working" class="mono">0</strong></button>
-          <button class="room-pill" data-room="waiting"><i class="dot amber"></i>Waiting <strong id="cnt-waiting" class="mono">0</strong></button>
+          <button class="room-pill" data-room="working"><i class="dot green"></i>Work <strong id="cnt-working" class="mono">0</strong></button>
+          <button class="room-pill" data-room="waiting"><i class="dot amber"></i>Wait <strong id="cnt-waiting" class="mono">0</strong></button>
           <button class="room-pill" data-room="error"><i class="dot red"></i>Repair <strong id="cnt-error" class="mono">0</strong></button>
           <button class="room-pill" data-room="meeting"><i class="dot indigo"></i>War Room <strong id="cnt-meeting" class="mono">0</strong></button>
           <button class="room-pill" data-room="idle"><i class="dot blue"></i>Lounge <strong id="cnt-idle" class="mono">0</strong></button>
           <button class="room-pill" data-room="no_report"><i class="dot hollow"></i>Standby <strong id="cnt-noreport" class="mono">0</strong></button>
         </div>
 
-        <!-- Exit Clean View Pill -->
+        <!-- Exit Focus 3D Pill -->
         <button id="btn-exit-clean" class="exit-clean-btn hidden">Exit Focus 3D</button>
       </div>
 
-      <!-- Collapsible Obsidian Sidebar with Fleet Health Strip + Activity Timeline -->
+      <!-- Full-Height Tabbed Right Sidebar (Fleet Roster | Live Timeline) -->
       <aside class="sidebar" id="office-sidebar">
-        <div class="sb-section sb-team">
+        <div class="sb-top-chrome">
           <div class="sb-head">
-            <span class="sb-title">FLEET ROSTER <strong id="team-count" class="mono">0</strong></span>
+            <div class="segmented sb-mode-tabs" role="tablist">
+              <button class="seg-btn active" data-sb-tab="roster" role="tab">Fleet <strong id="team-count" class="mono" style="margin-left:3px">0</strong></button>
+              <button class="seg-btn" data-sb-tab="timeline" role="tab">Timeline</button>
+            </div>
             <div class="sb-head-actions">
               <button id="btn-open-add-bot" class="link-btn" style="font-weight:700">+ Add Bot</button>
               <button id="btn-clear-demo" class="link-btn danger-link" title="Reset all bots and office history">Reset</button>
             </div>
           </div>
-
           <!-- Proportional Live Fleet Health Bar -->
           <div id="team-health-bar" class="health-bar" title="Fleet distribution by room/state"></div>
+        </div>
 
+        <!-- Pane 1: Full-Height Fleet Roster -->
+        <div id="sb-pane-roster" class="sb-pane active">
           <div class="filter-row" id="team-filters">
             <button class="fpill active" data-filter="all">All</button>
             <button class="fpill" data-filter="working">Working</button>
@@ -156,9 +161,10 @@
           </div>
         </div>
 
-        <div class="sb-section sb-feed">
-          <div class="sb-head">
-            <span class="sb-title">LIVE TIMELINE</span>
+        <!-- Pane 2: Full-Height Live Timeline -->
+        <div id="sb-pane-timeline" class="sb-pane">
+          <div class="sb-subhead">
+            <span class="sb-title">RECENT EVENTS</span>
             <span id="last-update-label" class="sb-time mono">Waiting…</span>
           </div>
           <div class="filter-row" id="act-filters">
@@ -206,13 +212,13 @@
           </div>
           <div class="hero-card kpi-emerald">
             <div class="hero-top-row">
-              <span class="hero-label">Healthy Check-ins</span>
+              <span class="hero-label">Ready &amp; Healthy</span>
               <span class="kpi-ico">
                 <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
               </span>
             </div>
             <div class="hero-value mono" id="fleet-fresh">0</div>
-            <div class="hero-foot" id="fleet-fresh-foot">Fresh inside their window</div>
+            <div class="hero-foot" id="fleet-fresh-foot">Fresh or calm on-demand standby</div>
           </div>
           <div class="hero-card kpi-amber">
             <div class="hero-top-row">
@@ -239,6 +245,7 @@
         <div class="filter-row" id="fleet-filters">
           <button class="fpill active" data-fleet-filter="all">All</button>
           <button class="fpill" data-fleet-filter="fresh">Fresh</button>
+          <button class="fpill" data-fleet-filter="standby">Standby</button>
           <button class="fpill" data-fleet-filter="due">Due</button>
           <button class="fpill" data-fleet-filter="stale">Stale</button>
           <button class="fpill" data-fleet-filter="offline">Offline</button>
@@ -280,13 +287,12 @@
           <div class="digest-item"><span>Top Contributor</span><strong id="dig-top-bot">—</strong></div>
         </div>
 
-        <!-- 4 Executive Hero KPI Cards (with live circular budget gauge) -->
+        <!-- 4 Adaptive High-Signal Hero KPI Cards -->
         <div class="hero-kpis">
           <div class="hero-card kpi-sky hero-card-ring">
             <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:8px">
               <div class="hero-label">Daily Budget Left</div>
               <div class="hero-value mono" id="m-budget-pct">100%</div>
-              <div class="pbar lg"><div id="m-budget-bar" class="pbar-fill blue"></div></div>
               <div class="hero-foot mono" id="m-budget-foot">$0.00 of $10.00 cap</div>
             </div>
             <div id="m-budget-ring" class="kpi-ring-slot" aria-hidden="true"></div>
@@ -306,29 +312,29 @@
 
           <div class="hero-card kpi-neutral">
             <div class="hero-top-row">
-              <span class="hero-label">Tokens Today</span>
+              <span class="hero-label" id="m-kpi3-label">Runs Logged</span>
               <span class="kpi-ico">
                 <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
               </span>
             </div>
             <div class="hero-value mono" id="m-tokens-val">0</div>
-            <div class="pbar lg"><div id="m-tokens-bar" class="pbar-fill blue"></div></div>
-            <div class="hero-foot mono" id="m-tokens-foot">0 in · 0 out</div>
+            <div class="pbar lg" id="m-tokens-pbar"><div id="m-tokens-bar" class="pbar-fill blue"></div></div>
+            <div class="hero-foot mono" id="m-tokens-foot">0 completed · avg —</div>
           </div>
 
           <div class="hero-card kpi-amber">
             <div class="hero-top-row">
-              <span class="hero-label">Fleet Speed &amp; Health</span>
+              <span class="hero-label" id="m-kpi4-label">Fleet Readiness</span>
               <span class="kpi-ico">
                 <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
               </span>
             </div>
-            <div class="hero-value mono" id="m-latency-val">0 ms</div>
-            <div class="hero-foot mono" id="m-health-foot">p95 0 ms · 0% errors · 0 req</div>
+            <div class="hero-value mono" id="m-latency-val">0 / 0</div>
+            <div class="hero-foot mono" id="m-health-foot">Ready · 0 open needs</div>
           </div>
         </div>
 
-        <!-- Activity & Usage Analytics (Always Populated!) + Fleet / Model Donut -->
+        <!-- Activity & Usage Analytics + Fleet / Model Donut -->
         <div class="metrics-two-col">
           <div class="card-panel">
             <div class="card-panel-head">
@@ -449,7 +455,7 @@
       </div>
     </section>
 
-    <!-- VIEW 3: PENDING NEEDS & APPROVALS -->
+    <!-- VIEW 3: PENDING NEEDS & APPROVALS (Split into Open | History) -->
     <section id="view-needs" class="view-panel page-view">
       <div class="page-container">
         <div class="page-header">
@@ -457,7 +463,11 @@
             <h1>Pending Needs &amp; Approvals</h1>
             <p class="page-lead">Review human-in-the-loop approvals, escalation alerts, and bot blockers.</p>
           </div>
-          <div class="page-actions">
+          <div class="page-actions" style="align-items:center">
+            <div class="segmented" id="needs-tab-bar" role="tablist">
+              <button class="seg-btn active" data-needs-tab="open" role="tab">Open <strong id="needs-open-count" class="mono" style="margin-left:3px">0</strong></button>
+              <button class="seg-btn" data-needs-tab="history" role="tab">History <strong id="needs-history-count" class="mono" style="margin-left:3px">0</strong></button>
+            </div>
             <button id="btn-approve-all" class="btn btn-approve hidden">Approve All Safe</button>
           </div>
         </div>
@@ -511,7 +521,7 @@
       <div class="shortcuts-grid">
         <div class="shortcut-row"><span>Open Command Palette</span><span><kbd>Ctrl</kbd> + <kbd>K</kbd> / <kbd>⌘K</kbd></span></div>
         <div class="shortcut-row"><span>Reset 3D Camera (All Rooms)</span><kbd>0</kbd></div>
-        <div class="shortcut-row"><span>Focus Workfloor / Waiting / Repair</span><span><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></span></div>
+        <div class="shortcut-row"><span>Focus Work / Wait / Repair</span><span><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></span></div>
         <div class="shortcut-row"><span>Focus War Room / Lounge / Standby</span><span><kbd>4</kbd> <kbd>5</kbd> <kbd>6</kbd></span></div>
         <div class="shortcut-row"><span>Collapse / Expand Right Sidebar</span><kbd>[</kbd></div>
         <div class="shortcut-row"><span>Open Keyboard Shortcuts</span><kbd>?</kbd></div>
@@ -571,7 +581,7 @@
         <label>
           <span>Starting Room</span>
           <select id="add-bot-status" class="modal-select">
-            <option value="idle">Cyber Coffee Lounge (Idle)</option>
+            <option value="idle">Lounge (Idle)</option>
             <option value="working">Workfloor (Active)</option>
             <option value="meeting">War Room (Meeting)</option>
             <option value="no_report">Standby Dock (Sleeping)</option>
@@ -652,7 +662,7 @@
     </div>
   </div>
 
-  <script src="/office3d.bundle.js?v=3"></script>
-  <script src="/app.js?v=3"></script>
+  <script src="/office3d.bundle.js?v=4"></script>
+  <script src="/app.js?v=4"></script>
 </body>
 </html>

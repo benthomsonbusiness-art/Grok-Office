@@ -9,6 +9,11 @@ test("a check-in inside the idle window is fresh", () => {
   assert.equal(connectionLink(seen, 0, 5, now), "fresh");
 });
 
+test("an on-demand bot past the idle window rests in standby, then offline after 24h", () => {
+  assert.equal(connectionLink(new Date(now - 45 * 60_000).toISOString(), 0, 5, now), "standby");
+  assert.equal(connectionLink(new Date(now - 25 * 60 * 60_000).toISOString(), 0, 5, now), "offline");
+});
+
 test("a scheduled bot past its interval is due, then stale, then offline", () => {
   assert.equal(connectionLink(new Date(now - 20 * 60_000).toISOString(), 15, 5, now), "due");
   assert.equal(connectionLink(new Date(now - 40 * 60_000).toISOString(), 15, 5, now), "stale");

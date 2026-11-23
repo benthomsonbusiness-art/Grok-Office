@@ -9,6 +9,8 @@
   let chartMode = "runs";
   let donutMode = "fleet";
   let fleetFilter = "all";
+  let sidebarTab = "roster";
+  let needsTab = "open";
   let leaderboardSort = { col: "tasks", dir: "desc" };
   let soundEnabled = localStorage.getItem("grok_hq_chime") !== "off";
   let sidebarCollapsed = localStorage.getItem("grok_hq_sidebar") === "collapsed";
@@ -866,7 +868,6 @@
     const todayCost = usageSummary.todayCostUsd ?? 0;
     const remPct = usageSummary.usageRemainingPct ?? 100;
     document.getElementById("m-budget-pct").textContent = `${remPct}%`;
-    setBar("m-budget-bar", (todayCost / costCap) * 100);
     renderBudgetRing(remPct, usageSummary.budgetLocked);
     document.getElementById("m-budget-foot").textContent =
       `$${todayCost.toFixed(2)} of $${costCap.toFixed(2)} cap${usageSummary.budgetLocked ? " (LOCKED)" : ""}`;
@@ -878,16 +879,42 @@
     setBar("m-tasks-bar", taskPct);
     document.getElementById("m-tasks-foot").textContent = `${taskPct}% of daily target (${usageSummary.totalTasksCompleted ?? 0} total)`;
 
-    const tokCap = settings?.dailyTokenCap || 500000;
-    const todayTok = usageSummary.todayTokens ?? 0;
-    document.getElementById("m-tokens-val").textContent = formatNum(todayTok);
-    setBar("m-tokens-bar", (todayTok / tokCap) * 100);
-    document.getElementById("m-tokens-foot").textContent =
-      `${formatNum(usageSummary.totalTokensIn)} in · ${formatNum(usageSummary.totalTokensOut)} out`;
+    const hasProxy = (usageSummary.totalRequests ?? 0) > 0 || (usageSummary.todayTokens ?? 0) > 0;
+    const kpi3Label = document.getElementById("m-kpi3-label");
+    const kpi4Label = document.getElementById("m-kpi4-label");
+    const tokPbar = document.getElementById("m-tokens-pbar");
 
-    document.getElementById("m-latency-val").textContent = `${usageSummary.avgLatencyMs} ms`;
-    document.getElementById("m-health-foot").textContent =
-      `p95 ${usageSummary.p95LatencyMs ?? 0} ms · ${usageSummary.errorRatePct ?? 0}% errors · ${usageSummary.totalRequests} req`;
+    if (hasProxy) {
+      if (kpi3Label) kpi3Label.textContent = "Tokens Today";
+      const tokCap = settings?.dailyTokenCap || 500000;
+      const todayTok = usageSummary.todayTokens ?? 0;
+      document.getElementById("m-tokens-val").textContent = formatNum(todayTok);
+      tokPbar?.classList.remove("hidden");
+      setBar("m-tokens-bar", (todayTok / tokCap) * 100);
+      document.getElementById("m-tokens-foot").textContent =
+        `${formatNum(usageSummary.totalTokensIn)} in · ${formatNum(usageSummary.totalTokensOut)} out`;
+
+      if (kpi4Label) kpi4Label.textContent = "Fleet Speed & Health";
+      document.getElementById("m-latency-val").textContent = `${usageSummary.avgLatencyMs} ms`;
+      document.getElementById("m-health-foot").textContent =
+        `p95 ${usageSummary.p95LatencyMs ?? 0} ms · ${usageSummary.errorRatePct ?? 0}% errors · ${usageSummary.totalRequests} req`;
+    } else {
+      if (kpi3Label) kpi3Label.textContent = "Runs Logged";
+      const totalRuns = recentRuns.length;
+      const completedRuns = recentRuns.filter((r) => r.status === "completed").length;
+      const avgRunDur = totalRuns > 0 ? Math.round(recentRuns.reduce((a, r) => a + Number(r.durationSec || 0), 0) / totalRuns) : 0;
+      document.getElementById("m-tokens-val").textContent = String(totalRuns);
+      tokPbar?.classList.remove("hidden");
+      setBar("m-tokens-bar", totalRuns > 0 ? (completedRuns / totalRuns) * 100 : 0);
+      document.getElementById("m-tokens-foot").textContent = `${completedRuns} completed · avg ${formatDuration(avgRunDur)}`;
+
+      if (kpi4Label) kpi4Label.textContent = "Fleet Readiness";
+      const readyCount = bots.filter((b) => b.status !== "error").length;
+      const workingCount = bots.filter((b) => b.status === "working" || b.status === "meeting").length;
+      const openNeedsCount = (snapshot.pendingNeeds || []).filter((n) => n.status === "open").length;
+      document.getElementById("m-latency-val").textContent = `${readyCount} / ${bots.length}`;
+      document.getElementById("m-health-foot").textContent = `${workingCount} active · ${openNeedsCount} open needs`;
+    }
 
     // Interactive Charts (Always populated with real data!)
     renderUsageChart(usageSummary.timeline || [], recentRuns, bots);
@@ -1015,20 +1042,31 @@
   function renderNeedsPage() {
     const needs = snapshot.pendingNeeds || [];
     const bots = snapshot.bots || [];
-    const openSafe = needs.filter((n) => n.status === "open" && (n.severity === "approval" || n.severity === "input"));
-    document.getElementById("btn-approve-all").classList.toggle("hidden", openSafe.length < 2);
+    const openNeeds = needs.filter((n) => n.status === "open");
+    const historyNeeds = needs.filter((n) => n.status !== "open");
+    const openSafe = openNeeds.filter((n) => n.severity === "approval" || n.severity === "input");
+    document.getElementById("btn-approve-all").classList.toggle("hidden", needsTab !== "open" || openSafe.length < 2);
 
+    const openCntEl = document.getElementById("needs-open-count");
+    const histCntEl = document.getElementById("needs-history-count");
+    if (openCntEl) openCntEl.textContent = String(openNeeds.length);
+    if (histCntEl) histCntEl.textContent = String(historyNeeds.length);
+
+    const visible = needsTab === "history" ? historyNeeds : openNeeds;
     const grid = document.getElementById("needs-grid");
-    if (needs.length === 0) {
+    if (visible.length === 0) {
       grid.innerHTML = emptyStateHtml({
         icon: ICONS.check,
-        title: "All clear — zero pending needs",
-        subtitle: "When a bot pauses for human approval, hits a loop, or encounters a failure, its request will appear right here.",
+        title: needsTab === "history" ? "No resolved history yet" : "All clear — zero open requests",
+        subtitle:
+          needsTab === "history"
+            ? "Approved, rejected, or cleared bot requests will appear here for reference."
+            : "When a bot pauses for human approval, hits a loop, or encounters a failure, its request will appear right here.",
       });
       return;
     }
 
-    grid.innerHTML = needs
+    grid.innerHTML = visible
       .map((n) => {
         const isOpen = n.status === "open";
         const bot = bots.find((b) => b.id === n.botId);
@@ -1552,6 +1590,23 @@
     });
   });
 
+  document.querySelectorAll("[data-sb-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      sidebarTab = btn.dataset.sbTab;
+      document.querySelectorAll("[data-sb-tab]").forEach((b) => b.classList.toggle("active", b.dataset.sbTab === sidebarTab));
+      document.getElementById("sb-pane-roster")?.classList.toggle("active", sidebarTab === "roster");
+      document.getElementById("sb-pane-timeline")?.classList.toggle("active", sidebarTab === "timeline");
+    });
+  });
+
+  document.querySelectorAll("[data-needs-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      needsTab = btn.dataset.needsTab;
+      document.querySelectorAll("[data-needs-tab]").forEach((b) => b.classList.toggle("active", b.dataset.needsTab === needsTab));
+      renderNeedsPage();
+    });
+  });
+
   document.querySelectorAll("[data-donut-mode]").forEach((btn) => {
     btn.addEventListener("click", () => {
       donutMode = btn.dataset.donutMode;
@@ -1604,8 +1659,17 @@
 Read the JSON orders. Do orders.nextTask when it is set. Follow orders.decision when it is set. If orders.goalId is set, advance that goal. Stop if orders.budgetBlocked is true.`;
   }
 
+  function effectiveLink(bot) {
+    const raw = bot?.link || "waiting";
+    if ((bot?.expectedIntervalMinutes || 0) <= 0 && (raw === "stale" || raw === "due")) {
+      return "standby";
+    }
+    return raw;
+  }
+
   function linkLabel(link) {
     if (link === "fresh") return "Fresh";
+    if (link === "standby") return "Standby";
     if (link === "due") return "Due";
     if (link === "stale") return "Stale";
     if (link === "offline") return "Offline";
@@ -1621,30 +1685,38 @@ Read the JSON orders. Do orders.nextTask when it is set. Follow orders.decision 
     const needs = snapshot.pendingNeeds || [];
     const openNeeds = needs.filter((n) => n.status === "open");
     const usage = snapshot.usageSummary || {};
-    const fresh = bots.filter((b) => b.link === "fresh").length;
-    const due = bots.filter((b) => b.link === "due").length;
-    const late = bots.filter((b) => b.link === "stale" || b.link === "offline").length;
+
+    const fresh = bots.filter((b) => effectiveLink(b) === "fresh").length;
+    const standby = bots.filter((b) => effectiveLink(b) === "standby").length;
+    const due = bots.filter((b) => effectiveLink(b) === "due").length;
+    const scheduledLate = bots.filter((b) => (b.expectedIntervalMinutes || 0) > 0 && (effectiveLink(b) === "stale" || effectiveLink(b) === "offline")).length;
 
     document.getElementById("fleet-linked").textContent = String(bots.length);
-    document.getElementById("fleet-linked-foot").textContent = bots.length === 0 ? "Add a bot, then paste its office link" : `${due} due · ${late} late`;
-    document.getElementById("fleet-fresh").textContent = String(fresh);
-    document.getElementById("fleet-fresh-foot").textContent = fresh === bots.length && bots.length > 0 ? "Every bot is inside its window" : "Inside the check-in window";
+    document.getElementById("fleet-linked-foot").textContent =
+      bots.length === 0 ? "Add a bot, then paste its office link" : `${fresh} fresh · ${standby} standby · ${scheduledLate} late`;
+    document.getElementById("fleet-fresh").textContent = String(fresh + standby);
+    document.getElementById("fleet-fresh-foot").textContent =
+      scheduledLate === 0 && bots.length > 0 ? "All agents healthy or on-demand standby" : `${due} due · ${scheduledLate} missed SLA`;
     document.getElementById("fleet-waiting").textContent = String(openNeeds.length);
     const budgetPct = Math.round(usage.usageRemainingPct ?? 100);
     document.getElementById("fleet-budget").textContent = `${budgetPct}%`;
     document.getElementById("fleet-budget-foot").textContent = usage.budgetLocked ? "Budget lock is on" : `$${(usage.todayCostUsd ?? 0).toFixed(2)} spent today`;
 
+    // Only alert badge for true scheduled SLA misses or open human needs (no false alarm on calm on-demand bots!)
     const badge = document.getElementById("nav-fleet-badge");
     if (badge) {
-      const attention = late + openNeeds.length;
+      const attention = scheduledLate + openNeeds.length;
       badge.textContent = String(attention);
       badge.classList.toggle("hidden", attention === 0);
     }
 
     const visible = bots.filter((bot) => {
+      const lnk = effectiveLink(bot);
       if (fleetFilter === "all") return true;
-      if (fleetFilter === "attention") return bot.status === "waiting" || bot.status === "error" || openNeeds.some((n) => n.botId === bot.id);
-      return bot.link === fleetFilter;
+      if (fleetFilter === "attention") {
+        return bot.status === "waiting" || bot.status === "error" || openNeeds.some((n) => n.botId === bot.id) || lnk === "stale";
+      }
+      return lnk === fleetFilter;
     });
 
     if (bots.length === 0) {
@@ -1665,6 +1737,7 @@ Read the JSON orders. Do orders.nextTask when it is set. Follow orders.decision 
     } else {
       grid.innerHTML = visible
         .map((bot) => {
+          const lnk = effectiveLink(bot);
           const botNeeds = openNeeds.filter((n) => n.botId === bot.id);
           const goal = (snapshot.objectives || []).find((o) => o.ownerBotId === bot.id && o.status === "active");
           const queued = (bot.queuedTasks || [])[0];
@@ -1673,7 +1746,7 @@ Read the JSON orders. Do orders.nextTask when it is set. Follow orders.decision 
             goal ? `<div>Goal: <strong>${esc(goal.title)}</strong> <span class="mono">${goal.progress}%</span></div>` : "",
             botNeeds.length ? `<div><strong style="color:#fcd34d">${botNeeds.length} open request${botNeeds.length === 1 ? "" : "s"}</strong></div>` : "",
           ].filter(Boolean).join("");
-          return `<article class="fleet-card fleet-accent-${esc(bot.link || "waiting")}">
+          return `<article class="fleet-card fleet-accent-${esc(lnk)}">
             <div class="fleet-card-top">
               <div class="fleet-id">
                 ${miniGrokIcon(bot.avatarColor, true, bot.status)}
@@ -1683,7 +1756,7 @@ Read the JSON orders. Do orders.nextTask when it is set. Follow orders.decision 
                 </div>
               </div>
               <div class="fleet-badges">
-                <span class="link-pill link-${esc(bot.link || "waiting")}">${linkLabel(bot.link)}</span>
+                <span class="link-pill link-${esc(lnk)}">${linkLabel(lnk)}</span>
               </div>
             </div>
             <div class="fleet-stats-strip">

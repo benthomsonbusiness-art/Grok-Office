@@ -10,7 +10,7 @@ export type ObjectiveStatus = "active" | "completed" | "blocked";
 
 export type RunStatus = "running" | "completed" | "failed" | "waiting";
 
-export type ConnectionLink = "fresh" | "due" | "stale" | "offline" | "waiting";
+export type ConnectionLink = "fresh" | "standby" | "due" | "stale" | "offline" | "waiting";
 
 export interface BotOrders {
   nextTask: string | null;
