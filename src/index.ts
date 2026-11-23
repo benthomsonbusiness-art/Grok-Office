@@ -272,28 +272,32 @@ export class OfficeHub extends DurableObject<Env> {
       this.sql.exec("ALTER TABLE activity_logs ADD COLUMN task_done INTEGER NOT NULL DEFAULT 0");
     }
 
-    // Automatically purge simulated/fake demo bots once in production while keeping real bots
+    // Automatically purge all seeded/demo/example bots once (even if alarm() logged auto-idle with simulated=0)
     const purgedFlag = this.sql
-      .exec<{ value: string }>("SELECT value FROM office_settings WHERE key = 'purged_demo_v1'")
+      .exec<{ value: string }>("SELECT value FROM office_settings WHERE key = 'purged_demo_v2'")
       .toArray()[0];
     if (!purgedFlag) {
       this.sql.exec(`
         DELETE FROM bots
-        WHERE id NOT IN (SELECT DISTINCT bot_id FROM activity_logs WHERE simulated = 0)
-          AND (
-            id IN (SELECT DISTINCT bot_id FROM activity_logs WHERE simulated = 1)
-            OR id IN (
-              'audience-bot','architect-bot','mel-chief','stats-bot','vidperf-bot',
-              'conclusions-bot','kyle-coo','systems-bot','accuracy-bot','jacob-news',
-              'johnny-editor','ledger-ops','planner-ops','thangs-scout',
-              'atlas-bot','nova-bot','pulse-bot','ledger-bot','echo-bot','scribe-bot'
-            )
-          );
-        DELETE FROM activity_logs WHERE simulated = 1;
-        DELETE FROM pending_needs WHERE bot_id != 'system' AND bot_id NOT IN (SELECT id FROM bots);
-        DELETE FROM usage_events WHERE bot_id NOT IN (SELECT id FROM bots);
-        DELETE FROM objectives WHERE id IN ('obj-q4-intel', 'obj-edge-deploy', 'obj-analytics-audit');
-        INSERT OR REPLACE INTO office_settings (key, value) VALUES ('purged_demo_v1', 'true');
+        WHERE id IN (
+          'audience-bot','architect-bot','mel-chief','stats-bot','vidperf-bot',
+          'conclusions-bot','kyle-coo','systems-bot','accuracy-bot','jacob-news',
+          'johnny-editor','ledger-ops','planner-ops','thangs-scout',
+          'atlas','atlas-bot','nova','nova-bot','pulse','pulse-bot',
+          'ledger','ledger-bot','echo','echo-bot','scribe','scribe-bot'
+        )
+        OR id IN (SELECT DISTINCT bot_id FROM activity_logs WHERE simulated = 1);
+        DELETE FROM activity_logs
+        WHERE simulated = 1
+           OR bot_id NOT IN (SELECT id FROM bots);
+        DELETE FROM pending_needs
+        WHERE bot_id != 'system'
+          AND bot_id NOT IN (SELECT id FROM bots);
+        DELETE FROM usage_events
+        WHERE bot_id NOT IN (SELECT id FROM bots);
+        DELETE FROM objectives
+        WHERE id IN ('obj-q4-intel', 'obj-edge-deploy', 'obj-analytics-audit');
+        INSERT OR REPLACE INTO office_settings (key, value) VALUES ('purged_demo_v2', 'true');
       `);
     }
   }
