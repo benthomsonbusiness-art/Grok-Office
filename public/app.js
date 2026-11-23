@@ -1,22 +1,31 @@
 (() => {
   let snapshot = null;
   let selectedBotId = null;
+  let inspectorTab = "overview";
   let activeView = "office";
   let teamFilter = "all";
   let actFilter = "all";
   let actSearch = "";
   let chartMode = "tokens";
   let fleetFilter = "all";
+  let leaderboardSort = { col: "cost", dir: "desc" };
   let soundEnabled = localStorage.getItem("grok_hq_chime") !== "off";
+  let sidebarCollapsed = localStorage.getItem("grok_hq_sidebar") === "collapsed";
   let knownOpenNeedIds = new Set();
   let firstSnapshotLoaded = false;
+  let wsInstance = null;
+  let wsReconnectTimer = null;
+  let cmdSelectedIndex = 0;
+  let cmdItems = [];
 
   const stageEl = document.getElementById("office-3d-stage");
   const labelLayer = document.getElementById("label-layer");
   const tooltipEl = document.getElementById("bot-tooltip");
 
   const office3d = new window.Office3D(stageEl, labelLayer, tooltipEl, (botId) => {
+    const changedBot = selectedBotId !== botId;
     selectedBotId = botId;
+    if (changedBot) inspectorTab = "overview";
     renderInspector();
     renderTeamList();
     if (actFilter === "bot") renderActivity();
@@ -40,9 +49,10 @@
   }
 
   function formatNum(n) {
-    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
-    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-    return String(n ?? 0);
+    const v = Number(n ?? 0);
+    if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
+    if (v >= 1_000) return `${(v / 1_000).toFixed(1)}k`;
+    return String(v);
   }
 
   function formatDuration(sec) {
@@ -55,12 +65,16 @@
 
   function timeAgo(iso) {
     if (!iso) return "Waiting…";
-    const diffSec = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000));
+    const parsed = Date.parse(iso);
+    if (Number.isNaN(parsed)) return "Waiting…";
+    const diffSec = Math.max(0, Math.floor((Date.now() - parsed) / 1000));
     if (diffSec < 10) return "Just now";
     if (diffSec < 60) return `${diffSec}s ago`;
     const mins = Math.floor(diffSec / 60);
     if (mins < 60) return `${mins}m ago`;
-    return `${Math.floor(mins / 60)}h ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 48) return `${hrs}h ago`;
+    return `${Math.floor(hrs / 24)}d ago`;
   }
 
   function statusLabel(s) {
@@ -77,6 +91,76 @@
     el.classList.toggle("danger", pct >= 90);
   }
 
+  // Toast Notification Stack
+  const toastStack = document.getElementById("toast-stack");
+  function showToast(message, type = "info") {
+    if (!toastStack) return;
+    const el = document.createElement("div");
+    el.className = `toast toast-${type}`;
+    const icon = type === "success" ? "✓" : type === "error" ? "!" : type === "warn" ? "⚠" : "⚡";
+    el.innerHTML = `<span style="opacity:0.9">${icon}</span><span>${esc(message)}</span>`;
+    toastStack.appendChild(el);
+    while (toastStack.children.length > 4) {
+      toastStack.firstChild.remove();
+    }
+    const dismiss = () => {
+      el.classList.add("toast-out");
+      setTimeout(() => el.remove(), 200);
+    };
+    el.addEventListener("click", dismiss);
+    setTimeout(dismiss, 3200);
+  }
+
+  // In-App Confirmation Modal (Replaces native window.confirm)
+  const confirmModal = document.getElementById("confirm-modal");
+  const confirmTitleEl = document.getElementById("confirm-title");
+  const confirmMsgEl = document.getElementById("confirm-message");
+  const confirmOkBtn = document.getElementById("btn-confirm-ok");
+  const confirmCancelBtn = document.getElementById("btn-confirm-cancel");
+  const confirmCloseBtn = document.getElementById("btn-close-confirm");
+  let confirmResolver = null;
+
+  function finishConfirm(result) {
+    if (!confirmModal) return;
+    confirmModal.classList.add("hidden");
+    const r = confirmResolver;
+    confirmResolver = null;
+    if (r) r(result);
+  }
+
+  function askConfirm({ title = "Confirm Action", message = "", confirmLabel = "Confirm", danger = true }) {
+    if (!confirmModal) return Promise.resolve(false);
+    if (confirmResolver) finishConfirm(false);
+    confirmTitleEl.textContent = title;
+    confirmMsgEl.textContent = message;
+    confirmOkBtn.textContent = confirmLabel;
+    confirmOkBtn.className = danger ? "btn btn-reject" : "btn btn-primary";
+    confirmModal.classList.remove("hidden");
+    setTimeout(() => confirmOkBtn.focus(), 20);
+    return new Promise((resolve) => {
+      confirmResolver = resolve;
+    });
+  }
+
+  if (confirmOkBtn) confirmOkBtn.addEventListener("click", () => finishConfirm(true));
+  if (confirmCancelBtn) confirmCancelBtn.addEventListener("click", () => finishConfirm(false));
+  if (confirmCloseBtn) confirmCloseBtn.addEventListener("click", () => finishConfirm(false));
+  if (confirmModal) {
+    confirmModal.querySelector(".modal-backdrop").addEventListener("click", () => finishConfirm(false));
+  }
+
+  // Guided Empty State Helper
+  function emptyStateHtml({ icon = "⚡", title, subtitle = "", actionsHtml = "", compact = false }) {
+    return `
+      <div class="empty-state ${compact ? "empty-state-compact" : ""}">
+        <div class="empty-state-icon" aria-hidden="true">${icon}</div>
+        <div class="empty-state-title">${esc(title)}</div>
+        ${subtitle ? `<div class="empty-state-sub">${esc(subtitle)}</div>` : ""}
+        ${actionsHtml ? `<div class="empty-state-actions">${actionsHtml}</div>` : ""}
+      </div>`;
+  }
+
+  // Alert Chime (Compact Topbar Icon)
   function playAlertChime(isError = false) {
     if (!soundEnabled) return;
     try {
@@ -103,7 +187,11 @@
   const soundBtn = document.getElementById("btn-sound-toggle");
   function updateSoundBtn() {
     if (!soundBtn) return;
-    soundBtn.textContent = soundEnabled ? "🔔 Chime: On" : "🔕 Chime: Off";
+    soundBtn.textContent = soundEnabled ? "🔔" : "🔕";
+    soundBtn.classList.toggle("active", soundEnabled);
+    soundBtn.title = soundEnabled
+      ? "Alert chime: On (click to mute)"
+      : "Alert chime: Muted (click to enable)";
   }
   updateSoundBtn();
   if (soundBtn) {
@@ -111,18 +199,60 @@
       soundEnabled = !soundEnabled;
       localStorage.setItem("grok_hq_chime", soundEnabled ? "on" : "off");
       updateSoundBtn();
+      showToast(soundEnabled ? "Alert chime enabled" : "Alert chime muted", "info");
       if (soundEnabled) playAlertChime(false);
     });
   }
 
+  // Collapsible Right Sidebar
+  const officeViewEl = document.getElementById("view-office");
+  const toggleSidebarBtn = document.getElementById("btn-toggle-sidebar");
+  function applySidebarState(animateResize = false) {
+    if (officeViewEl) officeViewEl.classList.toggle("sidebar-collapsed", sidebarCollapsed);
+    if (toggleSidebarBtn) {
+      toggleSidebarBtn.textContent = sidebarCollapsed ? "◨" : "◧";
+      toggleSidebarBtn.classList.toggle("active", !sidebarCollapsed);
+      toggleSidebarBtn.title = sidebarCollapsed
+        ? "Expand right sidebar ([)"
+        : "Collapse right sidebar ([)";
+    }
+    if (animateResize) {
+      setTimeout(() => office3d.handleResize(), 220);
+    }
+  }
+  applySidebarState(false);
+
+  function toggleSidebar() {
+    sidebarCollapsed = !sidebarCollapsed;
+    localStorage.setItem("grok_hq_sidebar", sidebarCollapsed ? "collapsed" : "expanded");
+    applySidebarState(true);
+  }
+  if (toggleSidebarBtn) toggleSidebarBtn.addEventListener("click", toggleSidebar);
+
+  // Live WebSocket + Reconnecting Banner
+  const wsBanner = document.getElementById("ws-reconnect-banner");
+  const wsRetryBtn = document.getElementById("btn-ws-retry");
+
   function connectWS() {
+    if (wsReconnectTimer) {
+      clearTimeout(wsReconnectTimer);
+      wsReconnectTimer = null;
+    }
+    if (wsInstance && (wsInstance.readyState === WebSocket.OPEN || wsInstance.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const wsDot = document.getElementById("ws-dot");
     const ws = new WebSocket(`${proto}//${location.host}/ws`);
+    wsInstance = ws;
 
     ws.onopen = () => {
-      wsDot.classList.add("live");
-      wsDot.title = "Live WebSocket connected";
+      if (wsDot) {
+        wsDot.classList.add("live");
+        wsDot.title = "Live WebSocket connected";
+      }
+      if (wsBanner) wsBanner.classList.add("hidden");
     };
     ws.onmessage = (ev) => {
       try {
@@ -133,10 +263,29 @@
       }
     };
     ws.onclose = () => {
-      wsDot.classList.remove("live");
-      wsDot.title = "Reconnecting…";
-      setTimeout(connectWS, 2000);
+      if (wsInstance === ws) wsInstance = null;
+      if (wsDot) {
+        wsDot.classList.remove("live");
+        wsDot.title = "Reconnecting…";
+      }
+      if (wsBanner) wsBanner.classList.remove("hidden");
+      wsReconnectTimer = setTimeout(connectWS, 2200);
     };
+    ws.onerror = () => {
+      try {
+        ws.close();
+      } catch {
+        // Ignore
+      }
+    };
+  }
+
+  if (wsRetryBtn) {
+    wsRetryBtn.addEventListener("click", () => {
+      fetchSnapshotFallback();
+      connectWS();
+      showToast("Reconnecting live stream…", "info");
+    });
   }
 
   async function fetchSnapshotFallback() {
@@ -208,7 +357,11 @@
     navBadge.textContent = String(openNeeds);
     navBadge.classList.toggle("hidden", openNeeds === 0);
 
-    document.getElementById("last-update-label").textContent = timeAgo(lastBotUpdateAt);
+    const lastUpdEl = document.getElementById("last-update-label");
+    lastUpdEl.textContent = timeAgo(lastBotUpdateAt);
+    if (lastBotUpdateAt) lastUpdEl.dataset.liveTs = lastBotUpdateAt;
+    else delete lastUpdEl.dataset.liveTs;
+
     document.getElementById("usage-left-pill").textContent =
       usageSummary?.budgetLocked
         ? "CAP LOCKED (429)"
@@ -224,9 +377,11 @@
     }
   }
 
-  function miniGrokIcon(color) {
+  function miniGrokIcon(color, large = false) {
     const c = esc(color || "#3b93f0");
-    return `<svg class="grok-mini" viewBox="0 0 24 24" width="26" height="26"><rect x="2" y="1.5" width="20" height="21" rx="7" fill="${c}"/><ellipse cx="9" cy="11.6" rx="2.4" ry="3" fill="#fff"/><ellipse cx="15" cy="11.6" rx="2.4" ry="3" fill="#fff"/><circle cx="9.3" cy="11.8" r="1.25" fill="#0a0a0c"/><circle cx="15.3" cy="11.8" r="1.25" fill="#0a0a0c"/></svg>`;
+    const size = large ? 34 : 26;
+    const cls = large ? "grok-mini grok-mini-lg" : "grok-mini";
+    return `<svg class="${cls}" viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><rect x="2" y="1.5" width="20" height="21" rx="7" fill="${c}"/><ellipse cx="9" cy="11.6" rx="2.4" ry="3" fill="#fff"/><ellipse cx="15" cy="11.6" rx="2.4" ry="3" fill="#fff"/><circle cx="9.3" cy="11.8" r="1.25" fill="#0a0a0c"/><circle cx="15.3" cy="11.8" r="1.25" fill="#0a0a0c"/></svg>`;
   }
 
   function renderTeamList() {
@@ -240,6 +395,17 @@
     });
 
     const el = document.getElementById("team-list");
+    if (bots.length === 0) {
+      el.innerHTML = emptyStateHtml({
+        icon: "🤖",
+        title: "No Grok bots connected yet",
+        subtitle: "Add your first bot to spawn it in the 3D office and generate its check-in prompt.",
+        compact: true,
+        actionsHtml: `<button class="btn btn-primary" style="padding:5px 11px;font-size:0.76rem" data-open-modal="add-bot">+ Add First Bot</button>
+          <button class="btn btn-secondary" style="padding:5px 11px;font-size:0.76rem" data-open-modal="connect">Connect Guide</button>`,
+      });
+      return;
+    }
     if (filtered.length === 0) {
       el.innerHTML = `<div class="empty-msg">No bots in this state.</div>`;
       return;
@@ -291,7 +457,7 @@
           <span class="bot-sq" style="background:${esc(l.botColor || "#38bdf8")};margin-top:4px"></span>
           <div style="min-width:0;flex:1">
             <div><strong>${esc(l.botName)}</strong> — ${esc(l.message)}</div>
-            <div class="act-meta">${esc(ts)} · ${esc(timeAgo(l.createdAt))}</div>
+            <div class="act-meta">${esc(ts)} · <span data-live-ts="${esc(l.createdAt)}">${esc(timeAgo(l.createdAt))}</span></div>
           </div>
         </div>`;
       })
@@ -304,6 +470,214 @@
         <button class="grade-btn ${run.qualityRating === 1 ? "active-up" : ""}" data-rate-run="${esc(run.id)}" data-rating="${run.qualityRating === 1 ? 0 : 1}" title="Good run (👍)">👍</button>
         <button class="grade-btn ${run.qualityRating === -1 ? "active-down" : ""}" data-rate-run="${esc(run.id)}" data-rating="${run.qualityRating === -1 ? 0 : -1}" title="Silent failure / bad run (👎)">👎</button>
       </span>`;
+  }
+
+  // Interactive SVG Bar + Trend Line Chart
+  function renderUsageChart(timeline) {
+    const chartEl = document.getElementById("usage-chart");
+    if (!chartEl) return;
+    if (!timeline || timeline.length === 0) {
+      chartEl.innerHTML = emptyStateHtml({
+        icon: "📊",
+        title: "No usage telemetry yet",
+        subtitle: "Usage bars appear automatically as bots check in or route calls through /proxy/*.",
+        compact: true,
+      });
+      return;
+    }
+
+    const W = 580;
+    const H = 190;
+    const padL = 46;
+    const padR = 14;
+    const padT = 14;
+    const padB = 26;
+    const plotW = W - padL - padR;
+    const plotH = H - padT - padB;
+
+    const vals = timeline.map((t) => (chartMode === "tokens" ? Number(t.tokens || 0) : Number(t.costUsd || 0)));
+    const maxVal = Math.max(...vals, chartMode === "tokens" ? 10 : 0.01);
+
+    const gridSteps = [0, 0.5, 1];
+    const gridSvg = gridSteps
+      .map((ratio) => {
+        const y = padT + plotH * (1 - ratio);
+        const val = maxVal * ratio;
+        const lbl = chartMode === "tokens" ? formatNum(Math.round(val)) : `$${val.toFixed(val < 0.1 ? 3 : 2)}`;
+        return `
+          <line class="svg-grid-line" x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" />
+          <text class="svg-axis-label" x="${padL - 8}" y="${(y + 3).toFixed(1)}" text-anchor="end">${esc(lbl)}</text>`;
+      })
+      .join("");
+
+    const stepW = plotW / timeline.length;
+    const barW = Math.min(34, Math.max(10, stepW * 0.56));
+    const points = [];
+
+    const barsSvg = timeline
+      .map((t, idx) => {
+        const v = vals[idx];
+        const barH = Math.max(4, (v / maxVal) * plotH);
+        const cx = padL + stepW * idx + stepW / 2;
+        const x = cx - barW / 2;
+        const y = padT + plotH - barH;
+        points.push(`${cx.toFixed(1)},${y.toFixed(1)}`);
+        const fill = t.errors > 0 ? "url(#barGradErr)" : "url(#barGradOk)";
+        const showLabel = timeline.length <= 10 || idx % Math.ceil(timeline.length / 8) === 0 || idx === timeline.length - 1;
+        return `
+          <g class="svg-bar-group" data-bar-idx="${idx}">
+            <rect class="svg-bar-rect" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${barH.toFixed(1)}" rx="4" fill="${fill}" />
+            <rect class="svg-bar-hit" x="${(padL + stepW * idx).toFixed(1)}" y="${padT}" width="${stepW.toFixed(1)}" height="${plotH + padB}" data-bar-idx="${idx}" />
+            ${showLabel ? `<text class="svg-axis-label" x="${cx.toFixed(1)}" y="${H - 6}" text-anchor="middle">${esc(t.label)}</text>` : ""}
+          </g>`;
+      })
+      .join("");
+
+    const lineSvg =
+      points.length > 1
+        ? `<polyline fill="none" stroke="rgba(56,189,248,0.65)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" points="${points.join(" ")}" pointer-events="none" />`
+        : "";
+
+    chartEl.innerHTML = `
+      <svg class="usage-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Usage over time chart">
+        <defs>
+          <linearGradient id="barGradOk" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#38bdf8" />
+            <stop offset="100%" stop-color="#6366f1" stop-opacity="0.72" />
+          </linearGradient>
+          <linearGradient id="barGradErr" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#fb7185" />
+            <stop offset="100%" stop-color="#a855f7" stop-opacity="0.78" />
+          </linearGradient>
+        </defs>
+        ${gridSvg}
+        ${barsSvg}
+        ${lineSvg}
+      </svg>
+      <div id="chart-tooltip" class="chart-tooltip hidden"></div>`;
+
+    const tip = document.getElementById("chart-tooltip");
+    chartEl.querySelectorAll(".svg-bar-hit").forEach((hit) => {
+      hit.addEventListener("mouseenter", (ev) => {
+        const idx = Number(hit.dataset.barIdx);
+        const t = timeline[idx];
+        if (!t || !tip) return;
+        const errTag = t.errors > 0 ? ` · ${t.errors} err` : "";
+        tip.innerHTML = `<div><strong>${esc(t.label)}</strong></div><div class="chart-tooltip-sub">${formatNum(t.tokens)} tok · $${Number(t.costUsd || 0).toFixed(4)} · ${t.requests} req${errTag}</div>`;
+        tip.classList.remove("hidden");
+        const rect = chartEl.getBoundingClientRect();
+        const barRect = hit.getBoundingClientRect();
+        const left = Math.max(84, Math.min(rect.width - 84, barRect.left - rect.left + barRect.width / 2));
+        const top = Math.max(44, ev.clientY - rect.top - 8);
+        tip.style.left = `${left}px`;
+        tip.style.top = `${top}px`;
+      });
+      hit.addEventListener("mousemove", (ev) => {
+        if (!tip) return;
+        const rect = chartEl.getBoundingClientRect();
+        const left = Math.max(84, Math.min(rect.width - 84, ev.clientX - rect.left));
+        const top = Math.max(44, ev.clientY - rect.top - 8);
+        tip.style.left = `${left}px`;
+        tip.style.top = `${top}px`;
+      });
+      hit.addEventListener("mouseleave", () => {
+        if (tip) tip.classList.add("hidden");
+      });
+    });
+  }
+
+  // SVG Spend-by-Model Donut Ring
+  const DONUT_COLORS = ["#38bdf8", "#a855f7", "#10b981", "#f59e0b", "#fb7185", "#6366f1"];
+  function renderModelDonut(models) {
+    const wrap = document.getElementById("model-donut-wrap");
+    if (!wrap) return;
+    if (!models || models.length === 0) {
+      wrap.innerHTML = `
+        <svg viewBox="0 0 128 128" width="122" height="122" aria-hidden="true">
+          <circle cx="64" cy="64" r="46" fill="none" stroke="rgba(148,163,184,0.14)" stroke-width="14" />
+          <text x="64" y="62" text-anchor="middle" fill="#94a3b8" font-size="13" font-weight="700" font-family="ui-monospace,monospace">$0.00</text>
+          <text x="64" y="77" text-anchor="middle" fill="#64748b" font-size="9">TOTAL SPEND</text>
+        </svg>`;
+      return;
+    }
+
+    const totalCost = models.reduce((acc, m) => acc + Number(m.costUsd || 0), 0);
+    const totalTokens = models.reduce((acc, m) => acc + Number((m.tokensIn || 0) + (m.tokensOut || 0)), 0);
+    const useCost = totalCost > 0;
+    const denom = useCost ? totalCost : Math.max(totalTokens, 1);
+    const r = 46;
+    const C = 2 * Math.PI * r;
+    let offset = 0;
+
+    const slices = models.slice(0, 6).map((m, i) => {
+      const val = useCost ? Number(m.costUsd || 0) : Number((m.tokensIn || 0) + (m.tokensOut || 0));
+      const frac = Math.max(0.015, val / denom);
+      const len = frac * C;
+      const seg = `<circle cx="64" cy="64" r="${r}" fill="none" stroke="${DONUT_COLORS[i % DONUT_COLORS.length]}" stroke-width="14" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-90 64 64)" />`;
+      offset += len;
+      return { seg, model: m.model, pct: Math.round((val / denom) * 100), color: DONUT_COLORS[i % DONUT_COLORS.length] };
+    });
+
+    wrap.innerHTML = `
+      <svg viewBox="0 0 128 128" width="122" height="122" role="img" aria-label="Spend distribution by model">
+        <circle cx="64" cy="64" r="${r}" fill="none" stroke="rgba(148,163,184,0.12)" stroke-width="14" />
+        ${slices.map((s) => s.seg).join("")}
+        <text x="64" y="61" text-anchor="middle" fill="#f4f7fc" font-size="13" font-weight="800" font-family="ui-monospace,monospace">$${totalCost.toFixed(totalCost < 1 ? 3 : 2)}</text>
+        <text x="64" y="76" text-anchor="middle" fill="#64748b" font-size="8.5" font-weight="700">TOTAL SPEND</text>
+      </svg>
+      <div class="model-legend">
+        ${slices
+          .map(
+            (s) => `
+          <div class="model-legend-item">
+            <span style="display:flex;align-items:center;gap:6px;min-width:0">
+              <span class="model-legend-dot" style="background:${s.color}"></span>
+              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.model)}</span>
+            </span>
+            <strong class="mono" style="color:var(--text)">${s.pct}%</strong>
+          </div>`
+          )
+          .join("")}
+      </div>`;
+  }
+
+  function sortBotsForLeaderboard(bots) {
+    const { col, dir } = leaderboardSort;
+    const mul = dir === "asc" ? 1 : -1;
+    return [...bots].sort((a, b) => {
+      switch (col) {
+        case "name":
+          return a.name.localeCompare(b.name) * mul;
+        case "status":
+          return a.status.localeCompare(b.status) * mul;
+        case "model":
+          return (a.model || "").localeCompare(b.model || "") * mul;
+        case "tasks":
+          return ((a.tasksCompleted || 0) - (b.tasksCompleted || 0)) * mul;
+        case "duration":
+          return ((a.avgDurationSec || 0) - (b.avgDurationSec || 0)) * mul;
+        case "quality":
+          return ((a.qualityScorePct ?? -1) - (b.qualityScorePct ?? -1)) * mul;
+        case "tokens":
+          return ((a.tokensTotal || 0) - (b.tokensTotal || 0)) * mul;
+        case "errors":
+          return ((a.errorCount || 0) - (b.errorCount || 0)) * mul;
+        case "lastSeen":
+          return ((Date.parse(a.lastSeenAt || 0) || 0) - (Date.parse(b.lastSeenAt || 0) || 0)) * mul;
+        case "cost":
+        default:
+          return ((a.costTotalUsd || 0) - (b.costTotalUsd || 0)) * mul || ((b.tasksCompleted || 0) - (a.tasksCompleted || 0));
+      }
+    });
+  }
+
+  function updateLeaderboardSortHeaders() {
+    document.querySelectorAll("th.sortable[data-sort-col]").forEach((th) => {
+      const active = th.dataset.sortCol === leaderboardSort.col;
+      th.classList.toggle("sort-active", active);
+      const ind = th.querySelector(".sort-ind");
+      if (ind) ind.textContent = active ? (leaderboardSort.dir === "asc" ? "▲" : "▼") : "";
+    });
   }
 
   function renderMetricsPage() {
@@ -351,14 +725,20 @@
     document.getElementById("m-health-foot").textContent =
       `p95 ${usageSummary.p95LatencyMs ?? 0} ms · ${usageSummary.errorRatePct ?? 0}% errors · ${usageSummary.totalRequests} req`;
 
-    // Per-Agent Performance & Spend Leaderboard
+    // Sortable Per-Agent Performance & Spend Leaderboard
+    updateLeaderboardSortHeaders();
     const leaderTbody = document.getElementById("agent-leaderboard-tbody");
     if (bots.length === 0) {
-      leaderTbody.innerHTML = `<tr><td colspan="11" class="muted">No agents registered yet. Click <strong>+ Add Bot</strong> in the 3D Office or <strong>+ Connect</strong>.</td></tr>`;
+      leaderTbody.innerHTML = `<tr><td colspan="11" style="padding:14px">${emptyStateHtml({
+        icon: "⚡",
+        title: "No agents registered yet",
+        subtitle: "Add your first Grok bot or connect an existing bot via /api/ping or /proxy/*.",
+        compact: true,
+        actionsHtml: `<button class="btn btn-primary" data-open-modal="add-bot">+ Add Bot</button>
+          <button class="btn btn-secondary" data-open-modal="connect">Connect Instructions</button>`,
+      })}</td></tr>`;
     } else {
-      const sortedBots = [...bots].sort(
-        (a, b) => b.costTotalUsd - a.costTotalUsd || b.tasksCompleted - a.tasksCompleted
-      );
+      const sortedBots = sortBotsForLeaderboard(bots);
       leaderTbody.innerHTML = sortedBots
         .map(
           (b) => `
@@ -367,7 +747,7 @@
               <div style="display:flex;align-items:center;gap:9px">
                 ${miniGrokIcon(b.avatarColor)}
                 <div>
-                  <div style="font-weight:700">${esc(b.name)}</div>
+                  <div style="font-weight:700;color:var(--text-bright)">${esc(b.name)}</div>
                   <div class="muted" style="font-size:0.75rem">${esc(b.role)}</div>
                 </div>
               </div>
@@ -375,13 +755,13 @@
             <td><span class="st-pill st-${esc(b.status)}">${esc(statusLabel(b.status))}</span></td>
             <td style="max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(b.task)}">${esc(b.task || "Standing by")}</td>
             <td><span class="model-chip">${esc(b.model)}</span></td>
-            <td><strong>${b.tasksCompleted}</strong></td>
-            <td class="muted">${esc(formatDuration(b.avgDurationSec))}</td>
-            <td>${b.qualityScorePct !== null && b.qualityScorePct !== undefined ? `<strong style="color:${b.qualityScorePct >= 80 ? "#34d399" : "#fbbf24"}">${b.qualityScorePct}%</strong>` : `<span class="muted">—</span>`}</td>
-            <td>${formatNum(b.tokensTotal)}</td>
-            <td><strong>$${b.costTotalUsd.toFixed(4)}</strong></td>
-            <td>${b.errorCount > 0 ? `<span style="color:#fb7185;font-weight:700">${b.errorCount}</span>` : `<span class="muted">0</span>`}</td>
-            <td class="muted">${esc(timeAgo(b.lastSeenAt))}</td>
+            <td class="num-cell mono"><strong>${b.tasksCompleted}</strong></td>
+            <td class="num-cell mono muted">${esc(formatDuration(b.avgDurationSec))}</td>
+            <td class="num-cell mono">${b.qualityScorePct !== null && b.qualityScorePct !== undefined ? `<strong style="color:${b.qualityScorePct >= 80 ? "#6ee7b7" : "#fcd34d"}">${b.qualityScorePct}%</strong>` : `<span class="muted">—</span>`}</td>
+            <td class="num-cell mono">${formatNum(b.tokensTotal)}</td>
+            <td class="num-cell mono"><strong>$${b.costTotalUsd.toFixed(4)}</strong></td>
+            <td class="num-cell mono">${b.errorCount > 0 ? `<span style="color:#fda4af;font-weight:700">${b.errorCount}</span>` : `<span class="muted">0</span>`}</td>
+            <td class="muted num"><span data-live-ts="${esc(b.lastSeenAt)}">${esc(timeAgo(b.lastSeenAt))}</span></td>
           </tr>`
         )
         .join("");
@@ -390,7 +770,12 @@
     // Recent Runs & Deliverables Table
     const runsTbody = document.getElementById("runs-tbody");
     if (recentRuns.length === 0) {
-      runsTbody.innerHTML = `<tr><td colspan="6" class="muted">No task runs recorded yet.</td></tr>`;
+      runsTbody.innerHTML = `<tr><td colspan="6" style="padding:14px">${emptyStateHtml({
+        icon: "📦",
+        title: "No task runs recorded yet",
+        subtitle: "When a bot reports done=1 with an output link or summary, it lands here for quality grading.",
+        compact: true,
+      })}</td></tr>`;
     } else {
       runsTbody.innerHTML = recentRuns
         .slice(0, 20)
@@ -410,7 +795,7 @@
               ${r.resultSummary ? `<div class="muted" style="font-size:0.75rem">${esc(r.resultSummary)}</div>` : ""}
             </td>
             <td><span class="st-pill ${runPill}">${esc(r.status)}</span></td>
-            <td class="muted">${esc(formatDuration(r.durationSec))}</td>
+            <td class="num-cell mono muted">${esc(formatDuration(r.durationSec))}</td>
             <td>${safeUrl ? `<a class="deliv-link" href="${esc(safeUrl)}" target="_blank" rel="noopener noreferrer">Open output ↗</a>` : `<span class="muted">—</span>`}</td>
             <td>${renderGradeButtons(r)}</td>
           </tr>`;
@@ -428,7 +813,13 @@
 
     const goalsEl = document.getElementById("goals-grid");
     if (objectives.length === 0) {
-      goalsEl.innerHTML = `<div class="empty-msg" style="grid-column:1/-1">No goals yet. Click <strong>+ New Goal</strong> above to add one.</div>`;
+      goalsEl.innerHTML = emptyStateHtml({
+        icon: "🎯",
+        title: "No team goals yet",
+        subtitle: "Create a shared objective and assign it to a bot — HQ will hand that goal back in its check-in orders.",
+        compact: true,
+        actionsHtml: `<button class="btn btn-primary" data-open-goal-form="1">+ Create First Goal</button>`,
+      });
     } else {
       goalsEl.innerHTML = objectives
         .map((o) => {
@@ -457,31 +848,13 @@
         .join("");
     }
 
-    // Usage Chart
-    const chartEl = document.getElementById("usage-chart");
-    const timeline = usageSummary.timeline || [];
-    if (timeline.length === 0) {
-      chartEl.innerHTML = `<div class="muted" style="margin:auto">No usage timeline data yet</div>`;
-    } else {
-      const vals = timeline.map((t) => (chartMode === "tokens" ? t.tokens : t.costUsd));
-      const maxVal = Math.max(...vals, 0.0001);
-      chartEl.innerHTML = timeline
-        .map((t) => {
-          const v = chartMode === "tokens" ? t.tokens : t.costUsd;
-          const pct = Math.max(8, Math.round((v / maxVal) * 100));
-          const errTag = t.errors > 0 ? ` · ${t.errors} err` : "";
-          return `
-          <div class="bar-col" title="${esc(t.label)}: ${formatNum(t.tokens)} tokens · $${t.costUsd.toFixed(4)} · ${t.requests} req${errTag}">
-            <div class="bar-fill ${t.errors > 0 ? "has-err" : ""}" style="height:${pct}%"></div>
-            <div class="bar-label">${esc(t.label)}</div>
-          </div>`;
-        })
-        .join("");
-    }
+    // Interactive SVG Usage Chart & Model Donut + Table
+    renderUsageChart(usageSummary.timeline || []);
 
-    // Model Spend Table
-    const tbody = document.getElementById("model-tbody");
     const models = usageSummary.byModel || [];
+    renderModelDonut(models);
+
+    const tbody = document.getElementById("model-tbody");
     if (models.length === 0) {
       tbody.innerHTML = `<tr><td colspan="4" class="muted">No usage events yet</td></tr>`;
     } else {
@@ -490,9 +863,9 @@
           (m) => `
           <tr>
             <td><strong>${esc(m.model)}</strong></td>
-            <td>${m.requests}</td>
-            <td>${formatNum(m.tokensIn + m.tokensOut)}</td>
-            <td><strong>$${m.costUsd.toFixed(4)}</strong></td>
+            <td class="num-cell mono">${m.requests}</td>
+            <td class="num-cell mono">${formatNum(m.tokensIn + m.tokensOut)}</td>
+            <td class="num-cell mono"><strong>$${m.costUsd.toFixed(4)}</strong></td>
           </tr>`
         )
         .join("");
@@ -508,7 +881,11 @@
 
     const grid = document.getElementById("needs-grid");
     if (needs.length === 0) {
-      grid.innerHTML = `<div class="empty-msg" style="grid-column:1/-1">All clear — no bots are currently waiting on you.</div>`;
+      grid.innerHTML = emptyStateHtml({
+        icon: "✅",
+        title: "All clear — zero pending needs",
+        subtitle: "When a bot pauses for human approval, hits a loop, or encounters a failure, its request will appear right here.",
+      });
       return;
     }
 
@@ -536,6 +913,7 @@
       .join("");
   }
 
+  // Right-Edge Slide-Over Docked Bot Inspector with Tabs (Overview | Queue | Runs)
   function renderInspector() {
     const el = document.getElementById("bot-inspector");
     if (!snapshot || !selectedBotId) {
@@ -553,117 +931,154 @@
     );
     const botRuns = (snapshot.recentRuns || [])
       .filter((r) => r.botId === bot.id)
-      .slice(0, 3);
+      .slice(0, 12);
     const queued = bot.queuedTasks || [];
 
-    el.classList.remove("hidden");
-    el.innerHTML = `
-      <div class="insp-head">
-        <div style="display:flex;align-items:center;gap:10px">
-          ${miniGrokIcon(bot.avatarColor)}
-          <div>
-            <div style="display:flex;align-items:center;gap:6px">
-              <span class="insp-name">${esc(bot.name)}</span>
-              <span class="st-pill st-${esc(bot.status)}">${esc(statusLabel(bot.status))}</span>
-            </div>
-            <div style="font-size:0.75rem;color:var(--cyan);font-weight:600;margin-top:2px">
-              ${esc(bot.role || "Grok Bot")} · <span class="muted">${esc(bot.model)} · ${esc(timeAgo(bot.lastSeenAt))}</span>
-            </div>
-          </div>
-        </div>
-        <button id="btn-close-insp" class="btn-icon" title="Close inspector (Esc)">✕</button>
-      </div>
-
+    const overviewHtml = `
       <div class="insp-task">${esc(bot.task || "Standing by")}</div>
 
       <div class="insp-kpis">
-        <div class="insp-kpi"><span>Tasks</span><strong>${bot.tasksCompleted}</strong></div>
-        <div class="insp-kpi"><span>Avg Dur</span><strong>${esc(formatDuration(bot.avgDurationSec))}</strong></div>
-        <div class="insp-kpi"><span>Spend</span><strong>$${bot.costTotalUsd.toFixed(3)}</strong></div>
-        <div class="insp-kpi"><span>Quality</span><strong style="${bot.errorCount > 0 ? "color:#fb7185" : ""}">${bot.qualityScorePct !== null && bot.qualityScorePct !== undefined ? `${bot.qualityScorePct}%` : `${bot.errorCount} err`}</strong></div>
+        <div class="insp-kpi"><span>Tasks</span><strong class="mono">${bot.tasksCompleted}</strong></div>
+        <div class="insp-kpi"><span>Avg Dur</span><strong class="mono">${esc(formatDuration(bot.avgDurationSec))}</strong></div>
+        <div class="insp-kpi"><span>Spend</span><strong class="mono">$${bot.costTotalUsd.toFixed(3)}</strong></div>
+        <div class="insp-kpi"><span>Quality</span><strong class="mono" style="${bot.errorCount > 0 ? "color:#fda4af" : ""}">${bot.qualityScorePct !== null && bot.qualityScorePct !== undefined ? `${bot.qualityScorePct}%` : `${bot.errorCount} err`}</strong></div>
       </div>
 
       ${
         botOpenNeed
           ? `<div class="insp-need-box ${botOpenNeed.severity === "error" ? "err" : ""}">
-              <div style="font-size:0.78rem;font-weight:700">${esc(botOpenNeed.title)}</div>
-              ${botOpenNeed.description ? `<div style="font-size:0.73rem;color:#cbd5e1">${esc(botOpenNeed.description)}</div>` : ""}
+              <div style="font-size:0.8rem;font-weight:700;color:var(--text-bright)">${esc(botOpenNeed.title)}</div>
+              ${botOpenNeed.description ? `<div style="font-size:0.74rem;color:var(--muted)">${esc(botOpenNeed.description)}</div>` : ""}
               <div style="display:flex;gap:6px;margin-top:2px">
                 <input class="insp-input" type="text" placeholder="Note…" data-note-for="${esc(botOpenNeed.id)}" />
-                <button class="btn btn-approve" style="padding:4px 9px;font-size:0.74rem" data-resolve="${esc(botOpenNeed.id)}" data-action="approve">Approve</button>
-                <button class="btn btn-reject" style="padding:4px 9px;font-size:0.74rem" data-resolve="${esc(botOpenNeed.id)}" data-action="reject">Reject</button>
+                <button class="btn btn-approve" style="padding:4px 10px;font-size:0.74rem" data-resolve="${esc(botOpenNeed.id)}" data-action="approve">Approve</button>
+                <button class="btn btn-reject" style="padding:4px 10px;font-size:0.74rem" data-resolve="${esc(botOpenNeed.id)}" data-action="reject">Reject</button>
               </div>
             </div>`
           : ""
       }
 
-      <div class="insp-form">
-        <div class="insp-form-row">
-          <input id="insp-task-input" class="insp-input" type="text" placeholder="Assign immediate task…" value="${esc(bot.task)}" />
-          <button class="chip-btn active" data-save-bot-task="${esc(bot.id)}">Assign</button>
-        </div>
-        <div class="insp-form-row">
-          <input id="insp-role-input" class="insp-input" type="text" placeholder="Role title…" value="${esc(bot.role)}" />
-          <select id="insp-sla-select" class="insp-input" style="max-width:128px" data-save-bot-sla="${esc(bot.id)}" title="Expected check-in schedule SLA">
-            <option value="0" ${bot.expectedIntervalMinutes === 0 ? "selected" : ""}>SLA: Off</option>
-            <option value="15" ${bot.expectedIntervalMinutes === 15 ? "selected" : ""}>SLA: 15m</option>
-            <option value="60" ${bot.expectedIntervalMinutes === 60 ? "selected" : ""}>SLA: 1h</option>
-            <option value="360" ${bot.expectedIntervalMinutes === 360 ? "selected" : ""}>SLA: 6h</option>
-            <option value="1440" ${bot.expectedIntervalMinutes === 1440 ? "selected" : ""}>SLA: 24h</option>
-          </select>
-          <button class="chip-btn" data-save-bot-role="${esc(bot.id)}">Save</button>
+      <div>
+        <div class="insp-section-label">Direct Command &amp; Schedule</div>
+        <div class="insp-form">
+          <div class="insp-form-row">
+            <input id="insp-task-input" class="insp-input" type="text" placeholder="Assign immediate task…" value="${esc(bot.task)}" />
+            <button class="btn btn-primary" style="padding:6px 11px;font-size:0.75rem" data-save-bot-task="${esc(bot.id)}">Assign</button>
+          </div>
+          <div class="insp-form-row">
+            <input id="insp-role-input" class="insp-input" type="text" placeholder="Role title…" value="${esc(bot.role)}" />
+            <select id="insp-sla-select" class="insp-input" style="max-width:118px" data-save-bot-sla="${esc(bot.id)}" title="Expected check-in schedule SLA">
+              <option value="0" ${bot.expectedIntervalMinutes === 0 ? "selected" : ""}>SLA: Off</option>
+              <option value="15" ${bot.expectedIntervalMinutes === 15 ? "selected" : ""}>SLA: 15m</option>
+              <option value="60" ${bot.expectedIntervalMinutes === 60 ? "selected" : ""}>SLA: 1h</option>
+              <option value="360" ${bot.expectedIntervalMinutes === 360 ? "selected" : ""}>SLA: 6h</option>
+              <option value="1440" ${bot.expectedIntervalMinutes === 1440 ? "selected" : ""}>SLA: 24h</option>
+            </select>
+            <button class="btn btn-secondary" style="padding:6px 10px;font-size:0.75rem" data-save-bot-role="${esc(bot.id)}">Save</button>
+          </div>
         </div>
       </div>
 
+      <div>
+        <div class="insp-section-label">Move Room</div>
+        <div class="insp-moves-grid">
+          <button class="chip-btn ${bot.status === "working" ? "active" : ""}" data-move-bot="${esc(bot.id)}" data-status="working">Workfloor</button>
+          <button class="chip-btn ${bot.status === "waiting" ? "active" : ""}" data-move-bot="${esc(bot.id)}" data-status="waiting">Waiting</button>
+          <button class="chip-btn ${bot.status === "meeting" ? "active" : ""}" data-move-bot="${esc(bot.id)}" data-status="meeting">War Room</button>
+          <button class="chip-btn ${bot.status === "idle" ? "active" : ""}" data-move-bot="${esc(bot.id)}" data-status="idle">Lounge</button>
+        </div>
+      </div>`;
+
+    const queueHtml = `
       <div class="insp-queue">
-        <div style="font-size:0.68rem;font-weight:800;color:var(--muted);text-transform:uppercase">Dispatch Queue (${queued.length})</div>
-        ${queued
-          .map(
-            (q) => `
-          <div class="insp-queue-item">
-            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(q.task)}</span>
-            <button class="link-btn danger-link" style="font-size:0.72rem" data-del-queue-bot="${esc(bot.id)}" data-del-queue-id="${esc(q.id)}">✕</button>
-          </div>`
-          )
-          .join("")}
+        <div class="insp-section-label">Dispatch Queue (${queued.length})</div>
+        <p class="muted" style="margin:0 0 4px;font-size:0.77rem;line-height:1.45">Queued tasks are handed back automatically in <code>orders.nextTask</code> on this bot's next check-in.</p>
         <div class="insp-form-row">
           <input id="insp-queue-input" class="insp-input" type="text" placeholder="Stack next queued task…" />
-          <button class="chip-btn" data-add-queue="${esc(bot.id)}">+ Queue</button>
+          <button class="btn btn-primary" style="padding:6px 11px;font-size:0.75rem" data-add-queue="${esc(bot.id)}">+ Queue</button>
         </div>
-      </div>
+        ${
+          queued.length > 0
+            ? queued
+                .map(
+                  (q, idx) => `
+                <div class="insp-queue-item">
+                  <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span class="mono muted" style="margin-right:6px">#${idx + 1}</span>${esc(q.task)}</span>
+                  <button class="link-btn danger-link" style="font-size:0.74rem" data-del-queue-bot="${esc(bot.id)}" data-del-queue-id="${esc(q.id)}" title="Remove from queue">✕</button>
+                </div>`
+                )
+                .join("")
+            : emptyStateHtml({
+                icon: "🗂",
+                title: "Queue is empty",
+                subtitle: "Add a follow-up task above so this bot picks up new work automatically.",
+                compact: true,
+              })
+        }
+      </div>`;
 
-      ${
-        botRuns.length > 0
-          ? `<div class="insp-logs">
-              <div style="font-size:0.68rem;font-weight:800;color:var(--muted);text-transform:uppercase">Recent Runs &amp; Deliverables</div>
-              ${botRuns
+    const runsHtml = `
+      <div class="insp-logs">
+        <div class="insp-section-label">Recent Runs &amp; Deliverables (${botRuns.length})</div>
+        ${
+          botRuns.length > 0
+            ? botRuns
                 .map((r) => {
                   const safeUrl = r.outputUrl ? safeHttpsUrl(r.outputUrl) : null;
                   return `
-                  <div class="insp-log-item" style="align-items:center">
-                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">
-                      ${esc(r.task)} <span class="muted">(${esc(formatDuration(r.durationSec))})</span>
-                      ${safeUrl ? ` · <a class="deliv-link" href="${esc(safeUrl)}" target="_blank" rel="noopener noreferrer">Link ↗</a>` : ""}
-                    </span>
+                  <div class="insp-log-item">
+                    <div style="min-width:0;flex:1">
+                      <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.task)}</div>
+                      <div class="muted" style="font-size:0.72rem;margin-top:2px">
+                        <span class="mono">${esc(formatDuration(r.durationSec))}</span> · ${esc(r.status)}
+                        ${safeUrl ? ` · <a class="deliv-link" href="${esc(safeUrl)}" target="_blank" rel="noopener noreferrer">Open ↗</a>` : ""}
+                      </div>
+                    </div>
                     ${renderGradeButtons(r)}
                   </div>`;
                 })
-                .join("")}
-            </div>`
-          : ""
-      }
+                .join("")
+            : emptyStateHtml({
+                icon: "📦",
+                title: "No runs logged yet",
+                subtitle: "Completed runs and deliverable links for this bot will appear here.",
+                compact: true,
+              })
+        }
+      </div>`;
 
-      <div class="insp-moves">
-        <div style="display:flex;gap:4px;flex-wrap:wrap">
-          <button class="chip-btn" data-move-bot="${esc(bot.id)}" data-status="working">Workfloor</button>
-          <button class="chip-btn" data-move-bot="${esc(bot.id)}" data-status="waiting">Waiting</button>
-          <button class="chip-btn" data-move-bot="${esc(bot.id)}" data-status="meeting">War Room</button>
-          <button class="chip-btn" data-move-bot="${esc(bot.id)}" data-status="idle">Lounge</button>
+    el.classList.remove("hidden");
+    el.innerHTML = `
+      <div class="insp-top">
+        <div class="insp-head">
+          <div style="display:flex;align-items:center;gap:10px;min-width:0">
+            ${miniGrokIcon(bot.avatarColor, true)}
+            <div style="min-width:0">
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                <span class="insp-name">${esc(bot.name)}</span>
+                <span class="st-pill st-${esc(bot.status)}">${esc(statusLabel(bot.status))}</span>
+              </div>
+              <div style="font-size:0.74rem;color:var(--cyan);font-weight:600;margin-top:2px">
+                ${esc(bot.role || "Grok Bot")} · <span class="muted">${esc(bot.model)} · <span data-live-ts="${esc(bot.lastSeenAt)}">${esc(timeAgo(bot.lastSeenAt))}</span></span>
+              </div>
+            </div>
+          </div>
+          <button id="btn-close-insp" class="btn-icon" title="Close inspector (Esc)" aria-label="Close inspector">✕</button>
         </div>
-        <div style="display:flex;gap:5px;align-items:center">
-          <button class="chip-btn active" data-copy-grok-prompt="${esc(bot.id)}" title="Copy 3-line instruction block to paste into the Grok app">Copy Grok Prompt</button>
-          <button class="chip-btn" style="color:#fb7185;border-color:rgba(244,63,94,0.35)" data-delete-bot="${esc(bot.id)}" title="Remove bot from office">Remove</button>
+        <div class="insp-tabs" role="tablist">
+          <button class="insp-tab ${inspectorTab === "overview" ? "active" : ""}" data-insp-tab="overview" role="tab">Overview</button>
+          <button class="insp-tab ${inspectorTab === "queue" ? "active" : ""}" data-insp-tab="queue" role="tab">Queue <span class="num">(${queued.length})</span></button>
+          <button class="insp-tab ${inspectorTab === "runs" ? "active" : ""}" data-insp-tab="runs" role="tab">Runs <span class="num">(${botRuns.length})</span></button>
         </div>
+      </div>
+
+      <div class="insp-body">
+        ${inspectorTab === "queue" ? queueHtml : inspectorTab === "runs" ? runsHtml : overviewHtml}
+      </div>
+
+      <div class="insp-footer">
+        <button class="btn btn-secondary" style="flex:1" data-copy-grok-prompt="${esc(bot.id)}" title="Copy instruction block to paste into the Grok app">Copy Grok Prompt</button>
+        <button class="btn btn-reject" data-delete-bot="${esc(bot.id)}" data-delete-bot-name="${esc(bot.name)}" title="Remove bot from office">Remove</button>
       </div>
     `;
   }
@@ -696,20 +1111,315 @@
     });
   });
 
-  // Keyboard shortcuts for rapid triage (0 = All, 1-6 = Rooms, Esc = Close Inspector/Modals)
-  document.addEventListener("keydown", (e) => {
-    const tag = document.activeElement?.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
-      if (e.key === "Escape") document.activeElement.blur();
+  // Sortable Leaderboard Header Clicks
+  document.querySelectorAll("th.sortable[data-sort-col]").forEach((th) => {
+    th.addEventListener("click", () => {
+      const col = th.dataset.sortCol;
+      if (leaderboardSort.col === col) {
+        leaderboardSort.dir = leaderboardSort.dir === "desc" ? "asc" : "desc";
+      } else {
+        leaderboardSort.col = col;
+        leaderboardSort.dir = col === "name" || col === "status" || col === "model" ? "asc" : "desc";
+      }
+      renderMetricsPage();
+    });
+  });
+
+  // Command Palette (Ctrl+K / Cmd+K)
+  const cmdModal = document.getElementById("cmd-modal");
+  const cmdInput = document.getElementById("cmd-input");
+  const cmdList = document.getElementById("cmd-list");
+  const shortcutsModal = document.getElementById("shortcuts-modal");
+
+  function buildCmdCatalog() {
+    const items = [];
+    const bots = snapshot?.bots || [];
+    bots.forEach((b) => {
+      items.push({
+        group: "Grok Bots",
+        title: b.name,
+        subtitle: `${b.role} · ${statusLabel(b.status)}`,
+        iconHtml: miniGrokIcon(b.avatarColor),
+        keywords: `${b.name} ${b.role} ${b.status} ${b.model} ${b.task}`.toLowerCase(),
+        run: () => {
+          switchView("office");
+          setTimeout(() => office3d.selectBot(b.id), 60);
+        },
+      });
+    });
+
+    const navItems = [
+      { title: "Go to 3D Office", subtitle: "Live 3D command stage", icon: "🏢", view: "office" },
+      { title: "Go to Fleet", subtitle: "Check-in freshness & queued orders", icon: "🛰", view: "fleet" },
+      { title: "Go to Goals & Metrics", subtitle: "Spend, tokens, runs & objectives", icon: "📊", view: "metrics" },
+      { title: "Go to Pending Needs", subtitle: "Open approvals & escalations", icon: "✋", view: "needs" },
+    ];
+    navItems.forEach((n) => {
+      items.push({
+        group: "Navigation",
+        title: n.title,
+        subtitle: n.subtitle,
+        iconHtml: `<span style="font-size:1rem">${n.icon}</span>`,
+        keywords: `${n.title} ${n.subtitle}`.toLowerCase(),
+        run: () => switchView(n.view),
+      });
+    });
+
+    items.push(
+      {
+        group: "Actions",
+        title: "Add New Grok Bot",
+        subtitle: "Create bot & copy check-in prompt",
+        iconHtml: `<span style="font-size:1rem">➕</span>`,
+        keywords: "add new create bot grok",
+        run: () => openAddBotModal(),
+      },
+      {
+        group: "Actions",
+        title: "Connect Instructions",
+        subtitle: "View Grok App prompt & SDK proxy snippets",
+        iconHtml: `<span style="font-size:1rem">🔗</span>`,
+        keywords: "connect prompt instructions proxy sdk",
+        run: () => openConnectModal(),
+      },
+      {
+        group: "Actions",
+        title: "Open Guardrails & Alerts",
+        subtitle: "Budget caps, circuit-breaker, Discord/Slack webhook",
+        iconHtml: `<span style="font-size:1rem">⚙</span>`,
+        keywords: "guardrails settings budget cap webhook alerts",
+        run: () => openGuardrailsModal(),
+      },
+      {
+        group: "Actions",
+        title: soundEnabled ? "Mute Alert Chime" : "Enable Alert Chime",
+        subtitle: "Toggle audio notification for approvals & errors",
+        iconHtml: `<span style="font-size:1rem">${soundEnabled ? "🔕" : "🔔"}</span>`,
+        keywords: "sound chime audio mute alert",
+        run: () => soundBtn?.click(),
+      },
+      {
+        group: "Actions",
+        title: sidebarCollapsed ? "Expand Right Sidebar" : "Collapse Right Sidebar",
+        subtitle: "Widen the 3D office viewport ([)",
+        iconHtml: `<span style="font-size:1rem">◧</span>`,
+        keywords: "sidebar collapse expand panel toggle",
+        run: () => {
+          switchView("office");
+          toggleSidebar();
+        },
+      },
+      {
+        group: "Actions",
+        title: "Reset 3D Camera",
+        subtitle: "Return to full penthouse overview (0)",
+        iconHtml: `<span style="font-size:1rem">🎥</span>`,
+        keywords: "camera reset view overview",
+        run: () => {
+          switchView("office");
+          document.getElementById("btn-reset-view")?.click();
+        },
+      },
+      {
+        group: "Actions",
+        title: "Keyboard Shortcuts",
+        subtitle: "Show hotkey reference (?)",
+        iconHtml: `<span style="font-size:1rem">⌨</span>`,
+        keywords: "keyboard shortcuts hotkeys help",
+        run: () => shortcutsModal?.classList.remove("hidden"),
+      }
+    );
+
+    const openSafe = (snapshot?.pendingNeeds || []).filter(
+      (n) => n.status === "open" && (n.severity === "approval" || n.severity === "input")
+    );
+    if (openSafe.length > 0) {
+      items.push({
+        group: "Actions",
+        title: `Approve All Safe (${openSafe.length})`,
+        subtitle: "Approve all open non-error requests at once",
+        iconHtml: `<span style="font-size:1rem">✅</span>`,
+        keywords: "approve all safe needs",
+        run: async () => {
+          await fetch("/api/needs/resolve-all", { method: "POST" });
+          showToast(`Approved ${openSafe.length} pending requests`, "success");
+        },
+      });
+    }
+
+    ["day", "evening", "night", "now"].forEach((mode) => {
+      items.push({
+        group: "3D Lighting",
+        title: `Lighting: ${mode.charAt(0).toUpperCase() + mode.slice(1)}`,
+        subtitle: "Switch penthouse atmosphere",
+        iconHtml: `<span style="font-size:1rem">💡</span>`,
+        keywords: `lighting light theme ${mode}`,
+        run: () => {
+          switchView("office");
+          document.querySelector(`[data-light="${mode}"]`)?.click();
+          showToast(`Lighting set to ${mode}`, "info");
+        },
+      });
+    });
+
+    return items;
+  }
+
+  function renderCmdList() {
+    if (!cmdList || !cmdInput) return;
+    const q = cmdInput.value.trim().toLowerCase();
+    const all = buildCmdCatalog();
+    cmdItems = q
+      ? all.filter((item) => item.title.toLowerCase().includes(q) || item.keywords.includes(q))
+      : all;
+    if (cmdSelectedIndex >= cmdItems.length) cmdSelectedIndex = 0;
+
+    if (cmdItems.length === 0) {
+      cmdList.innerHTML = `<div class="empty-msg" style="padding:20px">No matching commands or bots.</div>`;
       return;
     }
+
+    let html = "";
+    let lastGroup = "";
+    cmdItems.forEach((item, idx) => {
+      if (item.group !== lastGroup) {
+        lastGroup = item.group;
+        html += `<div class="cmd-group-label">${esc(item.group)}</div>`;
+      }
+      html += `
+        <button type="button" class="cmd-item ${idx === cmdSelectedIndex ? "selected" : ""}" data-cmd-idx="${idx}">
+          <span class="cmd-item-left">
+            ${item.iconHtml}
+            <span style="min-width:0">
+              <div style="font-weight:600">${esc(item.title)}</div>
+              <div class="cmd-item-sub">${esc(item.subtitle)}</div>
+            </span>
+          </span>
+          <span class="muted" style="font-size:0.72rem">↵</span>
+        </button>`;
+    });
+    cmdList.innerHTML = html;
+    const activeBtn = cmdList.querySelector(".cmd-item.selected");
+    if (activeBtn) activeBtn.scrollIntoView({ block: "nearest" });
+  }
+
+  function openCmdPalette() {
+    if (!cmdModal || !cmdInput) return;
+    cmdInput.value = "";
+    cmdSelectedIndex = 0;
+    renderCmdList();
+    cmdModal.classList.remove("hidden");
+    setTimeout(() => cmdInput.focus(), 15);
+  }
+
+  function closeCmdPalette() {
+    cmdModal?.classList.add("hidden");
+  }
+
+  document.getElementById("btn-cmd-palette")?.addEventListener("click", openCmdPalette);
+  cmdModal?.querySelector(".modal-backdrop")?.addEventListener("click", closeCmdPalette);
+  cmdInput?.addEventListener("input", () => {
+    cmdSelectedIndex = 0;
+    renderCmdList();
+  });
+  cmdInput?.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (cmdItems.length > 0) {
+        cmdSelectedIndex = (cmdSelectedIndex + 1) % cmdItems.length;
+        renderCmdList();
+      }
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (cmdItems.length > 0) {
+        cmdSelectedIndex = (cmdSelectedIndex - 1 + cmdItems.length) % cmdItems.length;
+        renderCmdList();
+      }
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const target = cmdItems[cmdSelectedIndex];
+      if (target) {
+        closeCmdPalette();
+        target.run();
+      }
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      closeCmdPalette();
+    }
+  });
+  cmdList?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-cmd-idx]");
+    if (!btn) return;
+    const item = cmdItems[Number(btn.dataset.cmdIdx)];
+    if (item) {
+      closeCmdPalette();
+      item.run();
+    }
+  });
+
+  // Shortcuts Modal
+  document.getElementById("btn-shortcuts")?.addEventListener("click", () => {
+    shortcutsModal?.classList.remove("hidden");
+  });
+  document.getElementById("btn-close-shortcuts")?.addEventListener("click", () => {
+    shortcutsModal?.classList.add("hidden");
+  });
+  shortcutsModal?.querySelector(".modal-backdrop")?.addEventListener("click", () => {
+    shortcutsModal.classList.add("hidden");
+  });
+
+  // Global Keyboard Shortcuts (Ctrl/Cmd+K, ?, [, 0-6, Esc)
+  document.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      if (cmdModal && !cmdModal.classList.contains("hidden")) closeCmdPalette();
+      else openCmdPalette();
+      return;
+    }
+
+    const tag = document.activeElement?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+      if (e.key === "Escape") {
+        document.activeElement.blur();
+        if (cmdModal && !cmdModal.classList.contains("hidden")) closeCmdPalette();
+      } else if (e.key === "Enter") {
+        if (document.activeElement.id === "insp-task-input") {
+          document.querySelector("[data-save-bot-task]")?.click();
+        } else if (document.activeElement.id === "insp-queue-input") {
+          document.querySelector("[data-add-queue]")?.click();
+        }
+      }
+      return;
+    }
+
     if (e.key === "Escape") {
+      if (confirmResolver) {
+        finishConfirm(false);
+        return;
+      }
+      const openModal = document.querySelector(".modal:not(.hidden)");
+      if (openModal) {
+        openModal.classList.add("hidden");
+        return;
+      }
       selectedBotId = null;
       renderInspector();
       renderTeamList();
-      document.querySelectorAll(".modal").forEach((m) => m.classList.add("hidden"));
       return;
     }
+
+    if (e.key === "?" && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      shortcutsModal?.classList.toggle("hidden");
+      return;
+    }
+
+    if (e.key === "[" && activeView === "office" && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      toggleSidebar();
+      return;
+    }
+
     if (activeView !== "office") return;
     const roomKeys = ["all", "working", "waiting", "error", "meeting", "idle", "no_report"];
     const num = Number(e.key);
@@ -719,12 +1429,19 @@
     }
   });
 
-  // Reset Office Data (with confirmation so real bots aren't accidentally wiped)
+  // Reset Office Data (Using sleek in-app confirmation modal)
   async function clearOfficeData() {
-    if (!confirm("Reset the office and clear all bots, logs, and usage history?")) return;
+    const ok = await askConfirm({
+      title: "Reset Office Data",
+      message: "This will clear all bots, activity logs, task runs, pending approvals, and usage history. Are you sure?",
+      confirmLabel: "Reset Office",
+      danger: true,
+    });
+    if (!ok) return;
     selectedBotId = null;
     knownOpenNeedIds.clear();
-    await fetch("/api/office/reset", { method: "POST" });
+    const res = await fetch("/api/office/reset", { method: "POST" });
+    if (res.ok) showToast("Office reset complete", "warn");
   }
 
   document.getElementById("btn-clear-demo").addEventListener("click", clearOfficeData);
@@ -807,6 +1524,9 @@
   const goalForm = document.getElementById("goal-form");
   document.getElementById("btn-toggle-goal-form").addEventListener("click", () => {
     goalForm.classList.toggle("hidden");
+    if (!goalForm.classList.contains("hidden")) {
+      document.getElementById("goal-title-input")?.focus();
+    }
   });
   goalForm.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -814,11 +1534,12 @@
     const ownerBotId = document.getElementById("goal-owner-select").value || null;
     const targetLabel = document.getElementById("goal-target-input").value.trim();
     if (!title) return;
-    await fetch("/api/objectives", {
+    const res = await fetch("/api/objectives", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ title, ownerBotId, targetLabel, progress: 0 }),
     });
+    if (res.ok) showToast(`Goal "${title}" created`, "success");
     goalForm.reset();
     goalForm.classList.add("hidden");
   });
@@ -871,6 +1592,7 @@ Read the JSON orders. Do orders.nextTask when it is set. Follow orders.decision 
     return "Waiting";
   }
 
+  // Unified Fleet View (Grok Mini SVG Avatars + Inline Quick-Assign)
   function renderFleet() {
     const grid = document.getElementById("fleet-grid");
     const updates = document.getElementById("fleet-updates");
@@ -912,9 +1634,20 @@ Read the JSON orders. Do orders.nextTask when it is set. Follow orders.decision 
     });
 
     if (bots.length === 0) {
-      grid.innerHTML = `<div class="empty-msg">No bots are linked yet. Add one, then paste the office link into that Grok bot's instructions. Each check-in lands here.</div>`;
+      grid.innerHTML = emptyStateHtml({
+        icon: "🛰",
+        title: "No Grok bots linked yet",
+        subtitle: "Add a bot, then paste the office link into its Grok instructions. Each check-in lands live on this Fleet board.",
+        actionsHtml: `<button class="btn btn-primary" data-open-modal="add-bot">+ Add First Bot</button>
+          <button class="btn btn-secondary" data-open-modal="connect">Connect Instructions</button>`,
+      });
     } else if (visible.length === 0) {
-      grid.innerHTML = `<div class="empty-msg">No bots match this filter.</div>`;
+      grid.innerHTML = emptyStateHtml({
+        icon: "🔍",
+        title: "No bots match this filter",
+        subtitle: "Try switching back to All to see your entire fleet.",
+        compact: true,
+      });
     } else {
       grid.innerHTML = visible
         .map((bot) => {
@@ -924,26 +1657,33 @@ Read the JSON orders. Do orders.nextTask when it is set. Follow orders.decision 
           );
           const queued = (bot.queuedTasks || [])[0];
           const orderBits = [
-            queued ? `<div>Next task <strong>${esc(queued.task)}</strong></div>` : "",
-            goal ? `<div>Goal <strong>${esc(goal.title)}</strong> ${goal.progress}%</div>` : "",
-            botNeeds.length ? `<div>${botNeeds.length} open request${botNeeds.length === 1 ? "" : "s"}</div>` : "",
+            queued ? `<div>Next task: <strong>${esc(queued.task)}</strong></div>` : "",
+            goal ? `<div>Goal: <strong>${esc(goal.title)}</strong> <span class="mono">${goal.progress}%</span></div>` : "",
+            botNeeds.length ? `<div><strong style="color:#fcd34d">${botNeeds.length} open request${botNeeds.length === 1 ? "" : "s"}</strong></div>` : "",
           ]
             .filter(Boolean)
             .join("");
           return `<article class="fleet-card">
             <div class="fleet-card-top">
               <div class="fleet-id">
-                <span class="fleet-swatch" style="background:${esc(bot.avatarColor)}"></span>
+                ${miniGrokIcon(bot.avatarColor, true)}
                 <div style="min-width:0">
                   <div class="fleet-name">${esc(bot.name)}</div>
-                  <div class="fleet-role">${esc(bot.role)} · ${esc(bot.model)}</div>
+                  <div class="fleet-role">${esc(bot.role)} · <span class="mono">${esc(bot.model)}</span></div>
                 </div>
               </div>
-              <span class="link-pill link-${esc(bot.link || "waiting")}">${linkLabel(bot.link)}</span>
+              <div class="fleet-badges">
+                <span class="st-pill st-${esc(bot.status)}">${esc(statusLabel(bot.status))}</span>
+                <span class="link-pill link-${esc(bot.link || "waiting")}">${linkLabel(bot.link)}</span>
+              </div>
             </div>
             <div class="fleet-task">${esc(bot.task || "No task reported")}</div>
-            <div class="fleet-meta">${esc(statusLabel(bot.status))} · last update ${esc(timeAgo(bot.lastSeenAt))}${bot.expectedIntervalMinutes > 0 ? ` · every ${bot.expectedIntervalMinutes}m` : ""}</div>
-            <div class="fleet-orders">${orderBits || "<div>No queued orders. The next check-in only reports status.</div>"}</div>
+            <div class="fleet-meta">Last update <span data-live-ts="${esc(bot.lastSeenAt)}">${esc(timeAgo(bot.lastSeenAt))}</span>${bot.expectedIntervalMinutes > 0 ? ` · every ${bot.expectedIntervalMinutes}m` : ""} · <span class="mono">$${Number(bot.costTotalUsd || 0).toFixed(3)}</span></div>
+            <div class="fleet-orders">${orderBits || "<div>No queued orders. Next check-in only reports status.</div>"}</div>
+            <form class="fleet-quick-assign" data-fleet-assign-form="${esc(bot.id)}">
+              <input type="text" placeholder="Quick-assign next task…" maxlength="140" />
+              <button type="submit" class="chip-btn active">Send</button>
+            </form>
             <div class="fleet-card-actions">
               <button class="btn btn-secondary" data-copy-grok-prompt="${esc(bot.id)}">Copy office link</button>
               <button class="btn btn-secondary" data-jump-bot="${esc(bot.id)}">Open in office</button>
@@ -958,9 +1698,10 @@ Read the JSON orders. Do orders.nextTask when it is set. Follow orders.decision 
       ? logs
           .map(
             (log) => `<div class="act-item lvl-${esc(log.level)}" data-jump-bot="${esc(log.botId)}">
+              <span class="bot-sq" style="background:${esc(log.botColor || "#38bdf8")};margin-top:4px"></span>
               <div>
-                <div><strong>${esc(log.botName)}</strong> ${esc(log.message)}</div>
-                <div class="act-meta">${esc(timeAgo(log.createdAt))}</div>
+                <div><strong>${esc(log.botName)}</strong> — ${esc(log.message)}</div>
+                <div class="act-meta"><span data-live-ts="${esc(log.createdAt)}">${esc(timeAgo(log.createdAt))}</span></div>
               </div>
             </div>`
           )
@@ -1025,6 +1766,12 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
     addBotPreview.textContent = buildGrokAppPrompt(makeSlug(nm), nm, rl);
   }
 
+  function openAddBotModal() {
+    refreshAddBotPreview();
+    addBotModal.classList.remove("hidden");
+    addBotNameInput.focus();
+  }
+
   if (addBotSwatches) {
     addBotSwatches.innerHTML = GROK_PALETTE.map(
       (hex, i) =>
@@ -1043,11 +1790,7 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
   addBotNameInput.addEventListener("input", refreshAddBotPreview);
   addBotRoleInput.addEventListener("input", refreshAddBotPreview);
 
-  document.getElementById("btn-open-add-bot").addEventListener("click", () => {
-    refreshAddBotPreview();
-    addBotModal.classList.remove("hidden");
-    addBotNameInput.focus();
-  });
+  document.getElementById("btn-open-add-bot").addEventListener("click", openAddBotModal);
   document.getElementById("btn-close-add-bot").addEventListener("click", () => addBotModal.classList.add("hidden"));
   addBotModal.querySelector(".modal-backdrop").addEventListener("click", () => addBotModal.classList.add("hidden"));
 
@@ -1077,8 +1820,10 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
     });
     if (resp.ok) {
       const promptText = buildGrokAppPrompt(botId, name, role);
+      let copied = false;
       try {
         await navigator.clipboard.writeText(promptText);
+        copied = true;
       } catch {
         // Ignore clipboard errors in restricted contexts
       }
@@ -1086,34 +1831,22 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       document.getElementById("add-bot-form").reset();
       addBotColorInput.value = GROK_PALETTE[0];
       selectedBotId = botId;
+      inspectorTab = "overview";
+      showToast(copied ? `Added ${name} & copied Grok prompt` : `Added ${name} to office`, "success");
       setTimeout(() => office3d.selectBot(botId), 80);
     }
   });
 
-  // Modals (Connect & Guardrails)
+  // Modals (Connect & Guardrails — Guardrails accessible from topbar + Metrics)
   const connectModal = document.getElementById("connect-modal");
   const settingsModal = document.getElementById("settings-modal");
 
-  document.getElementById("btn-connect").addEventListener("click", () => {
+  function openConnectModal() {
     refreshConnectBotSelect(selectedBotId);
     connectModal.classList.remove("hidden");
-  });
-  document.getElementById("connect-bot-select").addEventListener("change", (e) => {
-    fillConnectSnippets(e.target.value);
-  });
-  document.getElementById("btn-fleet-add").addEventListener("click", () => {
-    refreshAddBotPreview();
-    addBotModal.classList.remove("hidden");
-    addBotNameInput.focus();
-  });
-  document.getElementById("btn-fleet-connect").addEventListener("click", () => {
-    refreshConnectBotSelect(selectedBotId);
-    connectModal.classList.remove("hidden");
-  });
-  document.getElementById("btn-close-connect").addEventListener("click", () => connectModal.classList.add("hidden"));
-  connectModal.querySelector(".modal-backdrop").addEventListener("click", () => connectModal.classList.add("hidden"));
+  }
 
-  document.getElementById("btn-open-guardrails").addEventListener("click", () => {
+  function openGuardrailsModal() {
     const s = snapshot?.settings ?? {
       dailyCostCapUsd: 10,
       dailyTokenCap: 500000,
@@ -1129,13 +1862,25 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
     document.getElementById("set-hard-stop").checked = Boolean(s.hardBudgetStop);
     document.getElementById("set-webhook-url").value = s.alertWebhookUrl || "";
     settingsModal.classList.remove("hidden");
+  }
+
+  document.getElementById("btn-connect").addEventListener("click", openConnectModal);
+  document.getElementById("connect-bot-select").addEventListener("change", (e) => {
+    fillConnectSnippets(e.target.value);
   });
+  document.getElementById("btn-fleet-add").addEventListener("click", openAddBotModal);
+  document.getElementById("btn-fleet-connect").addEventListener("click", openConnectModal);
+  document.getElementById("btn-close-connect").addEventListener("click", () => connectModal.classList.add("hidden"));
+  connectModal.querySelector(".modal-backdrop").addEventListener("click", () => connectModal.classList.add("hidden"));
+
+  document.getElementById("btn-open-guardrails").addEventListener("click", openGuardrailsModal);
+  document.getElementById("btn-topbar-guardrails")?.addEventListener("click", openGuardrailsModal);
   document.getElementById("btn-close-settings").addEventListener("click", () => settingsModal.classList.add("hidden"));
   settingsModal.querySelector(".modal-backdrop").addEventListener("click", () => settingsModal.classList.add("hidden"));
 
   document.getElementById("settings-form").addEventListener("submit", async (e) => {
     e.preventDefault();
-    await fetch("/api/settings", {
+    const res = await fetch("/api/settings", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1148,26 +1893,74 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       }),
     });
     settingsModal.classList.add("hidden");
+    if (res.ok) showToast("Guardrails & alert settings saved", "success");
   });
 
-  document.getElementById("btn-approve-all").addEventListener("click", () => {
-    fetch("/api/needs/resolve-all", { method: "POST" });
+  document.getElementById("btn-approve-all").addEventListener("click", async () => {
+    const res = await fetch("/api/needs/resolve-all", { method: "POST" });
+    if (res.ok) showToast("Approved all safe requests", "success");
   });
 
-  // Delegated click & change actions
+  // Delegated submit for Fleet Inline Quick-Assign
+  document.addEventListener("submit", async (e) => {
+    const fleetForm = e.target.closest("[data-fleet-assign-form]");
+    if (!fleetForm) return;
+    e.preventDefault();
+    const botId = fleetForm.dataset.fleetAssignForm;
+    const input = fleetForm.querySelector("input");
+    const task = input ? input.value.trim() : "";
+    if (!task) return;
+    const res = await fetch(`/api/bots/${encodeURIComponent(botId)}/command`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ task }),
+    });
+    if (res.ok) {
+      input.value = "";
+      showToast("Task dispatched to bot", "success");
+    }
+  });
+
+  // Delegated change actions
   document.addEventListener("change", async (e) => {
     const slaSel = e.target.closest("[data-save-bot-sla]");
     if (slaSel) {
       const botId = slaSel.dataset.saveBotSla;
-      await fetch(`/api/bots/${encodeURIComponent(botId)}/command`, {
+      const val = Number(slaSel.value || 0);
+      const res = await fetch(`/api/bots/${encodeURIComponent(botId)}/command`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ expectedIntervalMinutes: Number(slaSel.value || 0) }),
+        body: JSON.stringify({ expectedIntervalMinutes: val }),
       });
+      if (res.ok) {
+        showToast(val === 0 ? "SLA disabled & alerts cleared" : `SLA set to every ${val}m`, "success");
+      }
     }
   });
 
+  // Delegated click actions
   document.addEventListener("click", async (e) => {
+    const openModalTrigger = e.target.closest("[data-open-modal]");
+    if (openModalTrigger) {
+      const m = openModalTrigger.dataset.openModal;
+      if (m === "add-bot") openAddBotModal();
+      else if (m === "connect") openConnectModal();
+      return;
+    }
+
+    if (e.target.closest("[data-open-goal-form]")) {
+      goalForm.classList.remove("hidden");
+      document.getElementById("goal-title-input")?.focus();
+      return;
+    }
+
+    const inspTabBtn = e.target.closest("[data-insp-tab]");
+    if (inspTabBtn) {
+      inspectorTab = inspTabBtn.dataset.inspTab;
+      renderInspector();
+      return;
+    }
+
     if (e.target.id === "btn-close-insp") {
       selectedBotId = null;
       renderInspector();
@@ -1179,11 +1972,12 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
     if (rateBtn) {
       const runId = rateBtn.dataset.rateRun;
       const rating = Number(rateBtn.dataset.rating);
-      await fetch(`/api/runs/${encodeURIComponent(runId)}/rate`, {
+      const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/rate`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ rating }),
       });
+      if (res.ok) showToast(rating === 1 ? "Run graded 👍" : rating === -1 ? "Run flagged 👎" : "Grade cleared", "info");
       return;
     }
 
@@ -1192,11 +1986,12 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       const botId = addQueueBtn.dataset.addQueue;
       const qInput = document.getElementById("insp-queue-input");
       if (qInput && qInput.value.trim()) {
-        await fetch(`/api/bots/${encodeURIComponent(botId)}/queue`, {
+        const res = await fetch(`/api/bots/${encodeURIComponent(botId)}/queue`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ task: qInput.value.trim() }),
         });
+        if (res.ok) showToast("Added task to dispatch queue", "success");
       }
       return;
     }
@@ -1205,9 +2000,10 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
     if (delQueueBtn) {
       const botId = delQueueBtn.dataset.delQueueBot;
       const qId = delQueueBtn.dataset.delQueueId;
-      await fetch(`/api/bots/${encodeURIComponent(botId)}/queue/${encodeURIComponent(qId)}`, {
+      const res = await fetch(`/api/bots/${encodeURIComponent(botId)}/queue/${encodeURIComponent(qId)}`, {
         method: "DELETE",
       });
+      if (res.ok) showToast("Removed task from queue", "info");
       return;
     }
 
@@ -1219,12 +2015,12 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
         const promptText = buildGrokAppPrompt(bot.id, bot.name, bot.role);
         try {
           await navigator.clipboard.writeText(promptText);
+          showToast(`Copied office link for ${bot.name}`, "success");
           const orig = copyPromptBtn.textContent;
           copyPromptBtn.textContent = "Copied!";
-          setTimeout(() => (copyPromptBtn.textContent = orig), 1600);
+          setTimeout(() => (copyPromptBtn.textContent = orig), 1500);
         } catch {
-          copyPromptBtn.textContent = "Copy blocked";
-          setTimeout(() => (copyPromptBtn.textContent = "Copy office link"), 1600);
+          showToast("Clipboard permission blocked", "error");
         }
       }
       return;
@@ -1259,11 +2055,12 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       const botId = saveTaskBtn.dataset.saveBotTask;
       const taskInput = document.getElementById("insp-task-input");
       if (taskInput) {
-        await fetch(`/api/bots/${encodeURIComponent(botId)}/command`, {
+        const res = await fetch(`/api/bots/${encodeURIComponent(botId)}/command`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ task: taskInput.value.trim() }),
         });
+        if (res.ok) showToast("Task assigned", "success");
       }
       return;
     }
@@ -1273,11 +2070,12 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       const botId = saveRoleBtn.dataset.saveBotRole;
       const roleInput = document.getElementById("insp-role-input");
       if (roleInput && roleInput.value.trim()) {
-        await fetch(`/api/bots/${encodeURIComponent(botId)}/command`, {
+        const res = await fetch(`/api/bots/${encodeURIComponent(botId)}/command`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ role: roleInput.value.trim() }),
         });
+        if (res.ok) showToast("Role updated", "success");
       }
       return;
     }
@@ -1285,18 +2083,29 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
     const delBotBtn = e.target.closest("[data-delete-bot]");
     if (delBotBtn) {
       const botId = delBotBtn.dataset.deleteBot;
+      const botName = delBotBtn.dataset.deleteBotName || botId;
+      const ok = await askConfirm({
+        title: `Remove ${botName}?`,
+        message: `This will remove ${botName} from the 3D office and clear its open requests. It can re-register anytime if it pings again.`,
+        confirmLabel: "Remove Bot",
+        danger: true,
+      });
+      if (!ok) return;
       selectedBotId = null;
-      await fetch(`/api/bots/${encodeURIComponent(botId)}`, { method: "DELETE" });
+      const res = await fetch(`/api/bots/${encodeURIComponent(botId)}`, { method: "DELETE" });
+      if (res.ok) showToast(`Removed ${botName}`, "warn");
       return;
     }
 
     const moveBtn = e.target.closest("[data-move-bot]");
     if (moveBtn) {
-      await fetch(`/api/bots/${encodeURIComponent(moveBtn.dataset.moveBot)}/command`, {
+      const status = moveBtn.dataset.status;
+      const res = await fetch(`/api/bots/${encodeURIComponent(moveBtn.dataset.moveBot)}/command`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ status: moveBtn.dataset.status }),
+        body: JSON.stringify({ status }),
       });
+      if (res.ok) showToast(`Moved bot to ${statusLabel(status)}`, "info");
       return;
     }
 
@@ -1305,29 +2114,33 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       const id = resolveBtn.dataset.resolve;
       const action = resolveBtn.dataset.action;
       const noteEl = document.querySelector(`[data-note-for="${CSS.escape(id)}"]`);
-      await fetch(`/api/needs/${encodeURIComponent(id)}/resolve`, {
+      const res = await fetch(`/api/needs/${encodeURIComponent(id)}/resolve`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action, note: noteEl ? noteEl.value.trim() : "" }),
       });
+      if (res.ok) showToast(action === "approve" ? "Request approved" : "Request rejected", action === "approve" ? "success" : "warn");
       return;
     }
 
     const bumpBtn = e.target.closest("[data-goal-bump]");
     if (bumpBtn) {
-      await fetch(`/api/objectives/${encodeURIComponent(bumpBtn.dataset.goalBump)}`, {
+      const next = Number(bumpBtn.dataset.next);
+      const res = await fetch(`/api/objectives/${encodeURIComponent(bumpBtn.dataset.goalBump)}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ progress: Number(bumpBtn.dataset.next) }),
+        body: JSON.stringify({ progress: next }),
       });
+      if (res.ok) showToast(next >= 100 ? "Goal completed!" : `Goal progress updated to ${next}%`, "success");
       return;
     }
 
     const delBtn = e.target.closest("[data-goal-del]");
     if (delBtn) {
-      await fetch(`/api/objectives/${encodeURIComponent(delBtn.dataset.goalDel)}`, {
+      const res = await fetch(`/api/objectives/${encodeURIComponent(delBtn.dataset.goalDel)}`, {
         method: "DELETE",
       });
+      if (res.ok) showToast("Goal removed", "info");
       return;
     }
 
@@ -1335,13 +2148,26 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
     if (copyBtn) {
       const target = document.getElementById(copyBtn.dataset.target);
       if (target) {
-        await navigator.clipboard.writeText(target.textContent);
-        const orig = copyBtn.textContent;
-        copyBtn.textContent = "Copied!";
-        setTimeout(() => (copyBtn.textContent = orig), 1500);
+        try {
+          await navigator.clipboard.writeText(target.textContent);
+          showToast("Copied to clipboard", "success");
+          const orig = copyBtn.textContent;
+          copyBtn.textContent = "Copied!";
+          setTimeout(() => (copyBtn.textContent = orig), 1500);
+        } catch {
+          showToast("Clipboard permission blocked", "error");
+        }
       }
     }
   });
+
+  // Live-Ticking Relative Timestamps (every 15 seconds, zero server polling)
+  setInterval(() => {
+    document.querySelectorAll("[data-live-ts]").forEach((el) => {
+      const ts = el.dataset.liveTs;
+      if (ts) el.textContent = timeAgo(ts);
+    });
+  }, 15000);
 
   fetchSnapshotFallback();
   connectWS();
