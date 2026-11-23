@@ -26,6 +26,9 @@
   let taskListFilter = "all";
   let taskStatusFilter = "open";
   let editingTaskId = null;
+  let completingTaskIds = new Set();
+  let exitingTaskIds = new Set();
+  let justAddedTaskId = null;
   let gtasksDraftSecret =
     localStorage.getItem("grok_hq_gtasks_secret") ||
     (() => {
@@ -160,19 +163,59 @@
 
   // Toast Notification Stack
   const toastStack = document.getElementById("toast-stack");
-  function showToast(message, type = "info") {
+  function showToast(message, type = "info", opts = {}) {
     if (!toastStack) return;
     const el = document.createElement("div");
     el.className = `toast toast-${type}`;
     el.innerHTML = `<span>${esc(message)}</span>`;
+    if (opts.actionLabel && typeof opts.onAction === "function") {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "toast-undo-btn";
+      btn.textContent = opts.actionLabel;
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        opts.onAction();
+        dismiss();
+      });
+      el.appendChild(btn);
+    }
     toastStack.appendChild(el);
     while (toastStack.children.length > 4) toastStack.firstChild.remove();
     const dismiss = () => {
+      if (el.dataset.dismissed) return;
+      el.dataset.dismissed = "1";
       el.classList.add("toast-out");
       setTimeout(() => el.remove(), 200);
     };
     el.addEventListener("click", dismiss);
-    setTimeout(dismiss, 3200);
+    setTimeout(dismiss, opts.duration || (opts.actionLabel ? 4800 : 3200));
+  }
+
+  function playCompleteChime() {
+    if (!soundEnabled) return;
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const now = ctx.currentTime;
+      [587.33, 880].forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(freq, now + i * 0.065);
+        gain.gain.setValueAtTime(0.001, now + i * 0.065);
+        gain.gain.exponentialRampToValueAtTime(0.06, now + i * 0.065 + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.065 + 0.19);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now + i * 0.065);
+        osc.stop(now + i * 0.065 + 0.2);
+      });
+      setTimeout(() => ctx.close().catch(() => {}), 500);
+    } catch {
+      // AudioContext blocked or unavailable
+    }
   }
 
   // In-App Confirmation Modal
@@ -2689,14 +2732,15 @@ function out(obj) {
       b.classList.toggle("active", b.dataset.taskFilter === taskStatusFilter)
     );
 
-    // Filter tasks
+    // Filter tasks (keep actively completing tasks visible briefly so the user sees the green check celebration!)
     const next3Days = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
     const visible = tasks.filter((t) => {
       if (taskListFilter !== "all" && t.listId !== taskListFilter) return false;
-      if (taskStatusFilter === "open") return t.status !== "completed";
+      const isCelebrating = completingTaskIds.has(t.id);
+      if (taskStatusFilter === "open") return t.status !== "completed" || isCelebrating;
       if (taskStatusFilter === "completed") return t.status === "completed";
-      if (taskStatusFilter === "bots") return t.status !== "completed" && Boolean(t.assignedBotId);
-      if (taskStatusFilter === "due") return t.status !== "completed" && Boolean(t.due) && String(t.due).slice(0, 10) <= next3Days;
+      if (taskStatusFilter === "bots") return (t.status !== "completed" || isCelebrating) && Boolean(t.assignedBotId);
+      if (taskStatusFilter === "due") return (t.status !== "completed" || isCelebrating) && Boolean(t.due) && String(t.due).slice(0, 10) <= next3Days;
       return true;
     });
 
@@ -2719,17 +2763,31 @@ function out(obj) {
         .map((b) => `<option value="${esc(b.id)}" ${b.id === selectedId ? "selected" : ""}>${esc(b.name)}</option>`)
         .join("");
 
+    const checkSvg = `<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>`;
+
     container.innerHTML = visible
       .map((t) => {
         const isDone = t.status === "completed";
+        const isCelebrating = completingTaskIds.has(t.id);
+        const isExiting = exitingTaskIds.has(t.id);
+        const isJustAdded = justAddedTaskId === t.id;
         const isEditing = editingTaskId === t.id;
         const listTitle = listMap.get(t.listId) || "My Tasks";
         const dueDateVal = t.due ? String(t.due).slice(0, 10) : "";
-        return `<article class="task-row-card ${isDone ? "completed" : ""}">
+        const cardClasses = [
+          "task-row-card",
+          isDone ? "completed" : "",
+          isCelebrating ? "completing" : "",
+          isExiting ? "exiting" : "",
+          isJustAdded ? "just-added" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        return `<article class="${cardClasses}" data-task-card="${esc(t.id)}">
           <div class="task-row-main">
-            <button class="task-check-btn ${isDone ? "checked" : ""}" data-toggle-task="${esc(t.id)}" data-next-status="${isDone ? "needsAction" : "completed"}" title="${isDone ? "Mark incomplete" : "Mark complete"}">${isDone ? "✓" : ""}</button>
+            <button class="task-check-btn ${isDone ? "checked" : ""}" data-toggle-task="${esc(t.id)}" data-next-status="${isDone ? "needsAction" : "completed"}" title="${isDone ? "Mark incomplete" : "Mark complete"}">${checkSvg}</button>
             <div class="task-row-body">
-              <div class="task-row-title">${esc(t.title)}</div>
+              <div class="task-row-title" data-dblclick-edit="${esc(t.id)}" title="Double-click to edit">${esc(t.title)}${isCelebrating ? `<span class="task-done-pill">✓ Done</span>` : ""}</div>
               ${t.notes ? `<div class="task-row-notes">${esc(t.notes)}</div>` : ""}
               <div class="task-row-meta">
                 <span class="task-chip ${t.source === "google" ? "google" : ""}">${t.source === "google" ? "Google · " : ""}${esc(listTitle)}</span>
@@ -2765,36 +2823,119 @@ function out(obj) {
       .join("");
   }
 
+  function syncQuickDueChips() {
+    const dueEl = document.getElementById("task-create-due");
+    const val = dueEl ? dueEl.value : "";
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const tomorrowStr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    document.querySelectorAll("[data-quick-due]").forEach((btn) => {
+      const k = btn.dataset.quickDue;
+      const isMatch = (k === "today" && val === todayStr) || (k === "tomorrow" && val === tomorrowStr) || (k === "none" && !val);
+      btn.classList.toggle("active", isMatch);
+    });
+  }
+
+  document.getElementById("task-create-due")?.addEventListener("change", syncQuickDueChips);
+  document.getElementById("btn-toggle-create-notes")?.addEventListener("click", (e) => {
+    const notesEl = document.getElementById("task-create-notes");
+    if (!notesEl) return;
+    const willShow = notesEl.classList.contains("hidden");
+    notesEl.classList.toggle("hidden", !willShow);
+    e.currentTarget.classList.toggle("active", willShow);
+    if (willShow) notesEl.focus();
+  });
+
   document.getElementById("task-create-form")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const titleEl = document.getElementById("task-create-title");
+    const notesEl = document.getElementById("task-create-notes");
     const listEl = document.getElementById("task-create-list");
     const dueEl = document.getElementById("task-create-due");
     const botEl = document.getElementById("task-create-bot");
     const title = titleEl ? titleEl.value.trim() : "";
     if (!title) return;
+
+    const notes = notesEl ? notesEl.value.trim() : "";
+    const listId = listEl ? listEl.value : "local";
+    const due = dueEl && dueEl.value ? dueEl.value : null;
+    const assignedBotId = botEl && botEl.value ? botEl.value : null;
+    const assignedBot = assignedBotId ? (snapshot?.bots || []).find((b) => b.id === assignedBotId) : null;
+
+    // Optimistic instant insert so adding tasks feels instantaneous
+    const tempId = `optimistic-${Date.now()}`;
+    const optimisticTask = {
+      id: tempId,
+      listId,
+      title,
+      notes,
+      due,
+      status: "needsAction",
+      completedAt: null,
+      position: "",
+      assignedBotId,
+      assignedBotName: assignedBot ? assignedBot.name : null,
+      source: snapshot?.googleTasksSync?.connected && listId !== "local" ? "google" : "local",
+      updatedAt: new Date().toISOString(),
+    };
+    if (snapshot) {
+      snapshot.tasks = [optimisticTask, ...(snapshot.tasks || [])];
+      justAddedTaskId = tempId;
+      if (taskStatusFilter === "completed") taskStatusFilter = "open";
+      renderTasksPage();
+      renderRoomCounts();
+      setTimeout(() => {
+        if (justAddedTaskId === tempId) justAddedTaskId = null;
+      }, 850);
+    }
+
+    // Clear and keep cursor focused for rapid multi-task entry!
+    titleEl.value = "";
+    if (notesEl) {
+      notesEl.value = "";
+      notesEl.classList.add("hidden");
+      document.getElementById("btn-toggle-create-notes")?.classList.remove("active");
+    }
+    if (dueEl) {
+      dueEl.value = "";
+      syncQuickDueChips();
+    }
+    if (botEl) botEl.value = "";
+    tasksRenderDeferred = false;
+    titleEl.focus();
+
     const res = await apiFetch(
       "/api/tasks",
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          listId: listEl ? listEl.value : undefined,
-          title,
-          due: dueEl && dueEl.value ? dueEl.value : null,
-          assignedBotId: botEl && botEl.value ? botEl.value : null,
-        }),
+        body: JSON.stringify({ listId, title, notes, due, assignedBotId }),
       },
       "Could not add task"
     );
-    if (res.ok) {
-      titleEl.value = "";
-      if (dueEl) dueEl.value = "";
-      if (botEl) botEl.value = "";
-      titleEl.blur();
-      tasksRenderDeferred = false;
-      showToast(snapshot?.googleTasksSync?.connected ? "Task added & synced to Google Tasks" : "Task added", "success");
+    if (!res.ok) {
+      if (snapshot) {
+        snapshot.tasks = (snapshot.tasks || []).filter((t) => t.id !== tempId);
+        renderTasksPage();
+        renderRoomCounts();
+      }
+      return;
     }
+    try {
+      const data = await res.json();
+      if (data?.id && snapshot) {
+        const item = (snapshot.tasks || []).find((t) => t.id === tempId);
+        if (item) {
+          item.id = data.id;
+          justAddedTaskId = null;
+          if (activeView === "tasks" && !isEditingInside(document.getElementById("tasks-list-container"))) {
+            renderTasksPage();
+          }
+        }
+      }
+    } catch {
+      // Ignore JSON parse fallback
+    }
+    showToast(snapshot?.googleTasksSync?.connected ? "Added & synced to Google Tasks" : "Task added", "success");
   });
 
   document.addEventListener("submit", async (e) => {
@@ -2843,7 +2984,92 @@ function out(obj) {
     }
   });
 
+  async function toggleTaskCompletion(taskId, nextStatus) {
+    const task = (snapshot?.tasks || []).find((t) => t.id === taskId);
+    const prevStatus = task ? task.status : nextStatus === "completed" ? "needsAction" : "completed";
+    const isCompleting = nextStatus === "completed";
+
+    if (task) {
+      task.status = nextStatus;
+      task.completedAt = isCompleting ? new Date().toISOString() : null;
+    }
+
+    if (isCompleting) {
+      playCompleteChime();
+      completingTaskIds.add(taskId);
+      exitingTaskIds.delete(taskId);
+      renderTasksPage();
+      renderRoomCounts();
+
+      setTimeout(() => {
+        if (!completingTaskIds.has(taskId)) return;
+        exitingTaskIds.add(taskId);
+        const card = document.querySelector(`[data-task-card="${CSS.escape(taskId)}"]`);
+        if (card) card.classList.add("exiting");
+      }, 620);
+
+      setTimeout(() => {
+        completingTaskIds.delete(taskId);
+        exitingTaskIds.delete(taskId);
+        if (activeView === "tasks") renderTasksPage();
+      }, 860);
+    } else {
+      completingTaskIds.delete(taskId);
+      exitingTaskIds.delete(taskId);
+      renderTasksPage();
+      renderRoomCounts();
+    }
+
+    const res = await apiFetch(
+      `/api/tasks/${encodeURIComponent(taskId)}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ status: nextStatus }),
+      },
+      "Could not update task status"
+    );
+    if (!res.ok) {
+      completingTaskIds.delete(taskId);
+      exitingTaskIds.delete(taskId);
+      if (task) task.status = prevStatus;
+      renderTasksPage();
+      renderRoomCounts();
+      return;
+    }
+    if (isCompleting) {
+      const label = task?.title ? `Completed: ${task.title.slice(0, 38)}${task.title.length > 38 ? "…" : ""}` : "Task completed";
+      showToast(label, "success", {
+        actionLabel: "Undo",
+        onAction: () => toggleTaskCompletion(taskId, "needsAction"),
+      });
+    } else {
+      showToast("Task reopened", "info");
+    }
+  }
+
+  document.addEventListener("dblclick", (e) => {
+    const titleEl = e.target.closest("[data-dblclick-edit]");
+    if (!titleEl) return;
+    editingTaskId = titleEl.dataset.dblclickEdit;
+    tasksRenderDeferred = false;
+    renderTasksPage();
+    document.querySelector(`[data-save-task-edit="${CSS.escape(editingTaskId)}"] input[name="title"]`)?.focus();
+  });
+
   document.addEventListener("click", async (e) => {
+    const quickDueBtn = e.target.closest("[data-quick-due]");
+    if (quickDueBtn) {
+      const dueEl = document.getElementById("task-create-due");
+      if (dueEl) {
+        const mode = quickDueBtn.dataset.quickDue;
+        if (mode === "today") dueEl.value = new Date().toISOString().slice(0, 10);
+        else if (mode === "tomorrow") dueEl.value = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+        else dueEl.value = "";
+        syncQuickDueChips();
+      }
+      return;
+    }
     const listBtn = e.target.closest("[data-task-list]");
     if (listBtn) {
       taskListFilter = listBtn.dataset.taskList;
@@ -2860,18 +3086,7 @@ function out(obj) {
     if (toggleBtn) {
       const taskId = toggleBtn.dataset.toggleTask;
       const nextStatus = toggleBtn.dataset.nextStatus;
-      const res = await apiFetch(
-        `/api/tasks/${encodeURIComponent(taskId)}`,
-        {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ status: nextStatus }),
-        },
-        "Could not update task status"
-      );
-      if (res.ok) {
-        showToast(nextStatus === "completed" ? "Task completed" : "Task reopened", "success");
-      }
+      toggleTaskCompletion(taskId, nextStatus);
       return;
     }
     const editBtn = e.target.closest("[data-edit-task]");

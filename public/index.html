@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&family=Space+Grotesk:wght@600;700&display=swap" />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2307090e'/%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='6.5' fill='none' stroke='%23ffffff' stroke-opacity='0.22'/%3E%3Cpath d='M18.2 6.8L10.2 17.4h5.3l-1.3 7.8 8-10.6h-5.3l1.3-7.8z' fill='%2338bdf8'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="/styles.css?v=7" />
+  <link rel="stylesheet" href="/styles.css?v=8" />
 </head>
 <body>
   <div id="app-root" class="app-root">
@@ -523,16 +523,30 @@
           </div>
         </div>
 
-        <!-- Quick-Add Task Composer -->
-        <div class="card-panel">
-          <form id="task-create-form" class="task-create-form">
-            <select id="task-create-list" aria-label="Task list"></select>
-            <input id="task-create-title" type="text" placeholder="Add a task (syncs live to Google Tasks when connected)…" required maxlength="200" />
-            <input id="task-create-due" type="date" aria-label="Due date" title="Optional due date" />
-            <select id="task-create-bot" aria-label="Assign to Grok bot">
-              <option value="">No bot (personal)</option>
-            </select>
-            <button type="submit" class="btn btn-primary">+ Add Task</button>
+        <!-- Smart Quick-Add Task Composer -->
+        <div class="card-panel task-composer-panel">
+          <form id="task-create-form" class="task-composer">
+            <div class="task-composer-main">
+              <span class="task-composer-plus" aria-hidden="true">+</span>
+              <input id="task-create-title" type="text" placeholder="Add a task… press Enter to save immediately" required maxlength="200" autocomplete="off" />
+              <button type="submit" class="btn btn-primary task-composer-submit">Add Task</button>
+            </div>
+            <div class="task-composer-meta">
+              <div class="task-composer-chips">
+                <button type="button" class="due-quick-chip" data-quick-due="today">Today</button>
+                <button type="button" class="due-quick-chip" data-quick-due="tomorrow">Tomorrow</button>
+                <button type="button" class="due-quick-chip active" data-quick-due="none">No Date</button>
+                <input id="task-create-due" class="task-due-input" type="date" aria-label="Custom due date" title="Pick a custom due date" />
+              </div>
+              <div class="task-composer-selects">
+                <select id="task-create-list" aria-label="Task list"></select>
+                <select id="task-create-bot" aria-label="Assign to Grok bot">
+                  <option value="">Personal (no bot)</option>
+                </select>
+                <button type="button" id="btn-toggle-create-notes" class="chip-btn" title="Add notes">+ Notes</button>
+              </div>
+            </div>
+            <input id="task-create-notes" class="task-composer-notes hidden" type="text" placeholder="Optional notes / details (syncs to Google Tasks)…" maxlength="1000" />
           </form>
         </div>
 
@@ -793,7 +807,7 @@
     </div>
   </div>
 
-  <script src="/office3d.bundle.js?v=7"></script>
-  <script src="/app.js?v=7"></script>
+  <script src="/office3d.bundle.js?v=8"></script>
+  <script src="/app.js?v=8"></script>
 </body>
 </html>
