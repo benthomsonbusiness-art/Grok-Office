@@ -639,7 +639,7 @@ export class OfficeHub extends DurableObject<Env> {
         if (!payload.status) payload.status = "waiting";
       }
 
-      const result = await this.handleReport(payload);
+      const result = await this.handleReport(payload, { isBotCheckIn: true });
       this.broadcastSnapshot();
       return jsonResponse({ ok: true, ...this.withOrders(result) });
     }
@@ -664,7 +664,7 @@ export class OfficeHub extends DurableObject<Env> {
       }
       payload.botId = botId;
       payload.detectLoop = payload.detectLoop ?? true;
-      const result = await this.handleReport(payload);
+      const result = await this.handleReport(payload, { isBotCheckIn: true });
       this.broadcastSnapshot();
       return jsonResponse({ ok: true, ...this.withOrders(result) });
     }
@@ -737,26 +737,29 @@ export class OfficeHub extends DurableObject<Env> {
       const tokensOut = Number(body.usage?.tokensOut ?? body.tokensOut ?? 0);
       const latencyMs = Number(body.usage?.latencyMs ?? body.latencyMs ?? 0);
       const progressRaw = body.objectiveProgress ?? body.progress;
-      const result = await this.handleReport({
-        ...body,
-        botId,
-        detectLoop: body.detectLoop ?? true,
-        objectiveProgress:
-          progressRaw !== undefined && Number.isFinite(Number(progressRaw))
-            ? Number(progressRaw)
-            : undefined,
-        usage:
-          tokensIn > 0 || tokensOut > 0 || latencyMs > 0
-            ? {
-                model: body.usage?.model ?? body.model,
-                tokensIn,
-                tokensOut,
-                latencyMs,
-                costUsd: body.usage?.costUsd,
-                error: body.usage?.error,
-              }
-            : body.usage,
-      });
+      const result = await this.handleReport(
+        {
+          ...body,
+          botId,
+          detectLoop: body.detectLoop ?? true,
+          objectiveProgress:
+            progressRaw !== undefined && Number.isFinite(Number(progressRaw))
+              ? Number(progressRaw)
+              : undefined,
+          usage:
+            tokensIn > 0 || tokensOut > 0 || latencyMs > 0
+              ? {
+                  model: body.usage?.model ?? body.model,
+                  tokensIn,
+                  tokensOut,
+                  latencyMs,
+                  costUsd: body.usage?.costUsd,
+                  error: body.usage?.error,
+                }
+              : body.usage,
+        },
+        { isBotCheckIn: true }
+      );
       this.broadcastSnapshot();
       return jsonResponse({ ok: true, ...this.withOrders(result) });
     }
@@ -884,6 +887,7 @@ export class OfficeHub extends DurableObject<Env> {
         avatarColor?: string;
         status?: BotStatus;
         task?: string;
+        enqueue?: boolean;
         deskIndex?: number;
         department?: string;
         expectedIntervalMinutes?: number;
@@ -914,6 +918,7 @@ export class OfficeHub extends DurableObject<Env> {
           nextTask = nextTask ?? "Standing by in Lounge";
         }
       }
+      const queuedTask = body.enqueue === false ? "" : clampText(body.task, 200);
       const result = await this.handleReport({
         botId,
         name: body.name,
@@ -926,7 +931,9 @@ export class OfficeHub extends DurableObject<Env> {
         department: body.department,
         expectedIntervalMinutes: body.expectedIntervalMinutes,
         collaboratingWith: body.collaboratingWith,
-        message: body.task
+        message: queuedTask
+          ? `HQ queued command: "${clampText(queuedTask, 120)}"`
+          : body.task
           ? `HQ assigned task: "${clampText(body.task, 120)}"`
           : body.expectedIntervalMinutes !== undefined
           ? `Updated heartbeat SLA → ${body.expectedIntervalMinutes > 0 ? `${body.expectedIntervalMinutes}m` : "Off (On-demand)"}`
@@ -934,8 +941,26 @@ export class OfficeHub extends DurableObject<Env> {
           ? `Moved bot → ${body.status}`
           : "Updated bot profile from HQ",
       });
+      if (queuedTask) {
+        const dup = this.sql
+          .exec<{ id: string }>(
+            "SELECT id FROM task_queue WHERE bot_id = ? AND status = 'queued' AND lower(trim(task)) = lower(trim(?)) LIMIT 1",
+            botId,
+            queuedTask
+          )
+          .toArray()[0];
+        if (!dup) {
+          this.sql.exec(
+            "INSERT INTO task_queue (id, bot_id, task, status, created_at) VALUES (?, ?, ?, 'queued', ?)",
+            crypto.randomUUID(),
+            botId,
+            queuedTask,
+            new Date().toISOString()
+          );
+        }
+      }
       this.broadcastSnapshot();
-      return jsonResponse({ ok: true, ...result });
+      return jsonResponse({ ok: true, ...result, queued: Boolean(queuedTask) });
     }
 
     if (url.pathname === "/api/needs" && request.method === "GET") {
@@ -1259,7 +1284,8 @@ export class OfficeHub extends DurableObject<Env> {
   }
 
   private async handleReport(
-    payload: ReportPayload
+    payload: ReportPayload,
+    options: { isBotCheckIn?: boolean } = {}
   ): Promise<{ botId: string; needId?: string; nextTask?: string | null; loopDetected?: boolean }> {
     const now = new Date().toISOString();
     const botId = clampText(payload.botId ?? payload.b, 64);
@@ -1545,23 +1571,53 @@ export class OfficeHub extends DurableObject<Env> {
       )
     `);
 
-    // Auto-pop next queued instruction when a bot finishes a task
+    // Dispatch queued instructions cleanly on actual bot check-ins (prevents dashboard actions from stealing queue and prevents replay loops)
     let nextTask: string | null = null;
-    if (payload.done === true) {
-      const nextQ = this.sql
-        .exec<{ id: string; task: string }>(
-          "SELECT id, task FROM task_queue WHERE bot_id = ? AND status = 'queued' ORDER BY created_at ASC LIMIT 1",
-          botId
-        )
-        .toArray()[0];
-      if (nextQ) {
-        this.sql.exec("UPDATE task_queue SET status = 'dispatched' WHERE id = ?", nextQ.id);
-        this.sql.exec(
-          "UPDATE bots SET task = ?, status = 'working' WHERE id = ?",
-          nextQ.task,
-          botId
-        );
-        nextTask = nextQ.task;
+    if (options.isBotCheckIn) {
+      const reportedTaskNorm = clampText(payload.task ?? payload.t, 200).trim().toLowerCase();
+      if (reportedTaskNorm) {
+        const frontQ = this.sql
+          .exec<{ id: string; task: string }>(
+            "SELECT id, task FROM task_queue WHERE bot_id = ? AND status = 'queued' ORDER BY created_at ASC LIMIT 1",
+            botId
+          )
+          .toArray()[0];
+        if (frontQ && frontQ.task.trim().toLowerCase() === reportedTaskNorm) {
+          this.sql.exec("UPDATE task_queue SET status = 'dispatched' WHERE id = ?", frontQ.id);
+        }
+      }
+
+      if (payload.done === true || status === "idle") {
+        const nextQ = this.sql
+          .exec<{ id: string; task: string }>(
+            "SELECT id, task FROM task_queue WHERE bot_id = ? AND status = 'queued' ORDER BY created_at ASC LIMIT 1",
+            botId
+          )
+          .toArray()[0];
+        if (nextQ) {
+          this.sql.exec("UPDATE task_queue SET status = 'dispatched' WHERE id = ?", nextQ.id);
+          if (payload.done === true) {
+            this.sql.exec(
+              "UPDATE bots SET task = ?, status = 'working' WHERE id = ?",
+              nextQ.task,
+              botId
+            );
+          } else {
+            this.sql.exec("UPDATE bots SET task = ? WHERE id = ?", nextQ.task, botId);
+          }
+          nextTask = nextQ.task;
+          this.insertLog(
+            botId,
+            name,
+            avatarColor,
+            payload.done === true ? "working" : status,
+            "info",
+            `Dispatched queued command: "${clampText(nextQ.task, 120)}"`,
+            payload.simulated === true,
+            now,
+            0
+          );
+        }
       }
     }
 

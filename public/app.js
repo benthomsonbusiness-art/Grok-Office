@@ -1141,9 +1141,14 @@
         <div class="insp-section-label">Direct Command &amp; Schedule</div>
         <div class="insp-form">
           <div class="insp-form-row">
-            <input id="insp-task-input" class="insp-input" type="text" placeholder="Assign immediate task…" value="${esc(bot.task)}" />
-            <button class="btn btn-primary" style="padding:6px 12px;font-size:0.75rem" data-save-bot-task="${esc(bot.id)}">Assign</button>
+            <input id="insp-task-input" class="insp-input" type="text" placeholder="Send command for next check-in…" maxlength="200" />
+            <button class="btn btn-primary" style="padding:6px 12px;font-size:0.75rem" data-save-bot-task="${esc(bot.id)}">Send</button>
           </div>
+          ${
+            queued.length > 0
+              ? `<div class="muted" style="font-size:0.72rem;line-height:1.4">Queued next: <strong style="color:var(--text)">${esc(queued[0].task)}</strong>${queued.length > 1 ? ` <span class="mono">(+${queued.length - 1} more)</span>` : ""}</div>`
+              : ""
+          }
           <div class="insp-form-row">
             <input id="insp-role-input" class="insp-input" type="text" placeholder="Role title…" value="${esc(bot.role)}" />
             <select id="insp-sla-select" class="insp-input" style="max-width:118px" data-save-bot-sla="${esc(bot.id)}" title="Expected check-in schedule SLA">
@@ -1740,9 +1745,12 @@ Read the JSON orders. Do orders.nextTask when it is set. Follow orders.decision 
           const lnk = effectiveLink(bot);
           const botNeeds = openNeeds.filter((n) => n.botId === bot.id);
           const goal = (snapshot.objectives || []).find((o) => o.ownerBotId === bot.id && o.status === "active");
-          const queued = (bot.queuedTasks || [])[0];
+          const queuedList = bot.queuedTasks || [];
+          const queued = queuedList[0];
           const orderBits = [
-            queued ? `<div>Next task: <strong>${esc(queued.task)}</strong></div>` : "",
+            queued
+              ? `<div>Next task: <strong>${esc(queued.task)}</strong>${queuedList.length > 1 ? ` <span class="muted mono">(+${queuedList.length - 1} more)</span>` : ""}</div>`
+              : "",
             goal ? `<div>Goal: <strong>${esc(goal.title)}</strong> <span class="mono">${goal.progress}%</span></div>` : "",
             botNeeds.length ? `<div><strong style="color:#fcd34d">${botNeeds.length} open request${botNeeds.length === 1 ? "" : "s"}</strong></div>` : "",
           ].filter(Boolean).join("");
@@ -1972,11 +1980,11 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
     const res = await fetch(`/api/bots/${encodeURIComponent(botId)}/command`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ task }),
+      body: JSON.stringify({ task, enqueue: true }),
     });
     if (res.ok) {
       input.value = "";
-      showToast("Task dispatched to bot", "success");
+      showToast("Command queued for next check-in", "success");
     }
   });
 
@@ -2089,13 +2097,17 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
     const saveTaskBtn = e.target.closest("[data-save-bot-task]");
     if (saveTaskBtn) {
       const taskInput = document.getElementById("insp-task-input");
-      if (taskInput) {
+      const task = taskInput ? taskInput.value.trim() : "";
+      if (task) {
         const res = await fetch(`/api/bots/${encodeURIComponent(saveTaskBtn.dataset.saveBotTask)}/command`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task: taskInput.value.trim() }),
+          body: JSON.stringify({ task, enqueue: true }),
         });
-        if (res.ok) showToast("Task assigned", "success");
+        if (res.ok) {
+          taskInput.value = "";
+          showToast("Command queued for next check-in", "success");
+        }
       }
       return;
     }
