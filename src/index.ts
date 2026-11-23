@@ -354,6 +354,36 @@ export class OfficeHub extends DurableObject<Env> {
         INSERT OR REPLACE INTO office_settings (key, value) VALUES ('purged_demo_v2', 'true');
       `);
     }
+
+    // One-time cleanup: switch existing bots to On-demand SLA (Off) and clear false missed-check-in alerts
+    const clearedSlaFlag = this.sql
+      .exec<{ value: string }>("SELECT value FROM office_settings WHERE key = 'cleared_sla_v1'")
+      .toArray()[0];
+    if (!clearedSlaFlag) {
+      const now = new Date().toISOString();
+      this.sql.exec(
+        `UPDATE bots
+         SET expected_interval_min = 0,
+             sla_alerted = 0,
+             status = CASE
+               WHEN status = 'error' AND task LIKE 'Missed scheduled check-in%' THEN 'idle'
+               ELSE status
+             END,
+             task = CASE
+               WHEN status = 'error' AND task LIKE 'Missed scheduled check-in%' THEN 'Standing by in Lounge'
+               ELSE task
+             END`
+      );
+      this.sql.exec(
+        `UPDATE pending_needs
+         SET status = 'resolved',
+             resolution_note = 'Auto-cleared (SLA switched to On-demand)',
+             resolved_at = ?
+         WHERE status = 'open' AND (id LIKE 'sla-%' OR title LIKE 'Missed scheduled check-in%')`,
+        now
+      );
+      this.sql.exec("INSERT OR REPLACE INTO office_settings (key, value) VALUES ('cleared_sla_v1', 'true')");
+    }
   }
 
   async alarm(): Promise<void> {
@@ -864,14 +894,34 @@ export class OfficeHub extends DurableObject<Env> {
       } catch {
         return jsonResponse({ error: "Invalid JSON" }, 400);
       }
+      let nextStatus = body.status;
+      let nextTask = body.task;
+      if (body.expectedIntervalMinutes !== undefined && Number(body.expectedIntervalMinutes) <= 0) {
+        const curBot = this.sql
+          .exec<{ status: BotStatus; task: string }>("SELECT status, task FROM bots WHERE id = ?", botId)
+          .toArray()[0];
+        this.sql.exec(
+          `UPDATE pending_needs
+           SET status = 'resolved',
+               resolution_note = 'SLA turned off',
+               resolved_at = ?
+           WHERE bot_id = ? AND status = 'open' AND (id LIKE 'sla-%' OR title LIKE 'Missed scheduled check-in%')`,
+          new Date().toISOString(),
+          botId
+        );
+        if (!nextStatus && curBot?.status === "error" && curBot.task.startsWith("Missed scheduled check-in")) {
+          nextStatus = "idle";
+          nextTask = nextTask ?? "Standing by in Lounge";
+        }
+      }
       const result = await this.handleReport({
         botId,
         name: body.name,
         role: body.role,
         model: body.model,
         avatarColor: body.avatarColor,
-        status: body.status,
-        task: body.task,
+        status: nextStatus,
+        task: nextTask,
         deskIndex: body.deskIndex,
         department: body.department,
         expectedIntervalMinutes: body.expectedIntervalMinutes,
@@ -879,7 +929,7 @@ export class OfficeHub extends DurableObject<Env> {
         message: body.task
           ? `HQ assigned task: "${clampText(body.task, 120)}"`
           : body.expectedIntervalMinutes !== undefined
-          ? `Updated heartbeat SLA → ${body.expectedIntervalMinutes > 0 ? `${body.expectedIntervalMinutes}m` : "On-demand"}`
+          ? `Updated heartbeat SLA → ${body.expectedIntervalMinutes > 0 ? `${body.expectedIntervalMinutes}m` : "Off (On-demand)"}`
           : body.status
           ? `Moved bot → ${body.status}`
           : "Updated bot profile from HQ",
@@ -1406,6 +1456,19 @@ export class OfficeHub extends DurableObject<Env> {
         expectedIntervalMin,
         now,
         collaboratingWith
+      );
+    }
+
+    // Auto-resolve any stale missed-check-in SLA alert when the bot reports back in cleanly
+    if (status !== "error") {
+      this.sql.exec(
+        `UPDATE pending_needs
+         SET status = 'resolved',
+             resolution_note = 'Auto-resolved on bot check-in',
+             resolved_at = ?
+         WHERE bot_id = ? AND status = 'open' AND (id LIKE 'sla-%' OR title LIKE 'Missed scheduled check-in%')`,
+        now,
+        botId
       );
     }
 
