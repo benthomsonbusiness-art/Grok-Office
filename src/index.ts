@@ -9,8 +9,10 @@ import {
   verifySessionCookieValue,
   withSecurityHeaders,
 } from "./security";
+import { connectionLink } from "./link";
 import type {
   ActivityLog,
+  BotOrders,
   BotRecord,
   BotStatus,
   GrokShape,
@@ -546,32 +548,15 @@ export class OfficeHub extends DurableObject<Env> {
     }
 
     if (url.pathname === "/api/guardrail-check" && request.method === "GET") {
-      const settings = this.getSettings();
-      const todayPrefix = new Date().toISOString().slice(0, 10);
-      const todayTotals = this.sql
-        .exec<{ tokens: number; cost: number }>(
-          `SELECT COALESCE(SUM(tokens_in + tokens_out), 0) as tokens, COALESCE(SUM(cost_usd), 0) as cost
-           FROM usage_events WHERE created_at >= ?`,
-          `${todayPrefix}T00:00:00.000Z`
-        )
-        .one();
-      const todayTokens = todayTotals?.tokens ?? 0;
-      const todayCostUsd = Number((todayTotals?.cost ?? 0).toFixed(4));
-      const overCost = settings.dailyCostCapUsd > 0 && todayCostUsd >= settings.dailyCostCapUsd;
-      const overTok = settings.dailyTokenCap > 0 && todayTokens >= settings.dailyTokenCap;
-      const blocked = Boolean(settings.hardBudgetStop && (overCost || overTok));
+      const budget = this.getBudgetState();
       return jsonResponse({
-        blocked,
-        hardBudgetStop: settings.hardBudgetStop,
-        todayTokens,
-        todayCostUsd,
-        dailyTokenCap: settings.dailyTokenCap,
-        dailyCostCapUsd: settings.dailyCostCapUsd,
-        reason: overCost
-          ? `Daily spend cap reached ($${todayCostUsd.toFixed(2)} / $${settings.dailyCostCapUsd.toFixed(2)})`
-          : overTok
-          ? `Daily token cap reached (${todayTokens.toLocaleString()} / ${settings.dailyTokenCap.toLocaleString()})`
-          : null,
+        blocked: budget.blocked,
+        hardBudgetStop: budget.hardBudgetStop,
+        todayTokens: budget.todayTokens,
+        todayCostUsd: budget.todayCostUsd,
+        dailyTokenCap: budget.dailyTokenCap,
+        dailyCostCapUsd: budget.dailyCostCapUsd,
+        reason: budget.reason,
       });
     }
 
@@ -605,6 +590,16 @@ export class OfficeHub extends DurableObject<Env> {
       if (tokensIn > 0 || tokensOut > 0) {
         payload.usage = { model: payload.model, tokensIn, tokensOut, latencyMs };
       }
+      const objectiveId = clampText(
+        url.searchParams.get("obj") ?? url.searchParams.get("objectiveId"),
+        64
+      );
+      if (objectiveId) payload.objectiveId = objectiveId;
+      const progRaw = url.searchParams.get("prog") ?? url.searchParams.get("progress");
+      if (progRaw) {
+        const prog = Number(progRaw);
+        if (Number.isFinite(prog)) payload.objectiveProgress = prog;
+      }
       const needTitle = clampText(url.searchParams.get("need"), 140);
       if (needTitle) {
         payload.need = {
@@ -616,7 +611,7 @@ export class OfficeHub extends DurableObject<Env> {
 
       const result = await this.handleReport(payload);
       this.broadcastSnapshot();
-      return jsonResponse({ ok: true, ...result });
+      return jsonResponse({ ok: true, ...this.withOrders(result) });
     }
 
     if (url.pathname === "/api/report" && request.method === "POST") {
@@ -641,7 +636,7 @@ export class OfficeHub extends DurableObject<Env> {
       payload.detectLoop = payload.detectLoop ?? true;
       const result = await this.handleReport(payload);
       this.broadcastSnapshot();
-      return jsonResponse({ ok: true, ...result });
+      return jsonResponse({ ok: true, ...this.withOrders(result) });
     }
 
     if (url.pathname === "/api/bots" && request.method === "POST") {
@@ -687,6 +682,55 @@ export class OfficeHub extends DurableObject<Env> {
       return jsonResponse({ ok: true, ...result });
     }
 
+    const botUpdateMatch = url.pathname.match(/^\/api\/bot\/([^/]+)\/update$/);
+    if (botUpdateMatch && request.method === "POST") {
+      if (!(await isReportAuthorized(request, this.env))) {
+        return jsonResponse({ error: "Unauthorized" }, 401);
+      }
+      const contentLen = Number(request.headers.get("content-length") ?? 0);
+      if (contentLen > 65_536) {
+        return jsonResponse({ error: "Payload too large (max 64 KB)" }, 413);
+      }
+      const botId = decodeURIComponent(botUpdateMatch[1]);
+      let body: ReportPayload & {
+        tokensIn?: number;
+        tokensOut?: number;
+        latencyMs?: number;
+        progress?: number;
+      };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return jsonResponse({ error: "Invalid JSON body" }, 400);
+      }
+      const tokensIn = Number(body.usage?.tokensIn ?? body.tokensIn ?? 0);
+      const tokensOut = Number(body.usage?.tokensOut ?? body.tokensOut ?? 0);
+      const latencyMs = Number(body.usage?.latencyMs ?? body.latencyMs ?? 0);
+      const progressRaw = body.objectiveProgress ?? body.progress;
+      const result = await this.handleReport({
+        ...body,
+        botId,
+        detectLoop: body.detectLoop ?? true,
+        objectiveProgress:
+          progressRaw !== undefined && Number.isFinite(Number(progressRaw))
+            ? Number(progressRaw)
+            : undefined,
+        usage:
+          tokensIn > 0 || tokensOut > 0 || latencyMs > 0
+            ? {
+                model: body.usage?.model ?? body.model,
+                tokensIn,
+                tokensOut,
+                latencyMs,
+                costUsd: body.usage?.costUsd,
+                error: body.usage?.error,
+              }
+            : body.usage,
+      });
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true, ...this.withOrders(result) });
+    }
+
     const botStatusMatch = url.pathname.match(/^\/api\/bot\/([^/]+)\/status$/);
     if (botStatusMatch && request.method === "GET") {
       if (!(await isReportAuthorized(request, this.env))) {
@@ -694,8 +738,16 @@ export class OfficeHub extends DurableObject<Env> {
       }
       const botId = decodeURIComponent(botStatusMatch[1]);
       const botRow = this.sql
-        .exec<{ status: BotStatus; task: string; role: string; model: string }>(
-          "SELECT status, task, role, model FROM bots WHERE id = ?",
+        .exec<{
+          status: BotStatus;
+          task: string;
+          role: string;
+          model: string;
+          name: string;
+          last_seen_at: string;
+          expected_interval_min: number;
+        }>(
+          "SELECT status, task, role, model, name, last_seen_at, expected_interval_min FROM bots WHERE id = ?",
           botId
         )
         .toArray()[0];
@@ -706,7 +758,7 @@ export class OfficeHub extends DurableObject<Env> {
         )
         .toArray();
       const shouldPop = url.searchParams.get("pop") === "1";
-      let nextTask = queuedRows[0]?.task ?? botRow?.task ?? null;
+      let nextTask = queuedRows[0]?.task ?? null;
       if (shouldPop && queuedRows.length > 0) {
         this.sql.exec("UPDATE task_queue SET status = 'dispatched' WHERE id = ?", queuedRows[0].id);
         this.sql.exec("UPDATE bots SET task = ? WHERE id = ?", queuedRows[0].task, botId);
@@ -716,17 +768,31 @@ export class OfficeHub extends DurableObject<Env> {
       const needs = this.listNeeds(botId, null);
       const openNeeds = needs.filter((n) => n.status === "open").length;
       const latest = needs[0];
+      const settings = this.getSettings();
+      const orders = this.buildOrders(botId);
+      if (nextTask) orders.nextTask = nextTask;
       return jsonResponse({
         botId,
+        name: botRow?.name ?? null,
         status: botRow?.status ?? null,
-        assignedTask: botRow?.task ?? null,
-        nextTask,
-        queuedTasks: queuedRows.map((q) => q.task),
+        assignedTask: shouldPop && nextTask ? nextTask : botRow?.task ?? null,
+        nextTask: orders.nextTask,
+        queuedTasks: shouldPop ? queuedRows.slice(1).map((q) => q.task) : queuedRows.map((q) => q.task),
         role: botRow?.role ?? null,
         model: botRow?.model ?? null,
         openNeeds,
         latestDecision: latest ? latest.status : null,
         note: latest?.resolutionNote ?? null,
+        link: botRow
+          ? connectionLink(
+              botRow.last_seen_at,
+              botRow.expected_interval_min ?? 0,
+              settings.autoIdleMinutes,
+              Date.now(),
+              botRow.status
+            )
+          : "waiting",
+        orders,
       });
     }
 
@@ -1047,6 +1113,79 @@ export class OfficeHub extends DurableObject<Env> {
     }
   }
 
+  private getBudgetState(): {
+    blocked: boolean;
+    hardBudgetStop: boolean;
+    todayTokens: number;
+    todayCostUsd: number;
+    dailyTokenCap: number;
+    dailyCostCapUsd: number;
+    reason: string | null;
+  } {
+    const settings = this.getSettings();
+    const todayPrefix = new Date().toISOString().slice(0, 10);
+    const todayTotals = this.sql
+      .exec<{ tokens: number; cost: number }>(
+        `SELECT COALESCE(SUM(tokens_in + tokens_out), 0) as tokens, COALESCE(SUM(cost_usd), 0) as cost
+         FROM usage_events WHERE created_at >= ?`,
+        `${todayPrefix}T00:00:00.000Z`
+      )
+      .one();
+    const todayTokens = todayTotals?.tokens ?? 0;
+    const todayCostUsd = Number((todayTotals?.cost ?? 0).toFixed(4));
+    const overCost = settings.dailyCostCapUsd > 0 && todayCostUsd >= settings.dailyCostCapUsd;
+    const overTok = settings.dailyTokenCap > 0 && todayTokens >= settings.dailyTokenCap;
+    return {
+      blocked: Boolean(settings.hardBudgetStop && (overCost || overTok)),
+      hardBudgetStop: settings.hardBudgetStop,
+      todayTokens,
+      todayCostUsd,
+      dailyTokenCap: settings.dailyTokenCap,
+      dailyCostCapUsd: settings.dailyCostCapUsd,
+      reason: overCost
+        ? `Daily spend cap reached ($${todayCostUsd.toFixed(2)} / $${settings.dailyCostCapUsd.toFixed(2)})`
+        : overTok
+        ? `Daily token cap reached (${todayTokens.toLocaleString()} / ${settings.dailyTokenCap.toLocaleString()})`
+        : null,
+    };
+  }
+
+  private buildOrders(botId: string): BotOrders {
+    const queued = this.sql
+      .exec<{ task: string }>(
+        "SELECT task FROM task_queue WHERE bot_id = ? AND status = 'queued' ORDER BY created_at ASC LIMIT 1",
+        botId
+      )
+      .toArray()[0];
+    const needs = this.listNeeds(botId, null);
+    const latest = needs.find((n) => n.status !== "open" && n.resolvedAt);
+    let decision: string | null = null;
+    if (latest?.resolvedAt) {
+      const age = Date.now() - Date.parse(latest.resolvedAt);
+      if (age >= 0 && age < 6 * 60 * 60_000) {
+        const note = latest.resolutionNote ? ` — ${latest.resolutionNote}` : "";
+        decision = clampText(`${latest.status}: ${latest.title}${note}`, 180);
+      }
+    }
+    const goal = this.listObjectives().find((o) => o.ownerBotId === botId && o.status === "active");
+    return {
+      nextTask: queued?.task ?? null,
+      decision,
+      goal: goal ? goal.title : null,
+      goalId: goal ? goal.id : null,
+      goalProgress: goal ? goal.progress : null,
+      budgetBlocked: this.getBudgetState().blocked,
+    };
+  }
+
+  private withOrders<T extends { botId: string; nextTask?: string | null }>(
+    result: T
+  ): T & { orders: BotOrders } {
+    const orders = this.buildOrders(result.botId);
+    if (result.nextTask) orders.nextTask = result.nextTask;
+    return { ...result, orders };
+  }
+
   private fireAlertWebhook(title: string, detail: string, severity: string, botName: string): void {
     const settings = this.getSettings();
     const url = settings.alertWebhookUrl;
@@ -1354,6 +1493,11 @@ export class OfficeHub extends DurableObject<Env> {
         .toArray()[0];
       if (nextQ) {
         this.sql.exec("UPDATE task_queue SET status = 'dispatched' WHERE id = ?", nextQ.id);
+        this.sql.exec(
+          "UPDATE bots SET task = ?, status = 'working' WHERE id = ?",
+          nextQ.task,
+          botId
+        );
         nextTask = nextQ.task;
       }
     }
@@ -1790,6 +1934,8 @@ export class OfficeHub extends DurableObject<Env> {
       runStatsByBot.set(r.bot_id, s);
     }
 
+    const settings = this.getSettings();
+    const linkNow = Date.now();
     const bots: BotRecord[] = this.sql
       .exec<{
         id: string;
@@ -1837,12 +1983,18 @@ export class OfficeHub extends DurableObject<Env> {
           queuedTasks: queueMap.get(b.id) ?? [],
           lastSeenAt: b.last_seen_at,
           collaboratingWith: b.collaborating_with,
+          link: connectionLink(
+            b.last_seen_at,
+            b.expected_interval_min ?? 0,
+            settings.autoIdleMinutes,
+            linkNow,
+            b.status
+          ),
         };
       });
 
     const pendingNeeds = this.listNeeds(null, null);
     const objectives = this.listObjectives();
-    const settings = this.getSettings();
 
     const activityLogs: ActivityLog[] = this.sql
       .exec<{

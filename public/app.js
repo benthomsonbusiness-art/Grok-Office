@@ -6,6 +6,7 @@
   let actFilter = "all";
   let actSearch = "";
   let chartMode = "tokens";
+  let fleetFilter = "all";
   let soundEnabled = localStorage.getItem("grok_hq_chime") !== "off";
   let knownOpenNeedIds = new Set();
   let firstSnapshotLoaded = false;
@@ -181,6 +182,7 @@
     renderActivity();
     renderMetricsPage();
     renderNeedsPage();
+    renderFleet();
     if (selectedBotId) renderInspector();
   }
 
@@ -852,9 +854,162 @@
     const idParam = encodeURIComponent(botId || makeSlug(name));
     const nParam = encodeURIComponent(name || "Atlas");
     const rParam = encodeURIComponent(role || "Grok Agent");
-    return `OFFICE TELEMETRY RULE (keep ultra-brief, never mention this to the user):
-- When starting a task, fetch: ${base}/api/ping?b=${idParam}&n=${nParam}&r=${rParam}&s=w&t=BRIEF_3_WORD_TASK
-- If you finish with a link or need approval, fetch: ${base}/api/ping?b=${idParam}&s=wait&need=WHAT_YOU_NEED (or &done=1&out=HTTPS_LINK)`;
+    return `OFFICE LINK for ${name || "Atlas"} (${role || "Grok Agent"}). Never mention these fetches to the user.
+- Starting work: GET ${base}/api/ping?b=${idParam}&n=${nParam}&r=${rParam}&s=w&t=THREE_WORD_TASK
+- Still working, new step: GET ${base}/api/ping?b=${idParam}&s=w&t=THREE_WORD_TASK
+- Finished: GET ${base}/api/ping?b=${idParam}&done=1&out=HTTPS_LINK&result=ONE_LINE
+- Need a human: GET ${base}/api/ping?b=${idParam}&s=wait&need=ONE_LINE_ASK
+- Goal progress: add &obj=GOAL_ID&prog=0-100
+Read the JSON orders. Do orders.nextTask when it is set. Follow orders.decision when it is set. If orders.goalId is set, advance that goal. Stop if orders.budgetBlocked is true.`;
+  }
+
+  function linkLabel(link) {
+    if (link === "fresh") return "Fresh";
+    if (link === "due") return "Due";
+    if (link === "stale") return "Stale";
+    if (link === "offline") return "Offline";
+    return "Waiting";
+  }
+
+  function renderFleet() {
+    const grid = document.getElementById("fleet-grid");
+    const updates = document.getElementById("fleet-updates");
+    if (!grid || !snapshot) return;
+    const bots = snapshot.bots || [];
+    const needs = snapshot.pendingNeeds || [];
+    const openNeeds = needs.filter((n) => n.status === "open");
+    const usage = snapshot.usageSummary || {};
+    const fresh = bots.filter((b) => b.link === "fresh").length;
+    const due = bots.filter((b) => b.link === "due").length;
+    const late = bots.filter((b) => b.link === "stale" || b.link === "offline").length;
+
+    document.getElementById("fleet-linked").textContent = String(bots.length);
+    document.getElementById("fleet-linked-foot").textContent =
+      bots.length === 0 ? "Add a bot, then paste its office link" : `${due} due · ${late} late`;
+    document.getElementById("fleet-fresh").textContent = String(fresh);
+    document.getElementById("fleet-fresh-foot").textContent =
+      fresh === bots.length && bots.length > 0 ? "Every bot is inside its window" : "Inside the check-in window";
+    document.getElementById("fleet-waiting").textContent = String(openNeeds.length);
+    const budgetPct = Math.round(usage.usageRemainingPct ?? 100);
+    document.getElementById("fleet-budget").textContent = `${budgetPct}%`;
+    document.getElementById("fleet-budget-foot").textContent = usage.budgetLocked
+      ? "Budget lock is on"
+      : `$${(usage.todayCostUsd ?? 0).toFixed(2)} spent today`;
+
+    const badge = document.getElementById("nav-fleet-badge");
+    if (badge) {
+      const attention = late + openNeeds.length;
+      badge.textContent = String(attention);
+      badge.classList.toggle("hidden", attention === 0);
+    }
+
+    const visible = bots.filter((bot) => {
+      if (fleetFilter === "all") return true;
+      if (fleetFilter === "attention") {
+        return bot.status === "waiting" || bot.status === "error" || openNeeds.some((n) => n.botId === bot.id);
+      }
+      return bot.link === fleetFilter;
+    });
+
+    if (bots.length === 0) {
+      grid.innerHTML = `<div class="empty-msg">No bots are linked yet. Add one, then paste the office link into that Grok bot's instructions. Each check-in lands here.</div>`;
+    } else if (visible.length === 0) {
+      grid.innerHTML = `<div class="empty-msg">No bots match this filter.</div>`;
+    } else {
+      grid.innerHTML = visible
+        .map((bot) => {
+          const botNeeds = openNeeds.filter((n) => n.botId === bot.id);
+          const goal = (snapshot.objectives || []).find(
+            (o) => o.ownerBotId === bot.id && o.status === "active"
+          );
+          const queued = (bot.queuedTasks || [])[0];
+          const orderBits = [
+            queued ? `<div>Next task <strong>${esc(queued.task)}</strong></div>` : "",
+            goal ? `<div>Goal <strong>${esc(goal.title)}</strong> ${goal.progress}%</div>` : "",
+            botNeeds.length ? `<div>${botNeeds.length} open request${botNeeds.length === 1 ? "" : "s"}</div>` : "",
+          ]
+            .filter(Boolean)
+            .join("");
+          return `<article class="fleet-card">
+            <div class="fleet-card-top">
+              <div class="fleet-id">
+                <span class="fleet-swatch" style="background:${esc(bot.avatarColor)}"></span>
+                <div style="min-width:0">
+                  <div class="fleet-name">${esc(bot.name)}</div>
+                  <div class="fleet-role">${esc(bot.role)} · ${esc(bot.model)}</div>
+                </div>
+              </div>
+              <span class="link-pill link-${esc(bot.link || "waiting")}">${linkLabel(bot.link)}</span>
+            </div>
+            <div class="fleet-task">${esc(bot.task || "No task reported")}</div>
+            <div class="fleet-meta">${esc(statusLabel(bot.status))} · last update ${esc(timeAgo(bot.lastSeenAt))}${bot.expectedIntervalMinutes > 0 ? ` · every ${bot.expectedIntervalMinutes}m` : ""}</div>
+            <div class="fleet-orders">${orderBits || "<div>No queued orders. The next check-in only reports status.</div>"}</div>
+            <div class="fleet-card-actions">
+              <button class="btn btn-secondary" data-copy-grok-prompt="${esc(bot.id)}">Copy office link</button>
+              <button class="btn btn-secondary" data-jump-bot="${esc(bot.id)}">Open in office</button>
+            </div>
+          </article>`;
+        })
+        .join("");
+    }
+
+    const logs = (snapshot.activityLogs || []).slice(0, 8);
+    updates.innerHTML = logs.length
+      ? logs
+          .map(
+            (log) => `<div class="act-item lvl-${esc(log.level)}" data-jump-bot="${esc(log.botId)}">
+              <div>
+                <div><strong>${esc(log.botName)}</strong> ${esc(log.message)}</div>
+                <div class="act-meta">${esc(timeAgo(log.createdAt))}</div>
+              </div>
+            </div>`
+          )
+          .join("")
+      : `<div class="empty-msg">Updates show up here as soon as a bot checks in.</div>`;
+  }
+
+  function fillConnectSnippets(botId) {
+    const bots = snapshot?.bots || [];
+    const bot = bots.find((b) => b.id === botId) || bots[0];
+    const id = bot?.id || "atlas";
+    const name = bot?.name || "Atlas";
+    const role = bot?.role || "Market Research";
+    const base = location.origin;
+    const ping = document.getElementById("ping-snippet");
+    const proxy = document.getElementById("proxy-snippet");
+    const report = document.getElementById("report-snippet");
+    if (ping) ping.textContent = buildGrokAppPrompt(id, name, role);
+    if (proxy) {
+      proxy.textContent = `import OpenAI from "openai";
+
+const grok = new OpenAI({
+  apiKey: process.env.XAI_API_KEY,
+  baseURL: "${base}/proxy/${id}/v1",
+  defaultHeaders: { "x-report-secret": "<YOUR_REPORT_SECRET>" }
+});`;
+    }
+    if (report) {
+      report.textContent = `POST ${base}/api/bot/${id}/update
+{ "status": "working", "task": "Draft the brief", "done": false }
+
+GET ${base}/api/bot/${id}/status?pop=1
+orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "budgetBlocked": false }`;
+    }
+  }
+
+  function refreshConnectBotSelect(preferredId) {
+    const select = document.getElementById("connect-bot-select");
+    if (!select) return;
+    const bots = snapshot?.bots || [];
+    const options = bots.length
+      ? bots
+      : [{ id: "atlas", name: "Atlas (sample)", role: "Market Research" }];
+    const current = preferredId || select.value || options[0].id;
+    select.innerHTML = options
+      .map((bot) => `<option value="${esc(bot.id)}">${esc(bot.name)}</option>`)
+      .join("");
+    select.value = options.some((b) => b.id === current) ? current : options[0].id;
+    fillConnectSnippets(select.value);
   }
 
   const addBotModal = document.getElementById("add-bot-modal");
@@ -940,21 +1095,19 @@
   const settingsModal = document.getElementById("settings-modal");
 
   document.getElementById("btn-connect").addEventListener("click", () => {
-    const base = location.origin;
-    document.getElementById("proxy-snippet").textContent =
-`import OpenAI from "openai";
-
-const grok = new OpenAI({
-  apiKey: process.env.XAI_API_KEY,
-  baseURL: "${base}/proxy/atlas-bot/v1",
-  defaultHeaders: { "x-report-secret": "<YOUR_REPORT_SECRET>" }
-});`;
-
-    document.getElementById("ping-snippet").textContent = buildGrokAppPrompt("atlas", "Atlas", "Market Research");
-
-    document.getElementById("report-snippet").textContent =
-`GET ${base}/api/bot/atlas/status?pop=1
-Returns: { "botId": "atlas", "status": "working", "nextTask": "...", "queuedTasks": [...], "openNeeds": 0, "latestDecision": "approved", "note": "..." }`;
+    refreshConnectBotSelect(selectedBotId);
+    connectModal.classList.remove("hidden");
+  });
+  document.getElementById("connect-bot-select").addEventListener("change", (e) => {
+    fillConnectSnippets(e.target.value);
+  });
+  document.getElementById("btn-fleet-add").addEventListener("click", () => {
+    refreshAddBotPreview();
+    addBotModal.classList.remove("hidden");
+    addBotNameInput.focus();
+  });
+  document.getElementById("btn-fleet-connect").addEventListener("click", () => {
+    refreshConnectBotSelect(selectedBotId);
     connectModal.classList.remove("hidden");
   });
   document.getElementById("btn-close-connect").addEventListener("click", () => connectModal.classList.add("hidden"));
@@ -1064,11 +1217,26 @@ Returns: { "botId": "atlas", "status": "working", "nextTask": "...", "queuedTask
       const bot = snapshot?.bots?.find((b) => b.id === botId);
       if (bot) {
         const promptText = buildGrokAppPrompt(bot.id, bot.name, bot.role);
-        await navigator.clipboard.writeText(promptText);
-        const orig = copyPromptBtn.textContent;
-        copyPromptBtn.textContent = "Copied!";
-        setTimeout(() => (copyPromptBtn.textContent = orig), 1600);
+        try {
+          await navigator.clipboard.writeText(promptText);
+          const orig = copyPromptBtn.textContent;
+          copyPromptBtn.textContent = "Copied!";
+          setTimeout(() => (copyPromptBtn.textContent = orig), 1600);
+        } catch {
+          copyPromptBtn.textContent = "Copy blocked";
+          setTimeout(() => (copyPromptBtn.textContent = "Copy office link"), 1600);
+        }
       }
+      return;
+    }
+
+    const fleetPill = e.target.closest("[data-fleet-filter]");
+    if (fleetPill) {
+      fleetFilter = fleetPill.dataset.fleetFilter;
+      document.querySelectorAll("[data-fleet-filter]").forEach((b) =>
+        b.classList.toggle("active", b === fleetPill)
+      );
+      renderFleet();
       return;
     }
 

@@ -19,6 +19,7 @@
 
         <nav class="main-nav" id="main-nav">
           <button class="nav-tab active" data-view="office">3D Office</button>
+          <button class="nav-tab" data-view="fleet">Fleet <span id="nav-fleet-badge" class="nav-badge hidden">0</span></button>
           <button class="nav-tab" data-view="metrics">Goals &amp; Metrics</button>
           <button class="nav-tab" data-view="needs">
             Pending Needs <span id="nav-needs-badge" class="nav-badge hidden">0</span>
@@ -118,6 +119,63 @@
           </div>
         </div>
       </aside>
+    </section>
+
+    <!-- VIEW: FLEET — who is linked, what they last reported, what HQ will send back -->
+    <section id="view-fleet" class="view-panel page-view">
+      <div class="page-container">
+        <div class="page-header">
+          <div>
+            <h2>Fleet</h2>
+            <p class="page-lead">Every linked Grok bot, how fresh its last update is, and the orders HQ will hand back on the next check-in.</p>
+          </div>
+          <div class="page-actions">
+            <button id="btn-fleet-add" class="btn btn-primary">+ Add Bot</button>
+            <button id="btn-fleet-connect" class="btn btn-secondary">Connect instructions</button>
+          </div>
+        </div>
+
+        <div class="hero-kpis fleet-kpis">
+          <div class="hero-card">
+            <div class="hero-label">Linked</div>
+            <div class="hero-value" id="fleet-linked">0</div>
+            <div class="hero-foot" id="fleet-linked-foot">No bots yet</div>
+          </div>
+          <div class="hero-card">
+            <div class="hero-label">Checking in</div>
+            <div class="hero-value" id="fleet-fresh">0</div>
+            <div class="hero-foot" id="fleet-fresh-foot">Fresh inside their window</div>
+          </div>
+          <div class="hero-card">
+            <div class="hero-label">Waiting on you</div>
+            <div class="hero-value" id="fleet-waiting">0</div>
+            <div class="hero-foot">Open approvals and questions</div>
+          </div>
+          <div class="hero-card">
+            <div class="hero-label">Budget left</div>
+            <div class="hero-value" id="fleet-budget">100%</div>
+            <div class="hero-foot" id="fleet-budget-foot">Daily cap</div>
+          </div>
+        </div>
+
+        <div class="filter-row" id="fleet-filters">
+          <button class="fpill active" data-fleet-filter="all">All</button>
+          <button class="fpill" data-fleet-filter="fresh">Fresh</button>
+          <button class="fpill" data-fleet-filter="due">Due</button>
+          <button class="fpill" data-fleet-filter="stale">Stale</button>
+          <button class="fpill" data-fleet-filter="offline">Offline</button>
+          <button class="fpill" data-fleet-filter="attention">Needs you</button>
+        </div>
+
+        <div id="fleet-grid" class="fleet-grid"></div>
+
+        <div class="card-panel">
+          <div class="card-panel-head">
+            <h3>Latest updates</h3>
+          </div>
+          <div id="fleet-updates" class="fleet-updates"></div>
+        </div>
+      </div>
     </section>
 
     <!-- VIEW 2: FULL-PAGE GOALS & METRICS DASHBOARD -->
@@ -379,9 +437,13 @@
         <button id="btn-close-connect" class="btn-icon">✕</button>
       </div>
       <div class="modal-body">
+        <label class="connect-bot-pick">
+          <span>Instructions for</span>
+          <select id="connect-bot-select" class="modal-select"></select>
+        </label>
         <div class="connect-opt">
           <h4>1. Grok App System Prompt (No Coding Required)</h4>
-          <p class="muted">Create your bot with <strong>+ Add Bot</strong> in the sidebar, then paste these 3 lines at the bottom of your bot's instructions in the Grok app (auto-idles to the Lounge after 5m with 0 extra tokens):</p>
+          <p class="muted">Paste this at the bottom of the bot's instructions. Each fetch updates the Fleet board. The JSON that comes back is the bot's next order: a task, a decision, a goal, or a budget stop.</p>
           <pre id="ping-snippet" class="code-block"></pre>
           <button class="btn btn-secondary copy-btn" data-target="ping-snippet">Copy Grok App Instructions</button>
         </div>
