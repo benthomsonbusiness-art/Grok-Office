@@ -10,6 +10,17 @@ export type ObjectiveStatus = "active" | "completed" | "blocked";
 
 export type RunStatus = "running" | "completed" | "failed" | "waiting";
 
+export type ConnectionLink = "fresh" | "due" | "stale" | "offline" | "waiting";
+
+export interface BotOrders {
+  nextTask: string | null;
+  decision: string | null;
+  goal: string | null;
+  goalId: string | null;
+  goalProgress: number | null;
+  budgetBlocked: boolean;
+}
+
 export type GrokShape =
   | "circle"
   | "pebble"
@@ -65,6 +76,7 @@ export interface BotRecord {
   queuedTasks: QueuedTask[];
   lastSeenAt: string;
   collaboratingWith: string | null;
+  link: ConnectionLink;
 }
 
 export interface PendingNeed {
