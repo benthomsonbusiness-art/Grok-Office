@@ -153,6 +153,9 @@ async function isReportAuthorized(request: Request, env: Env): Promise<boolean> 
 
 export class OfficeHub extends DurableObject<Env> {
   private sql: SqlStorage;
+  private lastBroadcastAt = 0;
+  private broadcastPending = false;
+  private broadcastTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -880,6 +883,12 @@ export class OfficeHub extends DurableObject<Env> {
     const botCmdMatch = url.pathname.match(/^\/api\/bots\/([^/]+)\/command$/);
     if (botCmdMatch && request.method === "POST") {
       const botId = decodeURIComponent(botCmdMatch[1]);
+      const exists = this.sql
+        .exec<{ id: string }>("SELECT id FROM bots WHERE id = ?", botId)
+        .toArray()[0];
+      if (!exists) {
+        return jsonResponse({ error: "Bot not found" }, 404);
+      }
       let body: {
         name?: string;
         role?: string;
@@ -1172,9 +1181,10 @@ export class OfficeHub extends DurableObject<Env> {
     // Handled by Hibernation runtime
   }
 
-  private broadcastSnapshot(): void {
+  private flushBroadcastSnapshot(): void {
     const sockets = this.ctx.getWebSockets();
     if (sockets.length === 0) return;
+    this.lastBroadcastAt = Date.now();
     const msg = JSON.stringify({
       type: "snapshot",
       data: this.getSnapshot(),
@@ -1185,6 +1195,32 @@ export class OfficeHub extends DurableObject<Env> {
       } catch {
         // Ignore broken sockets
       }
+    }
+  }
+
+  private broadcastSnapshot(): void {
+    if (this.ctx.getWebSockets().length === 0) return;
+    const now = Date.now();
+    const elapsed = now - this.lastBroadcastAt;
+    if (elapsed >= 80) {
+      if (this.broadcastTimer) {
+        clearTimeout(this.broadcastTimer);
+        this.broadcastTimer = null;
+      }
+      this.broadcastPending = false;
+      this.flushBroadcastSnapshot();
+      return;
+    }
+    this.broadcastPending = true;
+    if (!this.broadcastTimer) {
+      const waitMs = Math.max(10, 80 - elapsed);
+      this.broadcastTimer = setTimeout(() => {
+        this.broadcastTimer = null;
+        if (this.broadcastPending) {
+          this.broadcastPending = false;
+          this.flushBroadcastSnapshot();
+        }
+      }, waitMs);
     }
   }
 
@@ -1617,9 +1653,22 @@ export class OfficeHub extends DurableObject<Env> {
             now,
             0
           );
+          this.sql.exec(`
+            DELETE FROM task_queue
+            WHERE status != 'queued' AND id NOT IN (
+              SELECT id FROM task_queue WHERE status != 'queued' ORDER BY created_at DESC LIMIT 100
+            )
+          `);
         }
       }
     }
+
+    this.sql.exec(`
+      DELETE FROM pending_needs
+      WHERE status != 'open' AND id NOT IN (
+        SELECT id FROM pending_needs WHERE status != 'open' ORDER BY COALESCE(resolved_at, created_at) DESC LIMIT 150
+      )
+    `);
 
     if (payload.objectiveId && payload.objectiveProgress !== undefined) {
       const prog = Math.max(0, Math.min(100, Math.round(payload.objectiveProgress)));
@@ -2494,14 +2543,25 @@ async function checkOfficePassword(request: Request, env: Env): Promise<Response
     return null;
   }
 
-  const cookies = parseCookies(request.headers.get("cookie"));
-  if (cookies.office_session && (await verifySessionCookieValue(cookies.office_session, env.OFFICE_PASSWORD))) {
-    return null;
-  }
-
   const headerPass = request.headers.get("x-office-password");
   if (headerPass && (await timingSafeEqualStrings(headerPass, env.OFFICE_PASSWORD))) {
     return null;
+  }
+
+  const cookies = parseCookies(request.headers.get("cookie"));
+  if (cookies.office_session && (await verifySessionCookieValue(cookies.office_session, env.OFFICE_PASSWORD))) {
+    // Prevent cross-site request forgery on cookie-authenticated mutations
+    if (request.method !== "GET" && request.method !== "HEAD" && request.method !== "OPTIONS") {
+      const origin = request.headers.get("origin");
+      if (origin && origin !== url.origin) {
+        return withSecurityHeaders(jsonResponse({ error: "Cross-origin request blocked" }, 403));
+      }
+    }
+    return null;
+  }
+
+  if (url.pathname.startsWith("/api/") || url.pathname === "/ws") {
+    return withSecurityHeaders(jsonResponse({ error: "Unauthorized" }, 401));
   }
 
   return withSecurityHeaders(

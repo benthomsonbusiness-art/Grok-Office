@@ -106,28 +106,69 @@ export function parseCookies(cookieHeader: string | null): Record<string, string
 }
 
 /**
- * Validates optional webhook callbackUrl to prevent SSRF against localhost / private ranges.
+ * Validates optional webhook callbackUrl / deliverable URLs to prevent SSRF against localhost / private ranges.
  */
 export function isSafeCallbackUrl(rawUrl: string): boolean {
   try {
     const parsed = new URL(rawUrl);
     if (parsed.protocol !== "https:") return false;
-    const host = parsed.hostname.toLowerCase();
+    if (parsed.username || parsed.password) return false;
+    const rawHost = parsed.hostname.toLowerCase();
+    if (!rawHost) return false;
+
+    // Strip brackets from IPv6 literals
+    const isIpv6 = rawHost.startsWith("[") && rawHost.endsWith("]");
+    const host = isIpv6 ? rawHost.slice(1, -1) : rawHost;
+
     if (
       host === "localhost" ||
+      host.endsWith(".localhost") ||
       host.endsWith(".local") ||
-      host.endsWith(".internal") ||
-      host === "::1" ||
-      host === "[::1]" ||
-      /^127\./.test(host) ||
-      /^10\./.test(host) ||
-      /^192\.168\./.test(host) ||
-      /^169\.254\./.test(host) ||
-      /^0\./.test(host) ||
-      /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
+      host.endsWith(".internal")
     ) {
       return false;
     }
+
+    if (isIpv6 || host.includes(":")) {
+      // Block loopback (::1), unspecified (::), IPv4-mapped (::ffff:*), ULA (fc00::/7), link-local (fe80::/10), multicast (ff00::/8)
+      if (
+        host === "::" ||
+        host === "::1" ||
+        host.startsWith("::ffff:") ||
+        host.startsWith("0:") ||
+        host.startsWith("0000:") ||
+        /^f[cd][0-9a-f]{2}:/i.test(host) ||
+        /^fe[89ab][0-9a-f]:/i.test(host) ||
+        /^ff[0-9a-f]{2}:/i.test(host) ||
+        /^::[0-9a-f.]+$/i.test(host)
+      ) {
+        return false;
+      }
+      return true;
+    }
+
+    // Reject single-integer or hex/octal IPv4 obfuscations (e.g., 2130706433, 0x7f000001)
+    if (/^(0x[0-9a-f]+|\d+)$/i.test(host)) return false;
+
+    const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (ipv4) {
+      const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
+      if (
+        a === 0 ||
+        a === 10 ||
+        a === 127 ||
+        (a === 100 && b >= 64 && b <= 127) ||
+        (a === 169 && b === 254) ||
+        (a === 172 && b >= 16 && b <= 31) ||
+        (a === 192 && b === 168) ||
+        (a === 192 && b === 0) ||
+        (a === 198 && (b === 18 || b === 19)) ||
+        a >= 224
+      ) {
+        return false;
+      }
+    }
+
     return true;
   } catch {
     return false;

@@ -18,8 +18,39 @@
   let firstSnapshotLoaded = false;
   let wsInstance = null;
   let wsReconnectTimer = null;
+  let wsReconnectAttempts = 0;
+  let inspectorRenderDeferred = false;
+  let fleetRenderDeferred = false;
+  let needsRenderDeferred = false;
   let cmdSelectedIndex = 0;
   let cmdItems = [];
+
+  function isEditingInside(el) {
+    const active = document.activeElement;
+    if (!el || !active || !el.contains(active)) return false;
+    const tag = active.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+  }
+
+  async function apiFetch(url, opts = {}, errorLabel = "Request failed") {
+    try {
+      const res = await fetch(url, opts);
+      if (!res.ok) {
+        let detail = "";
+        try {
+          const body = await res.json();
+          if (body?.error) detail = `: ${body.error}`;
+        } catch {
+          // Non-JSON response
+        }
+        showToast(`${errorLabel}${detail || ` (HTTP ${res.status})`}`, "error");
+      }
+      return res;
+    } catch {
+      showToast(`${errorLabel}: network error`, "error");
+      return { ok: false, status: 0 };
+    }
+  }
 
   const ICONS = {
     volOn: `<svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>`,
@@ -259,6 +290,7 @@
     wsInstance = ws;
 
     ws.onopen = () => {
+      wsReconnectAttempts = 0;
       wsDot?.classList.add("live");
       if (wsDot) wsDot.title = "Live WebSocket connected";
       if (wsLabel) wsLabel.textContent = "LIVE";
@@ -278,7 +310,9 @@
       if (wsDot) wsDot.title = "Reconnecting…";
       if (wsLabel) wsLabel.textContent = "SYNC";
       wsBanner?.classList.remove("hidden");
-      wsReconnectTimer = setTimeout(connectWS, 2200);
+      const delay = Math.min(20000, 1500 * Math.pow(1.8, wsReconnectAttempts)) + Math.random() * 500;
+      wsReconnectAttempts = Math.min(wsReconnectAttempts + 1, 8);
+      wsReconnectTimer = setTimeout(connectWS, Math.round(delay));
     };
     ws.onerror = () => {
       try {
@@ -290,6 +324,7 @@
   }
 
   wsRetryBtn?.addEventListener("click", () => {
+    wsReconnectAttempts = 0;
     fetchSnapshotFallback();
     connectWS();
     showToast("Reconnecting live stream…", "info");
@@ -308,17 +343,18 @@
     snapshot = data;
 
     const openNeeds = (data.pendingNeeds || []).filter((n) => n.status === "open");
+    const openNeedIdSet = new Set(openNeeds.map((n) => n.id));
     let newUrgent = false;
     let newIsError = false;
     openNeeds.forEach((n) => {
       if (!knownOpenNeedIds.has(n.id)) {
-        knownOpenNeedIds.add(n.id);
         if (firstSnapshotLoaded) {
           newUrgent = true;
           if (n.severity === "error" || n.severity === "budget") newIsError = true;
         }
       }
     });
+    knownOpenNeedIds = openNeedIdSet;
     firstSnapshotLoaded = true;
     if (newUrgent) playAlertChime(newIsError);
 
@@ -329,16 +365,58 @@
     renderAll();
   }
 
-  function renderAll() {
+  function renderAll(force = false) {
     if (!snapshot) return;
     renderRoomCounts();
-    renderTeamList();
-    renderActivity();
-    renderMetricsPage();
-    renderNeedsPage();
-    renderFleet();
-    if (selectedBotId) renderInspector();
+    if (activeView === "office") {
+      renderTeamList();
+      renderActivity();
+      if (selectedBotId) {
+        const inspEl = document.getElementById("bot-inspector");
+        if (!force && isEditingInside(inspEl)) {
+          inspectorRenderDeferred = true;
+        } else {
+          inspectorRenderDeferred = false;
+          renderInspector();
+        }
+      }
+    } else if (activeView === "fleet") {
+      const fleetEl = document.getElementById("fleet-grid");
+      if (!force && isEditingInside(fleetEl)) {
+        fleetRenderDeferred = true;
+      } else {
+        fleetRenderDeferred = false;
+        renderFleet();
+      }
+    } else if (activeView === "metrics") {
+      renderMetricsPage();
+    } else if (activeView === "needs") {
+      const needsEl = document.getElementById("needs-grid");
+      if (!force && isEditingInside(needsEl)) {
+        needsRenderDeferred = true;
+      } else {
+        needsRenderDeferred = false;
+        renderNeedsPage();
+      }
+    }
   }
+
+  document.addEventListener("focusout", () => {
+    setTimeout(() => {
+      if (inspectorRenderDeferred && selectedBotId && !isEditingInside(document.getElementById("bot-inspector"))) {
+        inspectorRenderDeferred = false;
+        renderInspector();
+      }
+      if (fleetRenderDeferred && activeView === "fleet" && !isEditingInside(document.getElementById("fleet-grid"))) {
+        fleetRenderDeferred = false;
+        renderFleet();
+      }
+      if (needsRenderDeferred && activeView === "needs" && !isEditingInside(document.getElementById("needs-grid"))) {
+        needsRenderDeferred = false;
+        renderNeedsPage();
+      }
+    }, 150);
+  });
 
   function renderRoomCounts() {
     const { bots, pendingNeeds, usageSummary, lastBotUpdateAt } = snapshot;
@@ -1278,7 +1356,13 @@
     document.querySelectorAll(".office-only").forEach((el) =>
       el.classList.toggle("hidden", viewName !== "office")
     );
-    if (viewName === "office") setTimeout(() => office3d.handleResize(), 40);
+    if (typeof office3d.setPaused === "function") {
+      office3d.setPaused(viewName !== "office");
+    }
+    renderAll(true);
+    if (viewName === "office" && typeof office3d.handleResize === "function") {
+      setTimeout(() => office3d.handleResize(), 40);
+    }
   }
 
   document.querySelectorAll("[data-view]").forEach((btn) => {
@@ -1948,24 +2032,30 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
 
   document.getElementById("settings-form").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const res = await fetch("/api/settings", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        dailyCostCapUsd: Number(document.getElementById("set-cost-cap").value),
-        dailyTokenCap: Number(document.getElementById("set-token-cap").value),
-        dailyTaskTarget: Number(document.getElementById("set-task-target").value),
-        autoIdleMinutes: Number(document.getElementById("set-auto-idle").value),
-        hardBudgetStop: document.getElementById("set-hard-stop").checked,
-        alertWebhookUrl: document.getElementById("set-webhook-url").value.trim(),
-      }),
-    });
-    settingsModal.classList.add("hidden");
-    if (res.ok) showToast("Guardrails & alert settings saved", "success");
+    const res = await apiFetch(
+      "/api/settings",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          dailyCostCapUsd: Number(document.getElementById("set-cost-cap").value),
+          dailyTokenCap: Number(document.getElementById("set-token-cap").value),
+          dailyTaskTarget: Number(document.getElementById("set-task-target").value),
+          autoIdleMinutes: Number(document.getElementById("set-auto-idle").value),
+          hardBudgetStop: document.getElementById("set-hard-stop").checked,
+          alertWebhookUrl: document.getElementById("set-webhook-url").value.trim(),
+        }),
+      },
+      "Could not save settings"
+    );
+    if (res.ok) {
+      settingsModal.classList.add("hidden");
+      showToast("Guardrails & alert settings saved", "success");
+    }
   });
 
   document.getElementById("btn-approve-all").addEventListener("click", async () => {
-    const res = await fetch("/api/needs/resolve-all", { method: "POST" });
+    const res = await apiFetch("/api/needs/resolve-all", { method: "POST" }, "Could not approve requests");
     if (res.ok) showToast("Approved all safe requests", "success");
   });
 
@@ -1977,13 +2067,19 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
     const input = fleetForm.querySelector("input");
     const task = input ? input.value.trim() : "";
     if (!task) return;
-    const res = await fetch(`/api/bots/${encodeURIComponent(botId)}/command`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ task, enqueue: true }),
-    });
+    const res = await apiFetch(
+      `/api/bots/${encodeURIComponent(botId)}/command`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ task, enqueue: true }),
+      },
+      "Could not queue command"
+    );
     if (res.ok) {
       input.value = "";
+      input.blur();
+      fleetRenderDeferred = false;
       showToast("Command queued for next check-in", "success");
     }
   });
@@ -1993,12 +2089,20 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
     if (slaSel) {
       const botId = slaSel.dataset.saveBotSla;
       const val = Number(slaSel.value || 0);
-      const res = await fetch(`/api/bots/${encodeURIComponent(botId)}/command`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ expectedIntervalMinutes: val }),
-      });
-      if (res.ok) showToast(val === 0 ? "SLA disabled & alerts cleared" : `SLA set to every ${val}m`, "success");
+      const res = await apiFetch(
+        `/api/bots/${encodeURIComponent(botId)}/command`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ expectedIntervalMinutes: val }),
+        },
+        "Could not update SLA"
+      );
+      if (res.ok) {
+        slaSel.blur();
+        inspectorRenderDeferred = false;
+        showToast(val === 0 ? "SLA disabled & alerts cleared" : `SLA set to every ${val}m`, "success");
+      }
     }
   });
 
@@ -2018,11 +2122,13 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
     const inspTabBtn = e.target.closest("[data-insp-tab]");
     if (inspTabBtn) {
       inspectorTab = inspTabBtn.dataset.inspTab;
+      inspectorRenderDeferred = false;
       renderInspector();
       return;
     }
     if (e.target.id === "btn-close-insp") {
       selectedBotId = null;
+      inspectorRenderDeferred = false;
       renderInspector();
       renderTeamList();
       return;
@@ -2031,11 +2137,15 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
     if (rateBtn) {
       const runId = rateBtn.dataset.rateRun;
       const rating = Number(rateBtn.dataset.rating);
-      const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/rate`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ rating }),
-      });
+      const res = await apiFetch(
+        `/api/runs/${encodeURIComponent(runId)}/rate`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ rating }),
+        },
+        "Could not grade run"
+      );
       if (res.ok) showToast(rating === 1 ? "Run graded positive" : rating === -1 ? "Run flagged for review" : "Grade cleared", "info");
       return;
     }
@@ -2044,18 +2154,31 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       const botId = addQueueBtn.dataset.addQueue;
       const qInput = document.getElementById("insp-queue-input");
       if (qInput && qInput.value.trim()) {
-        const res = await fetch(`/api/bots/${encodeURIComponent(botId)}/queue`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task: qInput.value.trim() }),
-        });
-        if (res.ok) showToast("Added task to dispatch queue", "success");
+        const res = await apiFetch(
+          `/api/bots/${encodeURIComponent(botId)}/queue`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ task: qInput.value.trim() }),
+          },
+          "Could not add to queue"
+        );
+        if (res.ok) {
+          qInput.value = "";
+          qInput.blur();
+          inspectorRenderDeferred = false;
+          showToast("Added task to dispatch queue", "success");
+        }
       }
       return;
     }
     const delQueueBtn = e.target.closest("[data-del-queue-id]");
     if (delQueueBtn) {
-      const res = await fetch(`/api/bots/${encodeURIComponent(delQueueBtn.dataset.delQueueBot)}/queue/${encodeURIComponent(delQueueBtn.dataset.delQueueId)}`, { method: "DELETE" });
+      const res = await apiFetch(
+        `/api/bots/${encodeURIComponent(delQueueBtn.dataset.delQueueBot)}/queue/${encodeURIComponent(delQueueBtn.dataset.delQueueId)}`,
+        { method: "DELETE" },
+        "Could not remove queued task"
+      );
       if (res.ok) showToast("Removed task from queue", "info");
       return;
     }
@@ -2099,13 +2222,19 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       const taskInput = document.getElementById("insp-task-input");
       const task = taskInput ? taskInput.value.trim() : "";
       if (task) {
-        const res = await fetch(`/api/bots/${encodeURIComponent(saveTaskBtn.dataset.saveBotTask)}/command`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ task, enqueue: true }),
-        });
+        const res = await apiFetch(
+          `/api/bots/${encodeURIComponent(saveTaskBtn.dataset.saveBotTask)}/command`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ task, enqueue: true }),
+          },
+          "Could not queue command"
+        );
         if (res.ok) {
           taskInput.value = "";
+          taskInput.blur();
+          inspectorRenderDeferred = false;
           showToast("Command queued for next check-in", "success");
         }
       }
@@ -2115,12 +2244,20 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
     if (saveRoleBtn) {
       const roleInput = document.getElementById("insp-role-input");
       if (roleInput && roleInput.value.trim()) {
-        const res = await fetch(`/api/bots/${encodeURIComponent(saveRoleBtn.dataset.saveBotRole)}/command`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ role: roleInput.value.trim() }),
-        });
-        if (res.ok) showToast("Role updated", "success");
+        const res = await apiFetch(
+          `/api/bots/${encodeURIComponent(saveRoleBtn.dataset.saveBotRole)}/command`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ role: roleInput.value.trim() }),
+          },
+          "Could not update role"
+        );
+        if (res.ok) {
+          roleInput.blur();
+          inspectorRenderDeferred = false;
+          showToast("Role updated", "success");
+        }
       }
       return;
     }
@@ -2136,18 +2273,23 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       });
       if (!ok) return;
       selectedBotId = null;
-      const res = await fetch(`/api/bots/${encodeURIComponent(botId)}`, { method: "DELETE" });
+      inspectorRenderDeferred = false;
+      const res = await apiFetch(`/api/bots/${encodeURIComponent(botId)}`, { method: "DELETE" }, "Could not remove bot");
       if (res.ok) showToast(`Removed ${botName}`, "warn");
       return;
     }
     const moveBtn = e.target.closest("[data-move-bot]");
     if (moveBtn) {
       const status = moveBtn.dataset.status;
-      const res = await fetch(`/api/bots/${encodeURIComponent(moveBtn.dataset.moveBot)}/command`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ status }),
-      });
+      const res = await apiFetch(
+        `/api/bots/${encodeURIComponent(moveBtn.dataset.moveBot)}/command`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ status }),
+        },
+        "Could not move bot"
+      );
       if (res.ok) showToast(`Moved bot to ${statusLabel(status)}`, "info");
       return;
     }
@@ -2156,22 +2298,33 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       const id = resolveBtn.dataset.resolve;
       const action = resolveBtn.dataset.action;
       const noteEl = document.querySelector(`[data-note-for="${CSS.escape(id)}"]`);
-      const res = await fetch(`/api/needs/${encodeURIComponent(id)}/resolve`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action, note: noteEl ? noteEl.value.trim() : "" }),
-      });
-      if (res.ok) showToast(action === "approve" ? "Request approved" : "Request rejected", action === "approve" ? "success" : "warn");
+      const res = await apiFetch(
+        `/api/needs/${encodeURIComponent(id)}/resolve`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action, note: noteEl ? noteEl.value.trim() : "" }),
+        },
+        "Could not resolve request"
+      );
+      if (res.ok) {
+        needsRenderDeferred = false;
+        showToast(action === "approve" ? "Request approved" : "Request rejected", action === "approve" ? "success" : "warn");
+      }
       return;
     }
     const bumpBtn = e.target.closest("[data-goal-bump]");
     if (bumpBtn) {
       const next = Number(bumpBtn.dataset.next);
-      const res = await fetch(`/api/objectives/${encodeURIComponent(bumpBtn.dataset.goalBump)}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ progress: next }),
-      });
+      const res = await apiFetch(
+        `/api/objectives/${encodeURIComponent(bumpBtn.dataset.goalBump)}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ progress: next }),
+        },
+        "Could not update goal"
+      );
       if (res.ok) showToast(next >= 100 ? "Goal completed!" : `Goal progress updated to ${next}%`, "success");
       return;
     }

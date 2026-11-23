@@ -493,13 +493,49 @@ class Office3D {
     this.clock = new THREE.Clock();
     this.contactShadowTex = makeContactShadowTexture();
 
+    this.isPaused = false;
+    this.rafId = null;
+
     this.initScene();
     this.buildSkyAndCity();
     this.buildCommandPenthouse();
     this.buildOfficeCat();
     this.bindEvents();
     this.setLighting("night");
-    requestAnimationFrame(() => this.animate());
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        if (this.rafId !== null) {
+          cancelAnimationFrame(this.rafId);
+          this.rafId = null;
+        }
+      } else if (!this.isPaused && this.rafId === null) {
+        this.clock.getDelta();
+        this.scheduleNextFrame();
+      }
+    });
+    this.scheduleNextFrame();
+  }
+
+  scheduleNextFrame() {
+    if (this.isPaused || document.hidden || this.rafId !== null) return;
+    this.rafId = requestAnimationFrame(() => {
+      this.rafId = null;
+      this.animate();
+    });
+  }
+
+  setPaused(paused) {
+    this.isPaused = Boolean(paused);
+    if (this.isPaused) {
+      if (this.rafId !== null) {
+        cancelAnimationFrame(this.rafId);
+        this.rafId = null;
+      }
+    } else if (!document.hidden) {
+      this.handleResize();
+      this.clock.getDelta();
+      this.scheduleNextFrame();
+    }
   }
 
   initScene() {
@@ -1780,12 +1816,31 @@ class Office3D {
     for (const [id, entry] of this.botMeshes.entries()) {
       if (!seenIds.has(id)) {
         this.scene.remove(entry.group);
+        this.disposeBotGroup(entry.group);
         this.botMeshes.delete(id);
         const lbl = this.labelEls.get(id);
         if (lbl) lbl.remove();
         this.labelEls.delete(id);
       }
     }
+  }
+
+  disposeBotGroup(group) {
+    const disposedMats = new Set();
+    group.traverse((child) => {
+      if (child.geometry && typeof child.geometry.dispose === "function") {
+        child.geometry.dispose();
+      }
+      if (child.material) {
+        const mats = Array.isArray(child.material) ? child.material : [child.material];
+        mats.forEach((mat) => {
+          if (mat && !disposedMats.has(mat) && typeof mat.dispose === "function") {
+            disposedMats.add(mat);
+            mat.dispose();
+          }
+        });
+      }
+    });
   }
 
   focusRoom(roomKey) {
@@ -1909,6 +1964,7 @@ class Office3D {
   }
 
   animate() {
+    if (this.isPaused || document.hidden) return;
     const elapsed = this.clock.getElapsedTime();
     const now = performance.now();
 
@@ -2123,14 +2179,16 @@ class Office3D {
       }
     }
     projectedLabels.forEach(({ lbl, sx, sy }) => {
-      lbl.style.transform = `translate(-50%, -100%) translate(${sx.toFixed(1)}px, ${sy.toFixed(1)}px)`;
+      const clampedX = Math.max(76, Math.min(w - 76, sx));
+      const clampedY = Math.max(72, Math.min(h - 78, sy));
+      lbl.style.transform = `translate(-50%, -100%) translate(${clampedX.toFixed(1)}px, ${clampedY.toFixed(1)}px)`;
       lbl.style.opacity = "1";
       lbl.style.pointerEvents = "auto";
     });
 
     this.controls.update();
     this.composer.render();
-    requestAnimationFrame(() => this.animate());
+    this.scheduleNextFrame();
   }
 }
 

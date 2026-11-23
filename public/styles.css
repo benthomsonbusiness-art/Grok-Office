@@ -451,6 +451,7 @@ kbd {
   position: absolute;
   top: 0;
   left: 0;
+  max-width: 162px;
   display: inline-flex;
   flex-direction: column;
   align-items: center;
@@ -465,11 +466,11 @@ kbd {
   pointer-events: auto;
   cursor: pointer;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.52);
-  transition: border-color 0.18s ease, background 0.18s ease, border-radius 0.18s ease;
+  transition: border-color 0.18s ease, background 0.18s ease, border-radius 0.18s ease, max-width 0.18s ease;
 }
 .bot-3d-label:not(.compact) { border-radius: 9px; padding: 4px 10px; }
 .bot-3d-label.compact .lbl-role { display: none; }
-.bot-3d-label:hover { z-index: 25; border-color: rgba(255, 255, 255, 0.36); background: rgba(14, 18, 28, 0.95); }
+.bot-3d-label:hover { z-index: 25; max-width: 240px; border-color: rgba(255, 255, 255, 0.36); background: rgba(14, 18, 28, 0.95); }
 .bot-3d-label:hover .lbl-role { display: block; }
 .bot-3d-label[data-status="working"] { border-color: rgba(16, 185, 129, 0.45); }
 .bot-3d-label[data-status="meeting"] { border-color: rgba(129, 140, 248, 0.48); }
@@ -478,12 +479,15 @@ kbd {
 .bot-3d-label[data-status="error"] { border-color: rgba(244, 63, 94, 0.78); }
 .bot-3d-label.selected {
   z-index: 26;
+  max-width: 240px;
   border-color: #ffffff;
   box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.45), 0 10px 24px rgba(0, 0, 0, 0.65);
 }
-.lbl-top { display: inline-flex; align-items: center; gap: 5px; font-size: 0.72rem; font-weight: 600; line-height: 1.15; }
+.lbl-top { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; font-size: 0.72rem; font-weight: 600; line-height: 1.15; }
+.lbl-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 126px; }
+.bot-3d-label:hover .lbl-name, .bot-3d-label.selected .lbl-name { max-width: 204px; }
 .lbl-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-.lbl-role { font-size: 0.61rem; font-weight: 500; color: var(--muted); line-height: 1.15; }
+.lbl-role { max-width: 142px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.61rem; font-weight: 500; color: var(--muted); line-height: 1.15; }
 
 /* Frosted Floating 3D HUD Bars */
 .stage-chip-bar,
@@ -1659,7 +1663,15 @@ kbd {
 .deliv-link { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-size: 0.78rem; font-weight: 600; text-decoration: none; }
 .deliv-link:hover { text-decoration: underline; }
 
+@media (max-width: 1240px) {
+  .topbar { padding: 0 12px; gap: 10px; }
+  .brand { margin-right: 4px; gap: 8px; }
+  .brand-name { white-space: nowrap; font-size: 0.94rem; }
+  .nav-tab { padding: 6px 9px; font-size: 0.78rem; white-space: nowrap; }
+  .stage-controls-bar { top: 58px; left: 14px; right: auto; }
+}
 @media (max-width: 1120px) {
+  .sidebar, .bot-inspector { width: 316px; }
   .hero-kpis, .fleet-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .digest-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .goals-grid { grid-template-columns: 1fr; }
@@ -1673,4 +1685,50 @@ kbd {
   .office-layout.sidebar-collapsed .sidebar { height: 0; width: 100%; }
   .stage-controls-bar { display: none; }
   .bot-inspector { width: 100%; max-width: 100%; }
+}
+@media (max-width: 760px) {
+  .topbar {
+    height: auto;
+    flex-wrap: wrap;
+    padding: 8px 10px;
+    gap: 8px 6px;
+  }
+  .topbar-left { display: contents; }
+  .brand { order: 1; margin-right: auto; gap: 7px; }
+  .brand-mark { width: 28px; height: 28px; }
+  .brand-name { font-size: 0.9rem; white-space: nowrap; }
+  .brand-live-tag { display: none; }
+  .topbar-right { order: 2; gap: 6px; }
+  .cmd-trigger, #btn-shortcuts, #btn-sound-toggle { display: none; }
+  .main-nav {
+    order: 3;
+    flex: 1 0 100%;
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    padding: 3px;
+  }
+  .nav-tab {
+    justify-content: center;
+    padding: 6px 4px;
+    font-size: 0.7rem;
+    gap: 4px;
+    min-width: 0;
+  }
+  .nav-tab .ui-ico { display: none; }
+  .nav-tab > span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stage-chip-bar {
+    top: 10px;
+    left: 10px;
+    max-width: calc(100% - 20px);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .stage-chip-bar::-webkit-scrollbar { display: none; }
+  .room-bar {
+    bottom: 10px;
+    max-width: calc(100% - 16px);
+  }
+  .page-container { padding: 14px 12px 28px; }
+  .hero-kpis, .fleet-kpis, .digest-strip { grid-template-columns: 1fr; }
 }
