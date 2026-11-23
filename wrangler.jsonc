@@ -22,5 +22,18 @@
       "tag": "v1",
       "new_sqlite_classes": ["OfficeHub"]
     }
-  ]
+  ],
+  // Pull request builds run `wrangler preview`. Assets and migrations stay at
+  // the top level. The Durable Object binding is not inherited, so each
+  // preview needs its own copy or the dashboard has no office to read.
+  "previews": {
+    "durable_objects": {
+      "bindings": [
+        {
+          "name": "OFFICE_HUB",
+          "class_name": "OfficeHub"
+        }
+      ]
+    }
+  }
 }
