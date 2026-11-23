@@ -4,6 +4,22 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import {
+  buildCorridorPath,
+  dampAngle,
+  hashId,
+  stepToward,
+} from "./botMotion.mjs";
+
+const ZONE_SLOT_COUNTS = {
+  working: 8,
+  waiting: 5,
+  error: 4,
+  meeting: 6,
+  idle: 8,
+  no_report: 5,
+};
+const CONFIRM_MS = 6000;
 
 const STATUS_HEX = {
   working: "#10b981",
@@ -1685,6 +1701,35 @@ class Office3D {
     halo.position.y = 0.14;
     group.add(halo);
 
+    const confirmRing = new THREE.Mesh(
+      new THREE.RingGeometry(0.42, 0.7, 36),
+      new THREE.MeshBasicMaterial({
+        color: 0x22c55e,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0,
+      })
+    );
+    confirmRing.rotation.x = -Math.PI / 2;
+    confirmRing.position.y = 0.2;
+    confirmRing.visible = false;
+    group.add(confirmRing);
+
+    const confirmBeam = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.34, 0.72, 4.2, 20, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: 0x4ade80,
+        transparent: true,
+        opacity: 0,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        depthTest: false,
+      })
+    );
+    confirmBeam.position.y = 1.75;
+    confirmBeam.visible = false;
+    group.add(confirmBeam);
+
     const orbitRing = new THREE.Mesh(
       new THREE.TorusGeometry(0.86, 0.028, 8, 32),
       new THREE.MeshBasicMaterial({
@@ -1731,6 +1776,7 @@ class Office3D {
     const labelEl = document.createElement("div");
     labelEl.className = "bot-3d-label";
     labelEl.innerHTML =
+      `<div class="lbl-done">✓ Done</div>` +
       `<div class="lbl-top"><span class="lbl-dot"></span><span class="lbl-name"></span></div>` +
       `<div class="lbl-role"></div>`;
     labelEl.addEventListener("click", (e) => {
@@ -1747,13 +1793,22 @@ class Office3D {
       rightEye,
       hitMeshes,
       halo,
+      confirmRing,
+      confirmBeam,
       orbitRing,
       thinkGroup,
       thinkDots,
       beacon,
       waypoints: [],
+      destKey: "",
       targetRotY: 0,
       zone: bot.status,
+      prevStatus: null,
+      prevTasks: null,
+      confirmUntil: 0,
+      slotZone: null,
+      slotIndex: null,
+      statusHex: STATUS_HEX[bot.status] || "#10b981",
       nextRoamAt: performance.now() + 5000 + Math.random() * 6000,
       nextBlinkAt: performance.now() + 1400 + Math.random() * 3800,
       lookOffsetX: 0,
@@ -1789,25 +1844,54 @@ class Office3D {
   }
 
   buildHallwayPath(fromPos, toPos, fromZone, toZone) {
-    if (fromZone === toZone) {
-      return [toPos.clone()];
+    const raw =
+      fromZone === toZone
+        ? [{ x: toPos.x, y: toPos.y, z: toPos.z }]
+        : buildCorridorPath(fromPos, toPos);
+    return raw.map((p) => new THREE.Vector3(p.x, p.y, p.z));
+  }
+
+  claimSlot(bot, entry) {
+    const zone = ZONE_SLOT_COUNTS[bot.status] ? bot.status : "working";
+    const count = ZONE_SLOT_COUNTS[zone];
+    if (!this.slotClaims) this.slotClaims = {};
+    if (!this.slotClaims[zone]) this.slotClaims[zone] = new Map();
+    if (entry && entry.slotZone && entry.slotZone !== zone && entry.slotIndex != null) {
+      const previous = this.slotClaims[entry.slotZone];
+      if (previous && previous.get(entry.slotIndex) === bot.id) previous.delete(entry.slotIndex);
     }
-    return [
-      new THREE.Vector3(fromPos.x, 0.04, 0.2),
-      new THREE.Vector3(toPos.x, 0.04, 0.2),
-      toPos.clone(),
-    ];
+    const claims = this.slotClaims[zone];
+    if (entry && entry.slotZone === zone && entry.slotIndex != null && claims.get(entry.slotIndex) === bot.id) {
+      return { zone, slot: entry.slotIndex };
+    }
+    let slot = hashId(bot.id) % count;
+    if (claims.get(slot) && claims.get(slot) !== bot.id) {
+      slot = hashId(bot.id) % count;
+      for (let i = 0; i < count; i++) {
+        if (!claims.has(i)) {
+          slot = i;
+          break;
+        }
+      }
+    }
+    for (const [held, owner] of claims) {
+      if (owner === bot.id && held !== slot) claims.delete(held);
+    }
+    claims.set(slot, bot.id);
+    return { zone, slot };
   }
 
   updateBots(bots, usageSummary) {
     this.bots = bots;
-    const slotCounters = { working: 0, waiting: 0, error: 0, meeting: 0, idle: 0, no_report: 0 };
     const seenIds = new Set();
+    const roomCounts = { working: 0, waiting: 0, error: 0, meeting: 0, idle: 0, no_report: 0 };
 
     bots.forEach((bot) => {
       seenIds.add(bot.id);
-      const slotIdx = slotCounters[bot.status] ?? 0;
-      slotCounters[bot.status] = slotIdx + 1;
+      const existing = this.botMeshes.get(bot.id);
+      const claimed = this.claimSlot(bot, existing);
+      const slotIdx = claimed.slot;
+      roomCounts[claimed.zone] = (roomCounts[claimed.zone] || 0) + 1;
 
       const dest = this.getRoomSpotForBot(bot, slotIdx);
       let entry = this.botMeshes.get(bot.id);
@@ -1818,18 +1902,38 @@ class Office3D {
         entry.targetRotY = dest.rotY;
         entry.group.rotation.y = dest.rotY;
         entry.zone = bot.status;
+        entry.destKey = `${bot.status}:${dest.pos.x.toFixed(2)}:${dest.pos.z.toFixed(2)}`;
+        entry.home = dest.pos.clone();
+        entry.slotZone = claimed.zone;
+        entry.slotIndex = claimed.slot;
+        entry.prevStatus = bot.status;
+        entry.prevTasks = bot.tasksCompleted || 0;
         this.botMeshes.set(bot.id, entry);
       } else {
-        const lastWp = entry.waypoints[entry.waypoints.length - 1] ?? entry.group.position;
-        if (lastWp.distanceTo(dest.pos) > 0.35) {
+        const destKey = `${bot.status}:${dest.pos.x.toFixed(2)}:${dest.pos.z.toFixed(2)}`;
+        if (entry.destKey !== destKey) {
           entry.waypoints = this.buildHallwayPath(entry.group.position, dest.pos, entry.zone, bot.status);
           entry.zone = bot.status;
+          entry.destKey = destKey;
+          entry.home = dest.pos.clone();
+          entry.slotZone = claimed.zone;
+          entry.slotIndex = claimed.slot;
         }
         entry.targetRotY = dest.rotY;
+        const tasks = bot.tasksCompleted || 0;
+        const finishedTask =
+          entry.prevStatus &&
+          (((entry.prevStatus === "working" || entry.prevStatus === "meeting") && bot.status === "idle") ||
+            tasks > entry.prevTasks);
+        if (finishedTask) entry.confirmUntil = performance.now() + CONFIRM_MS;
+        entry.prevStatus = bot.status;
+        entry.prevTasks = tasks;
       }
 
       const hex = STATUS_HEX[bot.status] || "#10b981";
-      entry.halo.material.color.set(hex);
+      entry.statusHex = hex;
+      const confirming = entry.confirmUntil && performance.now() < entry.confirmUntil;
+      entry.halo.material.color.set(confirming ? "#22c55e" : hex);
       entry.orbitRing.visible = bot.status === "working";
       entry.thinkGroup.visible = bot.status === "working" || bot.status === "meeting";
 
@@ -1876,20 +1980,24 @@ class Office3D {
         labelEl.dataset.status = bot.status;
         labelEl.classList.toggle("selected", this.selectedBotId === bot.id);
         labelEl.classList.toggle("urgent", bot.status === "waiting" || bot.status === "error");
+        labelEl.classList.toggle("confirmed", Boolean(entry.confirmUntil && performance.now() < entry.confirmUntil));
       }
     });
 
-    this.roomCounts = slotCounters;
-    const activeCount = (slotCounters.working || 0) + (slotCounters.meeting || 0);
+    this.roomCounts = roomCounts;
+    const activeCount = (roomCounts.working || 0) + (roomCounts.meeting || 0);
     this.updateWallScreen(
       usageSummary?.usageRemainingPct ?? 100,
       activeCount,
-      slotCounters.waiting || 0,
-      slotCounters.error || 0
+      roomCounts.waiting || 0,
+      roomCounts.error || 0
     );
 
     for (const [id, entry] of this.botMeshes.entries()) {
       if (!seenIds.has(id)) {
+        if (entry.slotZone && this.slotClaims?.[entry.slotZone]?.get(entry.slotIndex) === id) {
+          this.slotClaims[entry.slotZone].delete(entry.slotIndex);
+        }
         this.scene.remove(entry.group);
         this.botMeshes.delete(id);
         const lbl = this.labelEls.get(id);
@@ -2032,6 +2140,8 @@ class Office3D {
     const w = this.container.clientWidth || 960;
     const h = this.container.clientHeight || 600;
     const proj = new THREE.Vector3();
+    const frameDt = Math.min(0.05, Math.max(0, (now - (this.lastAnimNow || now)) / 1000));
+    this.lastAnimNow = now;
 
     if (this.camLerpTarget) {
       this.camera.position.lerp(this.camLerpTarget.pos, 0.08);
@@ -2130,37 +2240,46 @@ class Office3D {
       const entry = this.botMeshes.get(bot.id);
       if (!entry) return;
 
-      if (bot.status === "idle" && entry.waypoints.length === 0 && now > entry.nextRoamAt) {
-        const spot = LOUNGE_SPOTS[(idx + Math.floor(now / 9000)) % LOUNGE_SPOTS.length];
-        entry.waypoints = [new THREE.Vector3(spot.x, 0.04, spot.z)];
-        entry.nextRoamAt = now + 7500 + Math.random() * 6000;
-      }
-
       const pos = entry.group.position;
+      const confirming = entry.confirmUntil && now < entry.confirmUntil;
+      if (entry.confirmRing) {
+        const showing = Boolean(confirming);
+        entry.confirmRing.visible = showing;
+        if (entry.confirmBeam) entry.confirmBeam.visible = showing;
+        if (confirming) {
+          const k = 1 - (entry.confirmUntil - now) / CONFIRM_MS;
+          const pulse = 0.85 + k * 2.1;
+          entry.confirmRing.scale.setScalar(pulse);
+          entry.confirmRing.material.opacity = Math.max(0, (1 - k) * 0.95);
+          entry.confirmBeam.scale.set(1, 0.55 + k * 0.7, 1);
+          entry.confirmBeam.material.opacity = Math.max(0.2, (1 - k) * 0.72);
+          entry.confirmBeam.rotation.y = elapsed * 1.6;
+          entry.halo.material.color.set("#22c55e");
+        } else if (entry.confirmUntil) {
+          entry.confirmUntil = 0;
+          entry.confirmRing.material.opacity = 0;
+          if (entry.confirmBeam) entry.confirmBeam.material.opacity = 0;
+          entry.halo.material.color.set(entry.statusHex || "#10b981");
+        }
+      }
       if (entry.waypoints.length > 0) {
         const wp = entry.waypoints[0];
-        const dx = wp.x - pos.x;
-        const dz = wp.z - pos.z;
-        const dist = Math.hypot(dx, dz);
-        if (dist <= 0.12) {
-          pos.x = wp.x;
-          pos.z = wp.z;
-          pos.y = wp.y;
+        const next = stepToward(pos, wp, frameDt);
+        pos.x = next.x;
+        pos.y = next.y;
+        pos.z = next.z;
+        if (next.arrived) {
           entry.waypoints.shift();
         } else {
-          const step = Math.min(dist, 0.115);
-          pos.x += (dx / dist) * step;
-          pos.z += (dz / dist) * step;
-          pos.y += (wp.y - pos.y) * 0.12;
-          entry.group.rotation.y = Math.atan2(dx, dz);
-
+          const face = Math.atan2(wp.x - pos.x, wp.z - pos.z);
+          entry.group.rotation.y = dampAngle(entry.group.rotation.y, face, frameDt);
           const hop = Math.abs(Math.sin(elapsed * 9.5 + idx));
-          entry.rig.position.y = hop * 0.42;
-          entry.rig.scale.set(1.08 - hop * 0.14, 0.88 + hop * 0.22, 1.08 - hop * 0.14);
-          entry.rig.rotation.z = Math.sin(elapsed * 9.5 + idx) * 0.08;
+          entry.rig.position.y = hop * 0.28;
+          entry.rig.scale.set(1.05 - hop * 0.08, 0.94 + hop * 0.12, 1.05 - hop * 0.08);
+          entry.rig.rotation.z = Math.sin(elapsed * 9.5 + idx) * 0.05;
         }
       } else {
-        entry.group.rotation.y += (entry.targetRotY - entry.group.rotation.y) * 0.08;
+        entry.group.rotation.y = dampAngle(entry.group.rotation.y, entry.targetRotY, frameDt);
 
         if (bot.status === "working") {
           const breath = Math.sin(elapsed * 3.8 + idx);
@@ -2236,7 +2355,9 @@ class Office3D {
           this.selectedBotId === bot.id ||
           this.hoveredBotId === bot.id ||
           bot.status === "waiting" ||
-          bot.status === "error";
+          bot.status === "error" ||
+          confirming;
+        lbl.classList.toggle("confirmed", Boolean(confirming));
         proj.set(pos.x, pos.y + 2.18, pos.z);
         proj.project(this.camera);
         if (show && proj.z < 1) {

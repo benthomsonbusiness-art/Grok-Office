@@ -265,6 +265,29 @@ html, body {
   border-color: #38bdf8;
   box-shadow: 0 0 18px rgba(56, 189, 248, 0.55);
 }
+.bot-3d-label.confirmed {
+  border-color: #22c55e;
+  box-shadow: 0 0 22px rgba(34, 197, 94, 0.72);
+}
+.lbl-done {
+  display: none;
+  margin-bottom: 3px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #22c55e;
+  color: #052e16;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+.bot-3d-label.confirmed .lbl-done {
+  display: inline-flex;
+  animation: check-pop 0.45s cubic-bezier(0.2, 1.45, 0.4, 1);
+}
+@keyframes check-pop {
+  0% { transform: scale(0.45); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
 
 .lbl-top {
   display: inline-flex;
@@ -657,6 +680,24 @@ html, body {
 .act-item.lvl-error { border-left-color: var(--red); background: rgba(244, 63, 94, 0.08); }
 .act-item.lvl-warn { border-left-color: var(--amber); background: rgba(245, 158, 11, 0.08); }
 .act-item.lvl-success { border-left-color: var(--green); }
+.act-item.just-done {
+  background: rgba(34, 197, 94, 0.14);
+  animation: goal-confirm 0.7s ease;
+}
+.act-check {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: #22c55e;
+  color: #052e16;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+.act-check.pop { animation: check-pop 0.45s cubic-bezier(0.2, 1.45, 0.4, 1); }
 .act-meta { font-size: 0.7rem; color: #64748b; margin-top: 2px; }
 
 /* FULL-PAGE VIEWS (Goals & Metrics, Pending Needs) — Argon Glass Edition */
@@ -849,6 +890,7 @@ html, body {
 }
 
 .goal-card {
+  position: relative;
   background: var(--card-alt);
   border: 1px solid rgba(168, 85, 247, 0.24);
   border-radius: 12px;
@@ -856,6 +898,35 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  overflow: hidden;
+}
+.goal-card.just-done {
+  border-color: #22c55e;
+  animation: goal-confirm 0.75s ease;
+}
+.goal-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #bbf7d0;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+.goal-confirm[hidden] { display: none; }
+.goal-check {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: #22c55e;
+  color: #052e16;
+  animation: check-pop 0.45s cubic-bezier(0.2, 1.45, 0.4, 1);
+}
+@keyframes goal-confirm {
+  0% { transform: translateY(6px); box-shadow: 0 0 0 rgba(34, 197, 94, 0); }
+  40% { transform: translateY(0); box-shadow: 0 0 28px rgba(34, 197, 94, 0.5); }
+  100% { transform: translateY(0); box-shadow: 0 0 12px rgba(34, 197, 94, 0.22); }
 }
 .goal-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
 .goal-title { font-size: 1rem; font-weight: 700; line-height: 1.35; }

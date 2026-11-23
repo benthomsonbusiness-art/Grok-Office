@@ -10,6 +10,7 @@
   let soundEnabled = localStorage.getItem("grok_hq_chime") !== "off";
   let knownOpenNeedIds = new Set();
   let firstSnapshotLoaded = false;
+  const justDoneGoals = new Map();
 
   const stageEl = document.getElementById("office-3d-stage");
   const labelLayer = document.getElementById("label-layer");
@@ -171,7 +172,12 @@
         ? `(${openNeeds.length}) Grok Bot HQ — Argon 3D Command Center`
         : "Grok Bot HQ — Argon 3D Command Center";
 
-    office3d.updateBots(data.bots || [], data.usageSummary);
+    try {
+      office3d.updateBots(data.bots || [], data.usageSummary);
+    } catch (err) {
+      const pill = document.getElementById("usage-left-pill");
+      if (pill) pill.textContent = `3D error: ${err && err.message ? err.message : err}`;
+    }
     renderAll();
   }
 
@@ -286,9 +292,10 @@
       .slice(0, 50)
       .map((l) => {
         const ts = new Date(l.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+        const freshDone = l.level === "success" && Date.now() - Date.parse(l.createdAt) < 8000;
         return `
-        <div class="act-item lvl-${esc(l.level || "info")}" data-select-bot="${esc(l.botId)}">
-          <span class="bot-sq" style="background:${esc(l.botColor || "#38bdf8")};margin-top:4px"></span>
+        <div class="act-item lvl-${esc(l.level || "info")} ${freshDone ? "just-done" : ""}" data-select-bot="${esc(l.botId)}">
+          ${l.level === "success" ? `<span class="act-check ${freshDone ? "pop" : ""}" aria-hidden="true">✓</span>` : `<span class="bot-sq" style="background:${esc(l.botColor || "#38bdf8")};margin-top:4px"></span>`}
           <div style="min-width:0;flex:1">
             <div><strong>${esc(l.botName)}</strong> — ${esc(l.message)}</div>
             <div class="act-meta">${esc(ts)} · ${esc(timeAgo(l.createdAt))}</div>
@@ -409,7 +416,7 @@
               <div style="font-weight:600">${esc(r.task)}</div>
               ${r.resultSummary ? `<div class="muted" style="font-size:0.75rem">${esc(r.resultSummary)}</div>` : ""}
             </td>
-            <td><span class="st-pill ${runPill}">${esc(r.status)}</span></td>
+            <td><span class="st-pill ${runPill}">${r.status === "completed" ? "✓ " : ""}${esc(r.status)}</span></td>
             <td class="muted">${esc(formatDuration(r.durationSec))}</td>
             <td>${safeUrl ? `<a class="deliv-link" href="${esc(safeUrl)}" target="_blank" rel="noopener noreferrer">Open output ↗</a>` : `<span class="muted">—</span>`}</td>
             <td>${renderGradeButtons(r)}</td>
@@ -433,8 +440,10 @@
       goalsEl.innerHTML = objectives
         .map((o) => {
           const done = o.status === "completed" || o.progress >= 100;
+          const flash = justDoneGoals.has(o.id) && Date.now() - justDoneGoals.get(o.id) < 2200;
           return `
-          <div class="goal-card">
+          <div class="goal-card ${done ? "is-done" : ""} ${flash ? "just-done" : ""}" data-goal-id="${esc(o.id)}">
+            <div class="goal-confirm" ${flash ? "" : "hidden"}><span class="goal-check">✓</span> Done</div>
             <div class="goal-top">
               <div class="goal-title">${esc(o.title)}</div>
               <span class="goal-pct ${done ? "done" : ""}">${o.progress}%</span>
@@ -1315,6 +1324,16 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
 
     const bumpBtn = e.target.closest("[data-goal-bump]");
     if (bumpBtn) {
+      const next = Number(bumpBtn.dataset.next);
+      if (next >= 100) {
+        justDoneGoals.set(bumpBtn.dataset.goalBump, Date.now());
+        const card = bumpBtn.closest(".goal-card");
+        if (card) {
+          card.classList.add("just-done", "is-done");
+          const confirm = card.querySelector(".goal-confirm");
+          if (confirm) confirm.hidden = false;
+        }
+      }
       await fetch(`/api/objectives/${encodeURIComponent(bumpBtn.dataset.goalBump)}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
