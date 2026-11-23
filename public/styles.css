@@ -955,8 +955,101 @@ html, body {
   color: #bae6fd;
 }
 
+.settings-two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+/* Daily Executive Digest Strip */
+.digest-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  background: linear-gradient(90deg, rgba(6, 182, 212, 0.12), rgba(139, 92, 246, 0.12));
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  border-radius: 13px;
+  padding: 13px 18px;
+}
+.digest-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.digest-item span {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.digest-item strong {
+  font-size: 1.08rem;
+  font-weight: 800;
+  color: var(--text);
+}
+
+/* Quality Grading & Deliverables */
+.grade-row {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+}
+.grade-btn {
+  background: rgba(15, 23, 45, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  color: #cbd5e1;
+  border-radius: 6px;
+  padding: 3px 7px;
+  font-size: 0.74rem;
+  cursor: pointer;
+  transition: 0.14s ease;
+}
+.grade-btn:hover { border-color: var(--cyan); }
+.grade-btn.active-up {
+  background: rgba(16, 185, 129, 0.22);
+  border-color: var(--green);
+  color: #34d399;
+}
+.grade-btn.active-down {
+  background: rgba(244, 63, 94, 0.22);
+  border-color: var(--red);
+  color: #fb7185;
+}
+.deliv-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--cyan);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+.deliv-link:hover { text-decoration: underline; }
+
+/* Multi-Task Queue inside Inspector */
+.insp-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(56, 189, 248, 0.14);
+}
+.insp-queue-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  background: rgba(15, 23, 45, 0.75);
+  border: 1px solid rgba(56, 189, 248, 0.16);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.74rem;
+}
+
 @media (max-width: 1100px) {
   .hero-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .digest-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .goals-grid { grid-template-columns: 1fr; }
   .metrics-two-col, .needs-grid { grid-template-columns: 1fr; }
   .goal-form { grid-template-columns: 1fr; }

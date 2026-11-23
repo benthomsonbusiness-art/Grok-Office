@@ -22,7 +22,10 @@ import type {
   OfficeSettings,
   OfficeSnapshot,
   PendingNeed,
+  QueuedTask,
   ReportPayload,
+  RunStatus,
+  TaskRun,
   UsageBucket,
   UsageByModel,
 } from "./types";
@@ -35,23 +38,21 @@ export interface Env {
   AI_GATEWAY_BASE_URL?: string;
 }
 
-// Official Grok Bot 12-color palette
 const DEFAULT_COLORS = [
-  "#3b93f0", // Blue
-  "#8b5cf6", // Purple
-  "#3ecf8e", // Green
-  "#f08a24", // Orange
-  "#e152b0", // Pink
-  "#f0b429", // Amber
-  "#2fbfa0", // Turquoise
-  "#e8483f", // Red
-  "#f1efe9", // Cream
-  "#a3a3a3", // Grey
-  "#8b5e3c", // Brown
-  "#1e2028", // Ink
+  "#3b93f0",
+  "#8b5cf6",
+  "#3ecf8e",
+  "#f08a24",
+  "#e152b0",
+  "#f0b429",
+  "#2fbfa0",
+  "#e8483f",
+  "#f1efe9",
+  "#a3a3a3",
+  "#8b5e3c",
+  "#1e2028",
 ];
 
-// Official Grok Bot 8 silhouette shapes
 const GROK_SHAPES: GrokShape[] = [
   "pebble",
   "circle",
@@ -69,12 +70,22 @@ function normalizeGrokShape(raw: unknown, fallback: GrokShape): GrokShape {
   return GROK_SHAPES.includes(s) ? s : fallback;
 }
 
+// Multi-provider pricing per 1M tokens (xAI Grok, Google Gemini 4, Anthropic Claude)
 const MODEL_PRICING_PER_M: Record<string, { in: number; out: number }> = {
   "grok-4": { in: 3.0, out: 15.0 },
   "grok-4.20-multi-agent": { in: 5.0, out: 20.0 },
   "grok-4.7": { in: 2.5, out: 10.0 },
+  "grok-4.6": { in: 3.0, out: 15.0 },
   "grok-3": { in: 3.0, out: 15.0 },
   "grok-3-mini": { in: 0.3, out: 0.5 },
+  "gemini-4-hydrogen": { in: 1.5, out: 7.5 },
+  "gemini-4-neon": { in: 3.0, out: 15.0 },
+  "gemini-4-carbon": { in: 4.0, out: 20.0 },
+  "gemini-4-argon": { in: 4.0, out: 20.0 },
+  "claude-opus-5.5": { in: 4.0, out: 20.0 },
+  "claude-sonnet-5.5": { in: 2.0, out: 10.0 },
+  "claude-fable-5.2": { in: 6.0, out: 30.0 },
+  "claude-haiku-5.5": { in: 0.8, out: 4.0 },
 };
 
 const DEFAULT_SETTINGS: OfficeSettings = {
@@ -167,6 +178,8 @@ export class OfficeHub extends DurableObject<Env> {
         requests_total INTEGER NOT NULL DEFAULT 0,
         tasks_completed INTEGER NOT NULL DEFAULT 0,
         error_count INTEGER NOT NULL DEFAULT 0,
+        expected_interval_min INTEGER NOT NULL DEFAULT 0,
+        sla_alerted INTEGER NOT NULL DEFAULT 0,
         last_seen_at TEXT NOT NULL,
         collaborating_with TEXT
       );
@@ -181,6 +194,7 @@ export class OfficeHub extends DurableObject<Env> {
         status TEXT NOT NULL DEFAULT 'open',
         callback_url TEXT,
         resolution_note TEXT,
+        escalated INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         resolved_at TEXT
       );
@@ -210,6 +224,29 @@ export class OfficeHub extends DurableObject<Env> {
         created_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS task_runs (
+        id TEXT PRIMARY KEY,
+        bot_id TEXT NOT NULL,
+        bot_name TEXT NOT NULL,
+        model TEXT NOT NULL,
+        task TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'running',
+        output_url TEXT,
+        result_summary TEXT,
+        quality_rating INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        duration_sec INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS task_queue (
+        id TEXT PRIMARY KEY,
+        bot_id TEXT NOT NULL,
+        task TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued',
+        created_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS objectives (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
@@ -228,6 +265,8 @@ export class OfficeHub extends DurableObject<Env> {
       CREATE INDEX IF NOT EXISTS idx_needs_status ON pending_needs(status, created_at);
       CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at);
       CREATE INDEX IF NOT EXISTS idx_logs_created ON activity_logs(created_at);
+      CREATE INDEX IF NOT EXISTS idx_runs_started ON task_runs(started_at);
+      CREATE INDEX IF NOT EXISTS idx_queue_bot ON task_queue(bot_id, status, created_at);
     `);
 
     const botCols = this.sql
@@ -245,6 +284,20 @@ export class OfficeHub extends DurableObject<Env> {
     }
     if (!botCols.includes("avatar_shape")) {
       this.sql.exec("ALTER TABLE bots ADD COLUMN avatar_shape TEXT NOT NULL DEFAULT 'pebble'");
+    }
+    if (!botCols.includes("expected_interval_min")) {
+      this.sql.exec("ALTER TABLE bots ADD COLUMN expected_interval_min INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!botCols.includes("sla_alerted")) {
+      this.sql.exec("ALTER TABLE bots ADD COLUMN sla_alerted INTEGER NOT NULL DEFAULT 0");
+    }
+
+    const needCols = this.sql
+      .exec<{ name: string }>("PRAGMA table_info(pending_needs)")
+      .toArray()
+      .map((c) => c.name);
+    if (!needCols.includes("escalated")) {
+      this.sql.exec("ALTER TABLE pending_needs ADD COLUMN escalated INTEGER NOT NULL DEFAULT 0");
     }
 
     const usageCols = this.sql
@@ -272,7 +325,6 @@ export class OfficeHub extends DurableObject<Env> {
       this.sql.exec("ALTER TABLE activity_logs ADD COLUMN task_done INTEGER NOT NULL DEFAULT 0");
     }
 
-    // Automatically purge all seeded/demo/example bots once (even if alarm() logged auto-idle with simulated=0)
     const purgedFlag = this.sql
       .exec<{ value: string }>("SELECT value FROM office_settings WHERE key = 'purged_demo_v2'")
       .toArray()[0];
@@ -304,8 +356,10 @@ export class OfficeHub extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     const settings = this.getSettings();
-    const idleCutoffMs = Date.now() - Math.max(1, settings.autoIdleMinutes) * 60_000;
-    const noReportCutoffMs = Date.now() - 24 * 60 * 60_000;
+    const nowMs = Date.now();
+    const idleCutoffMs = nowMs - Math.max(1, settings.autoIdleMinutes) * 60_000;
+    const noReportCutoffMs = nowMs - 24 * 60 * 60_000;
+    const slaEscalationMs = 30 * 60_000;
 
     const allBots = this.sql
       .exec<{
@@ -314,11 +368,13 @@ export class OfficeHub extends DurableObject<Env> {
         avatar_color: string;
         status: BotStatus;
         last_seen_at: string;
-      }>("SELECT id, name, avatar_color, status, last_seen_at FROM bots")
+        expected_interval_min: number;
+        sla_alerted: number;
+      }>("SELECT id, name, avatar_color, status, last_seen_at, expected_interval_min, sla_alerted FROM bots")
       .toArray();
 
     let changed = false;
-    let stillActive = 0;
+    let needNextAlarm = false;
     const now = new Date().toISOString();
 
     for (const bot of allBots) {
@@ -330,6 +386,7 @@ export class OfficeHub extends DurableObject<Env> {
           "UPDATE bots SET status = 'idle', collaborating_with = NULL, task = 'Auto-idled in Central Lounge' WHERE id = ?",
           bot.id
         );
+        this.finalizeActiveRun(bot.id, "completed", null, null, now);
         this.insertLog(
           bot.id,
           bot.name,
@@ -349,15 +406,81 @@ export class OfficeHub extends DurableObject<Env> {
         );
         changed = true;
       } else if (bot.status === "working" || bot.status === "meeting") {
-        stillActive++;
+        needNextAlarm = true;
+      }
+
+      // Expected Check-in Schedule (Cron Heartbeat SLA)
+      if (bot.expected_interval_min > 0) {
+        needNextAlarm = true;
+        const slaCutoff = nowMs - bot.expected_interval_min * 60_000;
+        if (lastSeen < slaCutoff && bot.sla_alerted === 0) {
+          const title = `Missed scheduled check-in (${bot.expected_interval_min}m SLA)`;
+          const desc = `${bot.name} has not checked in for over ${bot.expected_interval_min} minutes.`;
+          this.sql.exec(
+            "UPDATE bots SET status = 'error', sla_alerted = 1, task = ? WHERE id = ?",
+            title,
+            bot.id
+          );
+          this.sql.exec(
+            `INSERT INTO pending_needs (id, bot_id, bot_name, title, description, severity, status, created_at)
+             VALUES (?, ?, ?, ?, ?, 'error', 'open', ?)
+             ON CONFLICT(id) DO UPDATE SET status = 'open', description = excluded.description`,
+            `sla-${bot.id}`,
+            bot.id,
+            bot.name,
+            title,
+            desc,
+            now
+          );
+          this.insertLog(bot.id, bot.name, bot.avatar_color, "error", "error", title, false, now, 0);
+          this.fireAlertWebhook(title, desc, "error", bot.name);
+          changed = true;
+        }
+      }
+    }
+
+    // Approval SLA Escalation: re-alert if an open approval has waited > 30 minutes
+    const staleNeeds = this.sql
+      .exec<{
+        id: string;
+        bot_id: string;
+        bot_name: string;
+        title: string;
+        created_at: string;
+      }>("SELECT id, bot_id, bot_name, title, created_at FROM pending_needs WHERE status = 'open' AND escalated = 0")
+      .toArray();
+
+    for (const need of staleNeeds) {
+      needNextAlarm = true;
+      const createdMs = Date.parse(need.created_at);
+      if (Number.isFinite(createdMs) && nowMs - createdMs >= slaEscalationMs) {
+        this.sql.exec("UPDATE pending_needs SET escalated = 1 WHERE id = ?", need.id);
+        this.insertLog(
+          need.bot_id,
+          need.bot_name,
+          "#f59e0b",
+          "waiting",
+          "warn",
+          `SLA reminder: "${need.title}" waiting > 30m`,
+          false,
+          now,
+          0
+        );
+        this.fireAlertWebhook(
+          `SLA Reminder (Waiting > 30m): ${need.title}`,
+          `${need.bot_name} has been waiting for over 30 minutes.`,
+          "waiting",
+          need.bot_name
+        );
+        changed = true;
       }
     }
 
     if (changed) {
       this.broadcastSnapshot();
     }
-    if (stillActive > 0) {
-      await this.ctx.storage.setAlarm(Date.now() + 60_000);
+    if (needNextAlarm) {
+      await this.ctx.storage.setAlarm(nowMs + 60_000);
     }
   }
 
@@ -366,6 +489,37 @@ export class OfficeHub extends DurableObject<Env> {
     if (!existing) {
       await this.ctx.storage.setAlarm(Date.now() + 60_000);
     }
+  }
+
+  private finalizeActiveRun(
+    botId: string,
+    nextStatus: RunStatus,
+    outputUrl: string | null,
+    resultSummary: string | null,
+    now: string
+  ): void {
+    const activeRun = this.sql
+      .exec<{ id: string; started_at: string }>(
+        "SELECT id, started_at FROM task_runs WHERE bot_id = ? AND status = 'running' ORDER BY started_at DESC LIMIT 1",
+        botId
+      )
+      .toArray()[0];
+    if (!activeRun) return;
+    const startMs = Date.parse(activeRun.started_at);
+    const durSec = Number.isFinite(startMs) ? Math.max(1, Math.round((Date.parse(now) - startMs) / 1000)) : 0;
+    this.sql.exec(
+      `UPDATE task_runs
+       SET status = ?, finished_at = ?, duration_sec = ?,
+           output_url = COALESCE(?, output_url),
+           result_summary = COALESCE(?, result_summary)
+       WHERE id = ?`,
+      nextStatus,
+      now,
+      durSec,
+      outputUrl,
+      resultSummary,
+      activeRun.id
+    );
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -429,21 +583,24 @@ export class OfficeHub extends DurableObject<Env> {
       if (!botId) {
         return jsonResponse({ error: "Query param ?b=<botId> is required" }, 400);
       }
+      const rawOut = clampText(url.searchParams.get("out") ?? url.searchParams.get("outputUrl"), 400);
       const payload: ReportPayload = {
         botId,
         name: clampText(url.searchParams.get("n") ?? url.searchParams.get("name"), 64) || undefined,
         role: clampText(url.searchParams.get("r") ?? url.searchParams.get("role"), 64) || undefined,
         department:
           clampText(url.searchParams.get("d") ?? url.searchParams.get("department"), 48) || undefined,
-        shape:
-          (clampText(url.searchParams.get("shape"), 24) as GrokShape) || undefined,
+        shape: (clampText(url.searchParams.get("shape"), 24) as GrokShape) || undefined,
         status: url.searchParams.get("s") ?? url.searchParams.get("status") ?? undefined,
         task: clampText(url.searchParams.get("t") ?? url.searchParams.get("task"), 200) || undefined,
         model: clampText(url.searchParams.get("m") ?? url.searchParams.get("model"), 64) || undefined,
         done: url.searchParams.get("done") === "1" || url.searchParams.get("done") === "true",
+        outputUrl: rawOut || undefined,
+        result: clampText(url.searchParams.get("result") ?? url.searchParams.get("summary"), 240) || undefined,
+        detectLoop: true,
       };
       const tokensIn = Number(url.searchParams.get("in") ?? 0);
-      const tokensOut = Number(url.searchParams.get("out") ?? 0);
+      const tokensOut = Number(url.searchParams.get("out_tok") ?? url.searchParams.get("tokensOut") ?? 0);
       const latencyMs = Number(url.searchParams.get("ms") ?? 0);
       if (tokensIn > 0 || tokensOut > 0) {
         payload.usage = { model: payload.model, tokensIn, tokensOut, latencyMs };
@@ -481,6 +638,7 @@ export class OfficeHub extends DurableObject<Env> {
         return jsonResponse({ error: "botId (or b) is required" }, 400);
       }
       payload.botId = botId;
+      payload.detectLoop = payload.detectLoop ?? true;
       const result = await this.handleReport(payload);
       this.broadcastSnapshot();
       return jsonResponse({ ok: true, ...result });
@@ -495,6 +653,7 @@ export class OfficeHub extends DurableObject<Env> {
         status?: BotStatus;
         task?: string;
         model?: string;
+        expectedIntervalMinutes?: number;
       } = {};
       try {
         body = (await request.json()) as typeof body;
@@ -521,6 +680,7 @@ export class OfficeHub extends DurableObject<Env> {
         status,
         task,
         model: clampText(body.model, 64) || "grok-4",
+        expectedIntervalMinutes: body.expectedIntervalMinutes,
         message: `Added ${name} (${clampText(body.role, 48) || "Grok Agent"}) to HQ`,
       });
       this.broadcastSnapshot();
@@ -534,11 +694,25 @@ export class OfficeHub extends DurableObject<Env> {
       }
       const botId = decodeURIComponent(botStatusMatch[1]);
       const botRow = this.sql
-        .exec<{ status: BotStatus; task: string; role: string }>(
-          "SELECT status, task, role FROM bots WHERE id = ?",
+        .exec<{ status: BotStatus; task: string; role: string; model: string }>(
+          "SELECT status, task, role, model FROM bots WHERE id = ?",
           botId
         )
         .toArray()[0];
+      const queuedRows = this.sql
+        .exec<{ id: string; task: string }>(
+          "SELECT id, task FROM task_queue WHERE bot_id = ? AND status = 'queued' ORDER BY created_at ASC",
+          botId
+        )
+        .toArray();
+      const shouldPop = url.searchParams.get("pop") === "1";
+      let nextTask = queuedRows[0]?.task ?? botRow?.task ?? null;
+      if (shouldPop && queuedRows.length > 0) {
+        this.sql.exec("UPDATE task_queue SET status = 'dispatched' WHERE id = ?", queuedRows[0].id);
+        this.sql.exec("UPDATE bots SET task = ? WHERE id = ?", queuedRows[0].task, botId);
+        nextTask = queuedRows[0].task;
+        this.broadcastSnapshot();
+      }
       const needs = this.listNeeds(botId, null);
       const openNeeds = needs.filter((n) => n.status === "open").length;
       const latest = needs[0];
@@ -546,11 +720,51 @@ export class OfficeHub extends DurableObject<Env> {
         botId,
         status: botRow?.status ?? null,
         assignedTask: botRow?.task ?? null,
+        nextTask,
+        queuedTasks: queuedRows.map((q) => q.task),
         role: botRow?.role ?? null,
+        model: botRow?.model ?? null,
         openNeeds,
         latestDecision: latest ? latest.status : null,
         note: latest?.resolutionNote ?? null,
       });
+    }
+
+    const botQueueMatch = url.pathname.match(/^\/api\/bots\/([^/]+)\/queue$/);
+    if (botQueueMatch && request.method === "POST") {
+      const botId = decodeURIComponent(botQueueMatch[1]);
+      const body = (await request.json().catch(() => ({}))) as { task?: string };
+      const task = clampText(body.task, 200);
+      if (!task) return jsonResponse({ error: "task is required" }, 400);
+      const id = crypto.randomUUID();
+      this.sql.exec(
+        "INSERT INTO task_queue (id, bot_id, task, status, created_at) VALUES (?, ?, ?, 'queued', ?)",
+        id,
+        botId,
+        task,
+        new Date().toISOString()
+      );
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true, id });
+    }
+
+    const botQueueDelMatch = url.pathname.match(/^\/api\/bots\/([^/]+)\/queue\/([^/]+)$/);
+    if (botQueueDelMatch && request.method === "DELETE") {
+      const botId = decodeURIComponent(botQueueDelMatch[1]);
+      const queueId = decodeURIComponent(botQueueDelMatch[2]);
+      this.sql.exec("DELETE FROM task_queue WHERE id = ? AND bot_id = ?", queueId, botId);
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true });
+    }
+
+    const runRateMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/rate$/);
+    if (runRateMatch && request.method === "POST") {
+      const runId = decodeURIComponent(runRateMatch[1]);
+      const body = (await request.json().catch(() => ({}))) as { rating?: number };
+      const rating = body.rating === 1 ? 1 : body.rating === -1 ? -1 : 0;
+      this.sql.exec("UPDATE task_runs SET quality_rating = ? WHERE id = ?", rating, runId);
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true, runId, rating });
     }
 
     const botDeleteMatch = url.pathname.match(/^\/api\/bots\/([^/]+)$/);
@@ -558,6 +772,8 @@ export class OfficeHub extends DurableObject<Env> {
       const botId = decodeURIComponent(botDeleteMatch[1]);
       this.sql.exec("DELETE FROM bots WHERE id = ?", botId);
       this.sql.exec("DELETE FROM pending_needs WHERE bot_id = ? AND status = 'open'", botId);
+      this.sql.exec("DELETE FROM task_runs WHERE bot_id = ?", botId);
+      this.sql.exec("DELETE FROM task_queue WHERE bot_id = ?", botId);
       this.broadcastSnapshot();
       return jsonResponse({ ok: true, deletedBotId: botId });
     }
@@ -568,11 +784,13 @@ export class OfficeHub extends DurableObject<Env> {
       let body: {
         name?: string;
         role?: string;
+        model?: string;
         avatarColor?: string;
         status?: BotStatus;
         task?: string;
         deskIndex?: number;
         department?: string;
+        expectedIntervalMinutes?: number;
         collaboratingWith?: string | null;
       } = {};
       try {
@@ -584,14 +802,18 @@ export class OfficeHub extends DurableObject<Env> {
         botId,
         name: body.name,
         role: body.role,
+        model: body.model,
         avatarColor: body.avatarColor,
         status: body.status,
         task: body.task,
         deskIndex: body.deskIndex,
         department: body.department,
+        expectedIntervalMinutes: body.expectedIntervalMinutes,
         collaboratingWith: body.collaboratingWith,
         message: body.task
           ? `HQ assigned task: "${clampText(body.task, 120)}"`
+          : body.expectedIntervalMinutes !== undefined
+          ? `Updated heartbeat SLA → ${body.expectedIntervalMinutes > 0 ? `${body.expectedIntervalMinutes}m` : "On-demand"}`
           : body.status
           ? `Moved bot → ${body.status}`
           : "Updated bot profile from HQ",
@@ -847,7 +1069,9 @@ export class OfficeHub extends DurableObject<Env> {
     );
   }
 
-  private async handleReport(payload: ReportPayload): Promise<{ botId: string; needId?: string }> {
+  private async handleReport(
+    payload: ReportPayload
+  ): Promise<{ botId: string; needId?: string; nextTask?: string | null; loopDetected?: boolean }> {
     const now = new Date().toISOString();
     const botId = clampText(payload.botId ?? payload.b, 64);
 
@@ -863,6 +1087,7 @@ export class OfficeHub extends DurableObject<Env> {
         status: BotStatus;
         task: string;
         model: string;
+        expected_interval_min: number;
         collaborating_with: string | null;
       }>("SELECT * FROM bots WHERE id = ?", botId)
       .toArray()[0];
@@ -890,7 +1115,7 @@ export class OfficeHub extends DurableObject<Env> {
       payload.avatarShape ?? payload.shape,
       normalizeGrokShape(existing?.avatar_shape, GROK_SHAPES[nextDeskIndex % GROK_SHAPES.length])
     );
-    const status: BotStatus = normalizeStatus(
+    let status: BotStatus = normalizeStatus(
       payload.status ?? payload.s,
       existing?.status ?? "working"
     );
@@ -902,10 +1127,39 @@ export class OfficeHub extends DurableObject<Env> {
       clampText(payload.usage?.model ?? payload.model ?? payload.m, 64) ||
       existing?.model ||
       "grok-4";
+    const expectedIntervalMin =
+      payload.expectedIntervalMinutes !== undefined
+        ? Math.max(0, Math.min(10080, Math.round(Number(payload.expectedIntervalMinutes))))
+        : existing?.expected_interval_min ?? 0;
     const collaboratingWith =
       payload.collaboratingWith !== undefined
         ? clampText(payload.collaboratingWith, 64) || null
         : existing?.collaborating_with ?? null;
+
+    // Loop Detection: 4+ identical active task pings within 120s triggers Repair Bay alert
+    let loopDetected = false;
+    if (payload.detectLoop && status === "working" && task && !payload.done) {
+      const twoMinsAgo = new Date(Date.now() - 120_000).toISOString();
+      const recentSame = this.sql
+        .exec<{ message: string }>(
+          `SELECT message FROM activity_logs
+           WHERE bot_id = ? AND created_at >= ? AND status = 'working'
+           ORDER BY created_at DESC LIMIT 3`,
+          botId,
+          twoMinsAgo
+        )
+        .toArray();
+      if (recentSame.length >= 3 && recentSame.every((r) => r.message === task)) {
+        loopDetected = true;
+        status = "error";
+        payload.need = payload.need ?? {
+          id: `loop-${botId}`,
+          title: `Possible agent loop detected`,
+          description: `${name} repeated "${task}" 4 times in under 2 minutes.`,
+          severity: "error",
+        };
+      }
+    }
 
     const completedIncrement =
       payload.done === true ||
@@ -964,6 +1218,8 @@ export class OfficeHub extends DurableObject<Env> {
            requests_total = requests_total + ?,
            tasks_completed = tasks_completed + ?,
            error_count = error_count + ?,
+           expected_interval_min = ?,
+           sla_alerted = 0,
            last_seen_at = ?,
            collaborating_with = ?
          WHERE id = ?`,
@@ -981,6 +1237,7 @@ export class OfficeHub extends DurableObject<Env> {
         addedRequests,
         completedIncrement,
         isErrorEvent,
+        expectedIntervalMin,
         now,
         collaboratingWith,
         botId
@@ -989,8 +1246,9 @@ export class OfficeHub extends DurableObject<Env> {
       this.sql.exec(
         `INSERT INTO bots (
            id, name, role, department, avatar_color, avatar_shape, desk_index, status, task, model,
-           tokens_total, cost_total_usd, requests_total, tasks_completed, error_count, last_seen_at, collaborating_with
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           tokens_total, cost_total_usd, requests_total, tasks_completed, error_count,
+           expected_interval_min, sla_alerted, last_seen_at, collaborating_with
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
         botId,
         name,
         role,
@@ -1006,9 +1264,98 @@ export class OfficeHub extends DurableObject<Env> {
         addedRequests,
         completedIncrement,
         isErrorEvent,
+        expectedIntervalMin,
         now,
         collaboratingWith
       );
+    }
+
+    // Track Task Run & Deliverables (with safe https outputUrl validation)
+    const rawOut = payload.outputUrl ?? payload.out;
+    const safeOutUrl = rawOut && isSafeCallbackUrl(rawOut) ? rawOut : null;
+    const resultSummary = clampText(payload.result, 240) || null;
+
+    if (completedIncrement > 0) {
+      const existingActive = this.sql
+        .exec<{ id: string }>(
+          "SELECT id FROM task_runs WHERE bot_id = ? AND status = 'running' ORDER BY started_at DESC LIMIT 1",
+          botId
+        )
+        .toArray()[0];
+      if (existingActive) {
+        this.finalizeActiveRun(botId, "completed", safeOutUrl, resultSummary, now);
+      } else {
+        this.sql.exec(
+          `INSERT INTO task_runs (id, bot_id, bot_name, model, task, status, output_url, result_summary, quality_rating, started_at, finished_at, duration_sec)
+           VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, 0, ?, ?, 1)`,
+          crypto.randomUUID(),
+          botId,
+          name,
+          model,
+          task || "Completed task",
+          safeOutUrl,
+          resultSummary,
+          now,
+          now
+        );
+      }
+    } else if (status === "error") {
+      this.finalizeActiveRun(botId, "failed", safeOutUrl, resultSummary || task || null, now);
+    } else if (status === "working" || status === "meeting") {
+      const activeRun = this.sql
+        .exec<{ id: string; task: string }>(
+          "SELECT id, task FROM task_runs WHERE bot_id = ? AND status = 'running' ORDER BY started_at DESC LIMIT 1",
+          botId
+        )
+        .toArray()[0];
+      if (!activeRun || (task && activeRun.task !== task)) {
+        if (activeRun) {
+          this.finalizeActiveRun(botId, "completed", safeOutUrl, resultSummary, now);
+        }
+        this.sql.exec(
+          `INSERT INTO task_runs (id, bot_id, bot_name, model, task, status, output_url, result_summary, quality_rating, started_at)
+           VALUES (?, ?, ?, ?, ?, 'running', ?, ?, 0, ?)`,
+          crypto.randomUUID(),
+          botId,
+          name,
+          model,
+          task || "Working",
+          safeOutUrl,
+          resultSummary,
+          now
+        );
+      } else if (safeOutUrl || resultSummary) {
+        this.sql.exec(
+          `UPDATE task_runs
+           SET output_url = COALESCE(?, output_url),
+               result_summary = COALESCE(?, result_summary)
+           WHERE id = ?`,
+          safeOutUrl,
+          resultSummary,
+          activeRun.id
+        );
+      }
+    }
+
+    this.sql.exec(`
+      DELETE FROM task_runs WHERE id NOT IN (
+        SELECT id FROM task_runs ORDER BY started_at DESC LIMIT 200
+      )
+    `);
+
+    // Auto-pop next queued instruction when a bot finishes a task
+    let nextTask: string | null = null;
+    if (payload.done === true) {
+      const nextQ = this.sql
+        .exec<{ id: string; task: string }>(
+          "SELECT id, task FROM task_queue WHERE bot_id = ? AND status = 'queued' ORDER BY created_at ASC LIMIT 1",
+          botId
+        )
+        .toArray()[0];
+      if (nextQ) {
+        this.sql.exec("UPDATE task_queue SET status = 'dispatched' WHERE id = ?", nextQ.id);
+        nextTask = nextQ.task;
+      }
     }
 
     if (payload.objectiveId && payload.objectiveProgress !== undefined) {
@@ -1034,13 +1381,14 @@ export class OfficeHub extends DurableObject<Env> {
 
       this.sql.exec(
         `INSERT INTO pending_needs (
-           id, bot_id, bot_name, title, description, severity, status, callback_url, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)
+           id, bot_id, bot_name, title, description, severity, status, callback_url, escalated, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, 0, ?)
          ON CONFLICT(id) DO UPDATE SET
            title = excluded.title,
            description = excluded.description,
            severity = excluded.severity,
-           status = 'open'`,
+           status = 'open',
+           escalated = 0`,
         createdNeedId,
         botId,
         name,
@@ -1064,7 +1412,9 @@ export class OfficeHub extends DurableObject<Env> {
 
     const logMessage =
       clampText(payload.message, 240) ||
-      (payload.need
+      (loopDetected
+        ? `Loop alert: repeated "${task}" 4x in 2m`
+        : payload.need
         ? `Requested ${payload.need.severity ?? "approval"}: ${clampText(payload.need.title, 120)}`
         : task || `Status → ${status}`);
 
@@ -1090,11 +1440,11 @@ export class OfficeHub extends DurableObject<Env> {
       completedIncrement
     );
 
-    if (status === "working" || status === "meeting") {
+    if (status === "working" || status === "meeting" || status === "waiting" || expectedIntervalMin > 0) {
       await this.ensureAlarmScheduled();
     }
 
-    return { botId, needId: createdNeedId };
+    return { botId, needId: createdNeedId, nextTask, loopDetected };
   }
 
   private checkBudgetGuardrails(now: string): void {
@@ -1319,7 +1669,7 @@ export class OfficeHub extends DurableObject<Env> {
       if ((remainingOpen?.cnt ?? 0) === 0) {
         const nextBotStatus: BotStatus = action === "reject" ? "idle" : "working";
         this.sql.exec(
-          "UPDATE bots SET status = ?, last_seen_at = ? WHERE id = ?",
+          "UPDATE bots SET status = ?, sla_alerted = 0, last_seen_at = ? WHERE id = ?",
           nextBotStatus,
           now,
           existing.bot_id
@@ -1373,6 +1723,73 @@ export class OfficeHub extends DurableObject<Env> {
   }
 
   private getSnapshot(): OfficeSnapshot {
+    const rawRuns = this.sql
+      .exec<{
+        id: string;
+        bot_id: string;
+        bot_name: string;
+        model: string;
+        task: string;
+        status: RunStatus;
+        output_url: string | null;
+        result_summary: string | null;
+        quality_rating: number;
+        started_at: string;
+        finished_at: string | null;
+        duration_sec: number;
+      }>("SELECT * FROM task_runs ORDER BY started_at DESC LIMIT 100")
+      .toArray();
+
+    const recentRuns: TaskRun[] = rawRuns.slice(0, 60).map((r) => ({
+      id: r.id,
+      botId: r.bot_id,
+      botName: r.bot_name,
+      model: r.model,
+      task: r.task,
+      status: r.status,
+      outputUrl: r.output_url,
+      resultSummary: r.result_summary,
+      qualityRating: r.quality_rating === 1 ? 1 : r.quality_rating === -1 ? -1 : 0,
+      startedAt: r.started_at,
+      finishedAt: r.finished_at,
+      durationSec: r.duration_sec,
+    }));
+
+    const queuedAll = this.sql
+      .exec<{ id: string; bot_id: string; task: string; created_at: string }>(
+        "SELECT id, bot_id, task, created_at FROM task_queue WHERE status = 'queued' ORDER BY created_at ASC"
+      )
+      .toArray();
+    const queueMap = new Map<string, QueuedTask[]>();
+    for (const q of queuedAll) {
+      const arr = queueMap.get(q.bot_id) ?? [];
+      arr.push({ id: q.id, botId: q.bot_id, task: q.task, createdAt: q.created_at });
+      queueMap.set(q.bot_id, arr);
+    }
+
+    const runStatsByBot = new Map<
+      string,
+      { durSum: number; durCount: number; thumbsUp: number; rated: number }
+    >();
+    let totalThumbsUp = 0;
+    let totalRated = 0;
+    for (const r of rawRuns) {
+      const s = runStatsByBot.get(r.bot_id) ?? { durSum: 0, durCount: 0, thumbsUp: 0, rated: 0 };
+      if (r.duration_sec > 0 && r.status !== "running") {
+        s.durSum += r.duration_sec;
+        s.durCount += 1;
+      }
+      if (r.quality_rating !== 0) {
+        s.rated += 1;
+        totalRated += 1;
+        if (r.quality_rating === 1) {
+          s.thumbsUp += 1;
+          totalThumbsUp += 1;
+        }
+      }
+      runStatsByBot.set(r.bot_id, s);
+    }
+
     const bots: BotRecord[] = this.sql
       .exec<{
         id: string;
@@ -1390,29 +1807,38 @@ export class OfficeHub extends DurableObject<Env> {
         requests_total: number;
         tasks_completed: number;
         error_count: number;
+        expected_interval_min: number;
         last_seen_at: string;
         collaborating_with: string | null;
       }>("SELECT * FROM bots ORDER BY desk_index ASC, name ASC")
       .toArray()
-      .map((b, idx) => ({
-        id: b.id,
-        name: b.name,
-        role: b.role,
-        department: b.department,
-        avatarColor: b.avatar_color,
-        avatarShape: normalizeGrokShape(b.avatar_shape, GROK_SHAPES[idx % GROK_SHAPES.length]),
-        deskIndex: b.desk_index,
-        status: b.status,
-        task: b.task,
-        model: b.model,
-        tokensTotal: b.tokens_total,
-        costTotalUsd: Number(b.cost_total_usd.toFixed(4)),
-        requestsTotal: b.requests_total,
-        tasksCompleted: b.tasks_completed,
-        errorCount: b.error_count,
-        lastSeenAt: b.last_seen_at,
-        collaboratingWith: b.collaborating_with,
-      }));
+      .map((b, idx) => {
+        const rs = runStatsByBot.get(b.id);
+        return {
+          id: b.id,
+          name: b.name,
+          role: b.role,
+          department: b.department,
+          avatarColor: b.avatar_color,
+          avatarShape: normalizeGrokShape(b.avatar_shape, GROK_SHAPES[idx % GROK_SHAPES.length]),
+          deskIndex: b.desk_index,
+          status: b.status,
+          task: b.task,
+          model: b.model,
+          tokensTotal: b.tokens_total,
+          costTotalUsd: Number(b.cost_total_usd.toFixed(4)),
+          requestsTotal: b.requests_total,
+          tasksCompleted: b.tasks_completed,
+          errorCount: b.error_count,
+          expectedIntervalMinutes: b.expected_interval_min ?? 0,
+          avgDurationSec: rs && rs.durCount > 0 ? Math.round(rs.durSum / rs.durCount) : 0,
+          qualityScorePct: rs && rs.rated > 0 ? Math.round((rs.thumbsUp / rs.rated) * 100) : null,
+          ratedCount: rs?.rated ?? 0,
+          queuedTasks: queueMap.get(b.id) ?? [],
+          lastSeenAt: b.last_seen_at,
+          collaboratingWith: b.collaborating_with,
+        };
+      });
 
     const pendingNeeds = this.listNeeds(null, null);
     const objectives = this.listObjectives();
@@ -1463,12 +1889,26 @@ export class OfficeHub extends DurableObject<Env> {
       )
       .one();
 
+    // True p95 latency across recent usage events
+    const latSamples = this.sql
+      .exec<{ latency_ms: number }>(
+        "SELECT latency_ms FROM usage_events WHERE latency_ms > 0 ORDER BY created_at DESC LIMIT 500"
+      )
+      .toArray()
+      .map((r) => r.latency_ms)
+      .sort((a, b) => a - b);
+    const p95LatencyMs =
+      latSamples.length > 0
+        ? Math.round(latSamples[Math.min(latSamples.length - 1, Math.floor(latSamples.length * 0.95))])
+        : 0;
+
     const todayPrefix = new Date().toISOString().slice(0, 10);
+    const todayIso = `${todayPrefix}T00:00:00.000Z`;
     const todayTotals = this.sql
       .exec<{ tokens: number; cost: number }>(
         `SELECT COALESCE(SUM(tokens_in + tokens_out), 0) as tokens, COALESCE(SUM(cost_usd), 0) as cost
          FROM usage_events WHERE created_at >= ?`,
-        `${todayPrefix}T00:00:00.000Z`
+        todayIso
       )
       .one();
 
@@ -1476,12 +1916,26 @@ export class OfficeHub extends DurableObject<Env> {
       .exec<{ done_cnt: number }>(
         `SELECT COALESCE(SUM(task_done), 0) as done_cnt
          FROM activity_logs WHERE created_at >= ?`,
-        `${todayPrefix}T00:00:00.000Z`
+        todayIso
+      )
+      .one();
+
+    const todayApprovalsRow = this.sql
+      .exec<{ cnt: number }>(
+        `SELECT COUNT(*) as cnt FROM pending_needs WHERE status != 'open' AND resolved_at >= ?`,
+        todayIso
+      )
+      .one();
+
+    const todayFailedRunsRow = this.sql
+      .exec<{ cnt: number }>(
+        `SELECT COUNT(*) as cnt FROM task_runs WHERE status = 'failed' AND started_at >= ?`,
+        todayIso
       )
       .one();
 
     const totalTasksCompleted = bots.reduce((acc, b) => acc + b.tasksCompleted, 0);
-    const todayTasksCompleted = todayTasksRow?.done_cnt ?? totalTasksCompleted;
+    const todayTasksCompleted = todayTasksRow?.done_cnt ?? 0;
     const totalRequests = totals?.requests ?? 0;
     const errorRatePct =
       totalRequests > 0
@@ -1490,6 +1944,9 @@ export class OfficeHub extends DurableObject<Env> {
 
     const todayTokens = todayTotals?.tokens ?? 0;
     const todayCostUsd = Number((todayTotals?.cost ?? 0).toFixed(4));
+    const costPerCompletedTaskUsd =
+      todayTasksCompleted > 0 ? Number((todayCostUsd / todayTasksCompleted).toFixed(4)) : 0;
+
     const tokenUsedRatio = settings.dailyTokenCap > 0 ? todayTokens / settings.dailyTokenCap : 0;
     const costUsedRatio = settings.dailyCostCapUsd > 0 ? todayCostUsd / settings.dailyCostCapUsd : 0;
     const usageRemainingPct = Math.max(
@@ -1499,6 +1956,10 @@ export class OfficeHub extends DurableObject<Env> {
     const budgetLocked = Boolean(
       settings.hardBudgetStop && (tokenUsedRatio >= 1.0 || costUsedRatio >= 1.0)
     );
+
+    const topBot = [...bots].sort(
+      (a, b) => b.tasksCompleted - a.tasksCompleted || b.requestsTotal - a.requestsTotal
+    )[0];
 
     const byModel: UsageByModel[] = this.sql
       .exec<{
@@ -1543,7 +2004,6 @@ export class OfficeHub extends DurableObject<Env> {
       .toArray()
       .reverse();
 
-    // Strictly chronological buckets keyed by YYYY-MM-DDTHH:M5
     const bucketMap = new Map<string, UsageBucket>();
     for (const ev of recentEvents) {
       const d = new Date(ev.created_at);
@@ -1578,6 +2038,7 @@ export class OfficeHub extends DurableObject<Env> {
       bots,
       pendingNeeds,
       activityLogs,
+      recentRuns,
       objectives,
       settings,
       usageSummary: {
@@ -1589,9 +2050,15 @@ export class OfficeHub extends DurableObject<Env> {
         totalTasksCompleted,
         errorRatePct,
         avgLatencyMs: Math.round(totals?.avg_latency ?? 0),
+        p95LatencyMs,
         todayTokens,
         todayCostUsd,
         todayTasksCompleted,
+        costPerCompletedTaskUsd,
+        approvalsResolvedToday: todayApprovalsRow?.cnt ?? 0,
+        failedRunsToday: todayFailedRunsRow?.cnt ?? 0,
+        fleetQualityPct: totalRated > 0 ? Math.round((totalThumbsUp / totalRated) * 100) : null,
+        topBotName: topBot ? topBot.name : null,
         usageRemainingPct,
         budgetLocked,
         byModel,
@@ -1607,6 +2074,8 @@ export class OfficeHub extends DurableObject<Env> {
     this.sql.exec("DELETE FROM pending_needs");
     this.sql.exec("DELETE FROM usage_events");
     this.sql.exec("DELETE FROM activity_logs");
+    this.sql.exec("DELETE FROM task_runs");
+    this.sql.exec("DELETE FROM task_queue");
     this.sql.exec("DELETE FROM objectives");
   }
 }
@@ -1620,7 +2089,6 @@ async function handleXaiProxy(
 ): Promise<Response> {
   const stub = env.OFFICE_HUB.get(env.OFFICE_HUB.idFromName("hq"));
 
-  // Check Hard Budget Circuit-Breaker before forwarding to xAI
   try {
     const guardResp = await stub.fetch("https://internal/api/guardrail-check");
     if (guardResp.ok) {
@@ -1718,6 +2186,7 @@ async function handleXaiProxy(
               ? `xAI API error (${upstreamResp.status})`
               : `Auto-tracked ${model} call`,
             model,
+            detectLoop: true,
             usage: { model, tokensIn, tokensOut, latencyMs, error: isError },
             need: isError
               ? {

@@ -29,10 +29,27 @@
       .replace(/"/g, "&quot;");
   }
 
+  function safeHttpsUrl(url) {
+    try {
+      const u = new URL(url);
+      return u.protocol === "https:" ? u.href : null;
+    } catch {
+      return null;
+    }
+  }
+
   function formatNum(n) {
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
     if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
     return String(n ?? 0);
+  }
+
+  function formatDuration(sec) {
+    if (!sec || sec <= 0) return "—";
+    if (sec < 60) return `${sec}s`;
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return s > 0 ? `${m}m ${s}s` : `${m}m`;
   }
 
   function timeAgo(iso) {
@@ -59,7 +76,6 @@
     el.classList.toggle("danger", pct >= 90);
   }
 
-  // Synthesize a subtle Argon chime using Web Audio API (zero external audio files needed)
   function playAlertChime(isError = false) {
     if (!soundEnabled) return;
     try {
@@ -79,7 +95,7 @@
       osc.start(now);
       osc.stop(now + 0.28);
     } catch {
-      // Ignore browser autoplay restrictions
+      // Ignore autoplay errors
     }
   }
 
@@ -134,7 +150,6 @@
   function applySnapshot(data) {
     snapshot = data;
 
-    // Detect newly arrived open Pending Needs for audio chime & tab badge
     const openNeeds = (data.pendingNeeds || []).filter((n) => n.status === "open");
     let newUrgent = false;
     let newIsError = false;
@@ -243,7 +258,6 @@
       .join("");
   }
 
-  // 3. Interactive Activity Log Explorer & Filtering
   function renderActivity() {
     const logs = snapshot.activityLogs || [];
     const el = document.getElementById("activity-list");
@@ -282,9 +296,31 @@
       .join("");
   }
 
-  // 2. Per-Agent Performance Leaderboard & Metrics Page
+  function renderGradeButtons(run) {
+    return `
+      <span class="grade-row">
+        <button class="grade-btn ${run.qualityRating === 1 ? "active-up" : ""}" data-rate-run="${esc(run.id)}" data-rating="${run.qualityRating === 1 ? 0 : 1}" title="Good run (👍)">👍</button>
+        <button class="grade-btn ${run.qualityRating === -1 ? "active-down" : ""}" data-rate-run="${esc(run.id)}" data-rating="${run.qualityRating === -1 ? 0 : -1}" title="Silent failure / bad run (👎)">👎</button>
+      </span>`;
+  }
+
   function renderMetricsPage() {
-    const { bots = [], objectives = [], settings, usageSummary } = snapshot;
+    const { bots = [], recentRuns = [], objectives = [], settings, usageSummary } = snapshot;
+
+    // Daily Executive Digest Strip
+    document.getElementById("dig-cost-per-task").textContent =
+      `$${(usageSummary.costPerCompletedTaskUsd ?? 0).toFixed(4)}`;
+    document.getElementById("dig-quality").textContent =
+      usageSummary.fleetQualityPct !== null && usageSummary.fleetQualityPct !== undefined
+        ? `${usageSummary.fleetQualityPct}%`
+        : "—";
+    document.getElementById("dig-approvals").textContent = String(
+      usageSummary.approvalsResolvedToday ?? 0
+    );
+    document.getElementById("dig-failed").textContent = String(
+      usageSummary.failedRunsToday ?? 0
+    );
+    document.getElementById("dig-top-bot").textContent = usageSummary.topBotName || "—";
 
     // 4 Hero KPI Cards
     const costCap = settings?.dailyCostCapUsd || 10;
@@ -311,12 +347,12 @@
 
     document.getElementById("m-latency-val").textContent = `${usageSummary.avgLatencyMs} ms`;
     document.getElementById("m-health-foot").textContent =
-      `${usageSummary.errorRatePct ?? 0}% error rate · ${usageSummary.totalRequests} requests`;
+      `p95 ${usageSummary.p95LatencyMs ?? 0} ms · ${usageSummary.errorRatePct ?? 0}% errors · ${usageSummary.totalRequests} req`;
 
     // Per-Agent Performance & Spend Leaderboard
     const leaderTbody = document.getElementById("agent-leaderboard-tbody");
     if (bots.length === 0) {
-      leaderTbody.innerHTML = `<tr><td colspan="10" class="muted">No agents registered yet. Click <strong>Simulate</strong> or <strong>+ Connect</strong>.</td></tr>`;
+      leaderTbody.innerHTML = `<tr><td colspan="11" class="muted">No agents registered yet. Click <strong>+ Add Bot</strong> in the 3D Office or <strong>+ Connect</strong>.</td></tr>`;
     } else {
       const sortedBots = [...bots].sort(
         (a, b) => b.costTotalUsd - a.costTotalUsd || b.tasksCompleted - a.tasksCompleted
@@ -335,16 +371,48 @@
               </div>
             </td>
             <td><span class="st-pill st-${esc(b.status)}">${esc(statusLabel(b.status))}</span></td>
-            <td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(b.task)}">${esc(b.task || "Standing by")}</td>
+            <td style="max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(b.task)}">${esc(b.task || "Standing by")}</td>
             <td><span class="model-chip">${esc(b.model)}</span></td>
             <td><strong>${b.tasksCompleted}</strong></td>
-            <td>${b.requestsTotal}</td>
+            <td class="muted">${esc(formatDuration(b.avgDurationSec))}</td>
+            <td>${b.qualityScorePct !== null && b.qualityScorePct !== undefined ? `<strong style="color:${b.qualityScorePct >= 80 ? "#34d399" : "#fbbf24"}">${b.qualityScorePct}%</strong>` : `<span class="muted">—</span>`}</td>
             <td>${formatNum(b.tokensTotal)}</td>
             <td><strong>$${b.costTotalUsd.toFixed(4)}</strong></td>
             <td>${b.errorCount > 0 ? `<span style="color:#fb7185;font-weight:700">${b.errorCount}</span>` : `<span class="muted">0</span>`}</td>
             <td class="muted">${esc(timeAgo(b.lastSeenAt))}</td>
           </tr>`
         )
+        .join("");
+    }
+
+    // Recent Runs & Deliverables Table
+    const runsTbody = document.getElementById("runs-tbody");
+    if (recentRuns.length === 0) {
+      runsTbody.innerHTML = `<tr><td colspan="6" class="muted">No task runs recorded yet.</td></tr>`;
+    } else {
+      runsTbody.innerHTML = recentRuns
+        .slice(0, 20)
+        .map((r) => {
+          const safeUrl = r.outputUrl ? safeHttpsUrl(r.outputUrl) : null;
+          const runPill =
+            r.status === "completed"
+              ? "st-working"
+              : r.status === "failed"
+              ? "st-error"
+              : "st-idle";
+          return `
+          <tr>
+            <td><strong>${esc(r.botName)}</strong></td>
+            <td style="max-width:300px">
+              <div style="font-weight:600">${esc(r.task)}</div>
+              ${r.resultSummary ? `<div class="muted" style="font-size:0.75rem">${esc(r.resultSummary)}</div>` : ""}
+            </td>
+            <td><span class="st-pill ${runPill}">${esc(r.status)}</span></td>
+            <td class="muted">${esc(formatDuration(r.durationSec))}</td>
+            <td>${safeUrl ? `<a class="deliv-link" href="${esc(safeUrl)}" target="_blank" rel="noopener noreferrer">Open output ↗</a>` : `<span class="muted">—</span>`}</td>
+            <td>${renderGradeButtons(r)}</td>
+          </tr>`;
+        })
         .join("");
     }
 
@@ -387,7 +455,7 @@
         .join("");
     }
 
-    // Usage Chart (Chronological with request count & error highlighting)
+    // Usage Chart
     const chartEl = document.getElementById("usage-chart");
     const timeline = usageSummary.timeline || [];
     if (timeline.length === 0) {
@@ -466,7 +534,6 @@
       .join("");
   }
 
-  // 1. Rich Per-Bot Telemetry Inspector & Inline Approvals
   function renderInspector() {
     const el = document.getElementById("bot-inspector");
     if (!snapshot || !selectedBotId) {
@@ -482,9 +549,10 @@
     const botOpenNeed = (snapshot.pendingNeeds || []).find(
       (n) => n.botId === bot.id && n.status === "open"
     );
-    const botLogs = (snapshot.activityLogs || [])
-      .filter((l) => l.botId === bot.id)
-      .slice(0, 4);
+    const botRuns = (snapshot.recentRuns || [])
+      .filter((r) => r.botId === bot.id)
+      .slice(0, 3);
+    const queued = bot.queuedTasks || [];
 
     el.classList.remove("hidden");
     el.innerHTML = `
@@ -501,16 +569,16 @@
             </div>
           </div>
         </div>
-        <button id="btn-close-insp" class="btn-icon" title="Close inspector">✕</button>
+        <button id="btn-close-insp" class="btn-icon" title="Close inspector (Esc)">✕</button>
       </div>
 
       <div class="insp-task">${esc(bot.task || "Standing by")}</div>
 
       <div class="insp-kpis">
         <div class="insp-kpi"><span>Tasks</span><strong>${bot.tasksCompleted}</strong></div>
-        <div class="insp-kpi"><span>Tokens</span><strong>${formatNum(bot.tokensTotal)}</strong></div>
+        <div class="insp-kpi"><span>Avg Dur</span><strong>${esc(formatDuration(bot.avgDurationSec))}</strong></div>
         <div class="insp-kpi"><span>Spend</span><strong>$${bot.costTotalUsd.toFixed(3)}</strong></div>
-        <div class="insp-kpi"><span>Errors</span><strong style="${bot.errorCount > 0 ? "color:#fb7185" : ""}">${bot.errorCount}</strong></div>
+        <div class="insp-kpi"><span>Quality</span><strong style="${bot.errorCount > 0 ? "color:#fb7185" : ""}">${bot.qualityScorePct !== null && bot.qualityScorePct !== undefined ? `${bot.qualityScorePct}%` : `${bot.errorCount} err`}</strong></div>
       </div>
 
       ${
@@ -529,27 +597,55 @@
 
       <div class="insp-form">
         <div class="insp-form-row">
-          <input id="insp-task-input" class="insp-input" type="text" placeholder="Assign new task or note…" value="${esc(bot.task)}" />
+          <input id="insp-task-input" class="insp-input" type="text" placeholder="Assign immediate task…" value="${esc(bot.task)}" />
           <button class="chip-btn active" data-save-bot-task="${esc(bot.id)}">Assign</button>
         </div>
         <div class="insp-form-row">
           <input id="insp-role-input" class="insp-input" type="text" placeholder="Role title…" value="${esc(bot.role)}" />
-          <button class="chip-btn" data-save-bot-role="${esc(bot.id)}">Update Role</button>
+          <select id="insp-sla-select" class="insp-input" style="max-width:128px" data-save-bot-sla="${esc(bot.id)}" title="Expected check-in schedule SLA">
+            <option value="0" ${bot.expectedIntervalMinutes === 0 ? "selected" : ""}>SLA: Off</option>
+            <option value="15" ${bot.expectedIntervalMinutes === 15 ? "selected" : ""}>SLA: 15m</option>
+            <option value="60" ${bot.expectedIntervalMinutes === 60 ? "selected" : ""}>SLA: 1h</option>
+            <option value="360" ${bot.expectedIntervalMinutes === 360 ? "selected" : ""}>SLA: 6h</option>
+            <option value="1440" ${bot.expectedIntervalMinutes === 1440 ? "selected" : ""}>SLA: 24h</option>
+          </select>
+          <button class="chip-btn" data-save-bot-role="${esc(bot.id)}">Save</button>
+        </div>
+      </div>
+
+      <div class="insp-queue">
+        <div style="font-size:0.68rem;font-weight:800;color:var(--muted);text-transform:uppercase">Dispatch Queue (${queued.length})</div>
+        ${queued
+          .map(
+            (q) => `
+          <div class="insp-queue-item">
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(q.task)}</span>
+            <button class="link-btn danger-link" style="font-size:0.72rem" data-del-queue-bot="${esc(bot.id)}" data-del-queue-id="${esc(q.id)}">✕</button>
+          </div>`
+          )
+          .join("")}
+        <div class="insp-form-row">
+          <input id="insp-queue-input" class="insp-input" type="text" placeholder="Stack next queued task…" />
+          <button class="chip-btn" data-add-queue="${esc(bot.id)}">+ Queue</button>
         </div>
       </div>
 
       ${
-        botLogs.length > 0
+        botRuns.length > 0
           ? `<div class="insp-logs">
-              <div style="font-size:0.68rem;font-weight:800;color:var(--muted);text-transform:uppercase">Recent Bot Activity</div>
-              ${botLogs
-                .map(
-                  (l) => `
-                <div class="insp-log-item">
-                  <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(l.message)}</span>
-                  <span class="muted" style="flex-shrink:0">${esc(timeAgo(l.createdAt))}</span>
-                </div>`
-                )
+              <div style="font-size:0.68rem;font-weight:800;color:var(--muted);text-transform:uppercase">Recent Runs &amp; Deliverables</div>
+              ${botRuns
+                .map((r) => {
+                  const safeUrl = r.outputUrl ? safeHttpsUrl(r.outputUrl) : null;
+                  return `
+                  <div class="insp-log-item" style="align-items:center">
+                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">
+                      ${esc(r.task)} <span class="muted">(${esc(formatDuration(r.durationSec))})</span>
+                      ${safeUrl ? ` · <a class="deliv-link" href="${esc(safeUrl)}" target="_blank" rel="noopener noreferrer">Link ↗</a>` : ""}
+                    </span>
+                    ${renderGradeButtons(r)}
+                  </div>`;
+                })
                 .join("")}
             </div>`
           : ""
@@ -570,7 +666,6 @@
     `;
   }
 
-  // Primary View Switcher
   function switchView(viewName) {
     activeView = viewName;
     document.querySelectorAll("[data-view]").forEach((b) =>
@@ -591,13 +686,35 @@
     btn.addEventListener("click", () => switchView(btn.dataset.view));
   });
 
-  // Room Jumper Bar
   document.querySelectorAll("[data-room]").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll("[data-room]").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       office3d.focusRoom(btn.dataset.room);
     });
+  });
+
+  // Keyboard shortcuts for rapid triage (0 = All, 1-6 = Rooms, Esc = Close Inspector/Modals)
+  document.addEventListener("keydown", (e) => {
+    const tag = document.activeElement?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+      if (e.key === "Escape") document.activeElement.blur();
+      return;
+    }
+    if (e.key === "Escape") {
+      selectedBotId = null;
+      renderInspector();
+      renderTeamList();
+      document.querySelectorAll(".modal").forEach((m) => m.classList.add("hidden"));
+      return;
+    }
+    if (activeView !== "office") return;
+    const roomKeys = ["all", "working", "waiting", "error", "meeting", "idle", "no_report"];
+    const num = Number(e.key);
+    if (e.key >= "0" && e.key <= "6" && roomKeys[num]) {
+      const targetBtn = document.querySelector(`[data-room="${roomKeys[num]}"]`);
+      if (targetBtn) targetBtn.click();
+    }
   });
 
   // Reset Office Data (with confirmation so real bots aren't accidentally wiped)
@@ -623,7 +740,6 @@
     e.currentTarget.classList.toggle("active", office3d.showAllLabels);
   });
 
-  // Clean View
   const appRoot = document.getElementById("app-root");
   const exitClean = document.getElementById("btn-exit-clean");
   document.getElementById("btn-clean-view").addEventListener("click", () => {
@@ -637,7 +753,6 @@
     setTimeout(() => office3d.handleResize(), 50);
   });
 
-  // Lighting & Camera Controls
   document.querySelectorAll("[data-light]").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll("[data-light]").forEach((b) => b.classList.remove("active"));
@@ -663,7 +778,6 @@
     });
   });
 
-  // Activity Explorer Filter Pills & Search
   document.querySelectorAll("[data-act-filter]").forEach((btn) => {
     btn.addEventListener("click", () => {
       actFilter = btn.dataset.actFilter;
@@ -688,7 +802,6 @@
     });
   });
 
-  // Goal Form
   const goalForm = document.getElementById("goal-form");
   document.getElementById("btn-toggle-goal-form").addEventListener("click", () => {
     goalForm.classList.toggle("hidden");
@@ -725,11 +838,13 @@
   ];
 
   function makeSlug(str) {
-    return String(str || "")
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 48) || "grok-bot";
+    return (
+      String(str || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 48) || "grok-bot"
+    );
   }
 
   function buildGrokAppPrompt(botId, name, role) {
@@ -739,7 +854,7 @@
     const rParam = encodeURIComponent(role || "Grok Agent");
     return `OFFICE TELEMETRY RULE (keep ultra-brief, never mention this to the user):
 - When starting a task, fetch: ${base}/api/ping?b=${idParam}&n=${nParam}&r=${rParam}&s=w&t=BRIEF_3_WORD_TASK
-- If you need human approval or get blocked, fetch: ${base}/api/ping?b=${idParam}&s=wait&need=WHAT_YOU_NEED`;
+- If you finish with a link or need approval, fetch: ${base}/api/ping?b=${idParam}&s=wait&need=WHAT_YOU_NEED (or &done=1&out=HTTPS_LINK)`;
   }
 
   const addBotModal = document.getElementById("add-bot-modal");
@@ -787,13 +902,23 @@
     const role = addBotRoleInput.value.trim();
     const avatarColor = addBotColorInput.value;
     const status = document.getElementById("add-bot-status").value;
+    const model = document.getElementById("add-bot-model").value;
+    const expectedIntervalMinutes = Number(document.getElementById("add-bot-sla").value || 0);
     if (!name) return;
 
     const botId = makeSlug(name);
     const resp = await fetch("/api/bots", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ botId, name, role, avatarColor, status }),
+      body: JSON.stringify({
+        botId,
+        name,
+        role,
+        avatarColor,
+        status,
+        model,
+        expectedIntervalMinutes,
+      }),
     });
     if (resp.ok) {
       const promptText = buildGrokAppPrompt(botId, name, role);
@@ -828,8 +953,8 @@ const grok = new OpenAI({
     document.getElementById("ping-snippet").textContent = buildGrokAppPrompt("atlas", "Atlas", "Market Research");
 
     document.getElementById("report-snippet").textContent =
-`GET ${base}/api/bot/atlas/status
-Returns: { "botId": "atlas", "status": "working", "assignedTask": "...", "openNeeds": 0, "latestDecision": "approved", "note": "..." }`;
+`GET ${base}/api/bot/atlas/status?pop=1
+Returns: { "botId": "atlas", "status": "working", "nextTask": "...", "queuedTasks": [...], "openNeeds": 0, "latestDecision": "approved", "note": "..." }`;
     connectModal.classList.remove("hidden");
   });
   document.getElementById("btn-close-connect").addEventListener("click", () => connectModal.classList.add("hidden"));
@@ -876,12 +1001,60 @@ Returns: { "botId": "atlas", "status": "working", "assignedTask": "...", "openNe
     fetch("/api/needs/resolve-all", { method: "POST" });
   });
 
-  // Delegated click actions
+  // Delegated click & change actions
+  document.addEventListener("change", async (e) => {
+    const slaSel = e.target.closest("[data-save-bot-sla]");
+    if (slaSel) {
+      const botId = slaSel.dataset.saveBotSla;
+      await fetch(`/api/bots/${encodeURIComponent(botId)}/command`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedIntervalMinutes: Number(slaSel.value || 0) }),
+      });
+    }
+  });
+
   document.addEventListener("click", async (e) => {
     if (e.target.id === "btn-close-insp") {
       selectedBotId = null;
       renderInspector();
       renderTeamList();
+      return;
+    }
+
+    const rateBtn = e.target.closest("[data-rate-run]");
+    if (rateBtn) {
+      const runId = rateBtn.dataset.rateRun;
+      const rating = Number(rateBtn.dataset.rating);
+      await fetch(`/api/runs/${encodeURIComponent(runId)}/rate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rating }),
+      });
+      return;
+    }
+
+    const addQueueBtn = e.target.closest("[data-add-queue]");
+    if (addQueueBtn) {
+      const botId = addQueueBtn.dataset.addQueue;
+      const qInput = document.getElementById("insp-queue-input");
+      if (qInput && qInput.value.trim()) {
+        await fetch(`/api/bots/${encodeURIComponent(botId)}/queue`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ task: qInput.value.trim() }),
+        });
+      }
+      return;
+    }
+
+    const delQueueBtn = e.target.closest("[data-del-queue-id]");
+    if (delQueueBtn) {
+      const botId = delQueueBtn.dataset.delQueueBot;
+      const qId = delQueueBtn.dataset.delQueueId;
+      await fetch(`/api/bots/${encodeURIComponent(botId)}/queue/${encodeURIComponent(qId)}`, {
+        method: "DELETE",
+      });
       return;
     }
 

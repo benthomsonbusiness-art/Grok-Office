@@ -8,6 +8,8 @@ export type LogLevel = "info" | "warn" | "error" | "success";
 
 export type ObjectiveStatus = "active" | "completed" | "blocked";
 
+export type RunStatus = "running" | "completed" | "failed" | "waiting";
+
 export type GrokShape =
   | "circle"
   | "pebble"
@@ -17,6 +19,28 @@ export type GrokShape =
   | "hexagon"
   | "cloud"
   | "droplet";
+
+export interface QueuedTask {
+  id: string;
+  botId: string;
+  task: string;
+  createdAt: string;
+}
+
+export interface TaskRun {
+  id: string;
+  botId: string;
+  botName: string;
+  model: string;
+  task: string;
+  status: RunStatus;
+  outputUrl: string | null;
+  resultSummary: string | null;
+  qualityRating: -1 | 0 | 1;
+  startedAt: string;
+  finishedAt: string | null;
+  durationSec: number;
+}
 
 export interface BotRecord {
   id: string;
@@ -34,6 +58,11 @@ export interface BotRecord {
   requestsTotal: number;
   tasksCompleted: number;
   errorCount: number;
+  expectedIntervalMinutes: number;
+  avgDurationSec: number;
+  qualityScorePct: number | null;
+  ratedCount: number;
+  queuedTasks: QueuedTask[];
   lastSeenAt: string;
   collaboratingWith: string | null;
 }
@@ -104,6 +133,7 @@ export interface OfficeSnapshot {
   bots: BotRecord[];
   pendingNeeds: PendingNeed[];
   activityLogs: ActivityLog[];
+  recentRuns: TaskRun[];
   objectives: Objective[];
   settings: OfficeSettings;
   usageSummary: {
@@ -115,9 +145,15 @@ export interface OfficeSnapshot {
     totalTasksCompleted: number;
     errorRatePct: number;
     avgLatencyMs: number;
+    p95LatencyMs: number;
     todayTokens: number;
     todayCostUsd: number;
     todayTasksCompleted: number;
+    costPerCompletedTaskUsd: number;
+    approvalsResolvedToday: number;
+    failedRunsToday: number;
+    fleetQualityPct: number | null;
+    topBotName: string | null;
     usageRemainingPct: number;
     budgetLocked: boolean;
     byModel: UsageByModel[];
@@ -145,6 +181,11 @@ export interface ReportPayload {
   model?: string;
   m?: string;
   done?: boolean;
+  outputUrl?: string;
+  out?: string;
+  result?: string;
+  expectedIntervalMinutes?: number;
+  detectLoop?: boolean;
   simulated?: boolean;
   collaboratingWith?: string | null;
   message?: string;
