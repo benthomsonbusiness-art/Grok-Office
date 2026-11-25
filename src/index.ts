@@ -10,6 +10,15 @@ import {
   withSecurityHeaders,
 } from "./security";
 import { connectionLink } from "./link";
+import {
+  UNAUTHORIZED_REPORT_BODY,
+  UNAUTHORIZED_REPORT_STATUS,
+  decideReportAccess,
+  readReportBotId,
+} from "./reportAuth";
+import { renderOfficePasswordPage } from "./passwordGate";
+import { runProxyGuard } from "./proxyGuard";
+import { redactAlertWebhook } from "./settingsRedact";
 import type {
   ActivityLog,
   BotOrders,
@@ -36,9 +45,7 @@ import type {
   UsageByModel,
 } from "./types";
 
-export interface Env {
-  OFFICE_HUB: DurableObjectNamespace<OfficeHub>;
-  ASSETS: Fetcher;
+export interface Env extends Cloudflare.Env {
   REPORT_SECRET?: string;
   OFFICE_PASSWORD?: string;
   AI_GATEWAY_BASE_URL?: string;
@@ -113,6 +120,7 @@ const DEFAULT_SETTINGS: OfficeSettings = {
   autoIdleMinutes: 5,
   hardBudgetStop: false,
   alertWebhookUrl: "",
+  alertWebhookConfigured: false,
 };
 
 const DEPARTMENTS = [
@@ -153,18 +161,22 @@ function jsonResponse(data: unknown, status = 200): Response {
   });
 }
 
-async function isReportAuthorized(request: Request, env: Env): Promise<boolean> {
-  if (!env.REPORT_SECRET) return true;
+function reportAuthInput(
+  request: Request,
+  env: Env,
+  botId: string | null,
+  ownedCheckinToken: string | null
+) {
   const url = new URL(request.url);
-  const auth = request.headers.get("authorization");
-  const bearerMatch = auth?.match(/^Bearer\s+(.+)$/i);
-  const candidate =
-    (bearerMatch ? bearerMatch[1].trim() : null) ??
-    request.headers.get("x-report-secret")?.trim() ??
-    url.searchParams.get("token")?.trim() ??
-    "";
-  if (!candidate) return false;
-  return timingSafeEqualStrings(candidate, env.REPORT_SECRET);
+  return {
+    reportSecret: env.REPORT_SECRET,
+    authorizationHeader: request.headers.get("authorization"),
+    reportSecretHeader: request.headers.get("x-report-secret"),
+    tokenQuery: url.searchParams.get("token"),
+    pathname: url.pathname,
+    botId,
+    ownedCheckinToken,
+  };
 }
 
 export class OfficeHub extends DurableObject<Env> {
@@ -333,6 +345,15 @@ export class OfficeHub extends DurableObject<Env> {
     if (!botCols.includes("sla_alerted")) {
       this.sql.exec("ALTER TABLE bots ADD COLUMN sla_alerted INTEGER NOT NULL DEFAULT 0");
     }
+    if (!botCols.includes("checkin_token")) {
+      this.sql.exec("ALTER TABLE bots ADD COLUMN checkin_token TEXT NOT NULL DEFAULT ''");
+    }
+    const missingTokens = this.sql
+      .exec<{ id: string }>("SELECT id FROM bots WHERE checkin_token IS NULL OR trim(checkin_token) = ''")
+      .toArray();
+    for (const row of missingTokens) {
+      this.sql.exec("UPDATE bots SET checkin_token = ? WHERE id = ?", crypto.randomUUID(), row.id);
+    }
 
     const needCols = this.sql
       .exec<{ name: string }>("PRAGMA table_info(pending_needs)")
@@ -427,6 +448,16 @@ export class OfficeHub extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
+    try {
+      await this.runAlarm();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Office alarm failed";
+      console.log(JSON.stringify({ event: "office_alarm_error", message }));
+      throw err;
+    }
+  }
+
+  private async runAlarm(): Promise<void> {
     const settings = this.getSettings();
     const nowMs = Date.now();
     const idleCutoffMs = nowMs - Math.max(1, settings.autoIdleMinutes) * 60_000;
@@ -642,10 +673,12 @@ export class OfficeHub extends DurableObject<Env> {
     }
 
     if (url.pathname === "/api/ping" && (request.method === "GET" || request.method === "POST")) {
-      if (!(await isReportAuthorized(request, this.env))) {
-        return jsonResponse({ error: "Unauthorized" }, 401);
+      const botId = clampText(readReportBotId(url.searchParams), 64);
+      const ownedCheckinToken = botId ? this.getBotCheckinToken(botId) : null;
+      if (!(await decideReportAccess(reportAuthInput(request, this.env, botId || null, ownedCheckinToken)))) {
+        console.log(JSON.stringify({ event: "unauthorized_ping", botId: botId || null }));
+        return jsonResponse(UNAUTHORIZED_REPORT_BODY, UNAUTHORIZED_REPORT_STATUS);
       }
-      const botId = clampText(url.searchParams.get("b") ?? url.searchParams.get("botId"), 64);
       if (!botId) {
         return jsonResponse({ error: "Query param ?b=<botId> is required" }, 400);
       }
@@ -696,8 +729,8 @@ export class OfficeHub extends DurableObject<Env> {
     }
 
     if (url.pathname === "/api/report" && request.method === "POST") {
-      if (!(await isReportAuthorized(request, this.env))) {
-        return jsonResponse({ error: "Unauthorized" }, 401);
+      if (!(await decideReportAccess(reportAuthInput(request, this.env, null, null)))) {
+        return jsonResponse(UNAUTHORIZED_REPORT_BODY, UNAUTHORIZED_REPORT_STATUS);
       }
       const contentLen = Number(request.headers.get("content-length") ?? 0);
       if (contentLen > 65_536) {
@@ -747,7 +780,7 @@ export class OfficeHub extends DurableObject<Env> {
         .slice(0, 48);
       const botId = clampText(body.botId, 64) || rawSlug || `grok-${crypto.randomUUID().slice(0, 6)}`;
       const status = normalizeStatus(body.status, "idle");
-      const task = clampText(body.task, 200) || (status === "working" ? "Active in Workfloor" : "Standing by in Lounge");
+      const task = clampText(body.task, 200) || (status === "working" ? "Active in Work" : "Standing by in Lounge");
       const result = await this.handleReport({
         botId,
         name,
@@ -760,13 +793,14 @@ export class OfficeHub extends DurableObject<Env> {
         message: `Added ${name} (${clampText(body.role, 48) || "Grok Agent"}) to HQ`,
       });
       this.broadcastSnapshot();
-      return jsonResponse({ ok: true, ...result });
+      const checkinToken = this.getBotCheckinToken(result.botId) ?? "";
+      return jsonResponse({ ok: true, ...result, checkinToken });
     }
 
     const botUpdateMatch = url.pathname.match(/^\/api\/bot\/([^/]+)\/update$/);
     if (botUpdateMatch && request.method === "POST") {
-      if (!(await isReportAuthorized(request, this.env))) {
-        return jsonResponse({ error: "Unauthorized" }, 401);
+      if (!(await decideReportAccess(reportAuthInput(request, this.env, decodeURIComponent(botUpdateMatch[1]), null)))) {
+        return jsonResponse(UNAUTHORIZED_REPORT_BODY, UNAUTHORIZED_REPORT_STATUS);
       }
       const contentLen = Number(request.headers.get("content-length") ?? 0);
       if (contentLen > 65_536) {
@@ -817,8 +851,8 @@ export class OfficeHub extends DurableObject<Env> {
 
     const botStatusMatch = url.pathname.match(/^\/api\/bot\/([^/]+)\/status$/);
     if (botStatusMatch && request.method === "GET") {
-      if (!(await isReportAuthorized(request, this.env))) {
-        return jsonResponse({ error: "Unauthorized" }, 401);
+      if (!(await decideReportAccess(reportAuthInput(request, this.env, decodeURIComponent(botStatusMatch[1]), null)))) {
+        return jsonResponse(UNAUTHORIZED_REPORT_BODY, UNAUTHORIZED_REPORT_STATUS);
       }
       const botId = decodeURIComponent(botStatusMatch[1]);
       const botRow = this.sql
@@ -1145,19 +1179,24 @@ export class OfficeHub extends DurableObject<Env> {
     }
 
     if (url.pathname === "/api/settings" && request.method === "GET") {
-      return jsonResponse({ settings: this.getSettings() });
+      return jsonResponse({ settings: redactAlertWebhook(this.getSettings()) });
     }
 
     if (url.pathname === "/api/settings" && request.method === "POST") {
-      let body: Partial<OfficeSettings>;
+      let body: Partial<OfficeSettings> & { clearAlertWebhook?: boolean };
       try {
-        body = (await request.json()) as Partial<OfficeSettings>;
+        body = (await request.json()) as Partial<OfficeSettings> & { clearAlertWebhook?: boolean };
       } catch {
         return jsonResponse({ error: "Invalid JSON" }, 400);
       }
       const cur = this.getSettings();
-      const rawWebhook = clampText(body.alertWebhookUrl ?? cur.alertWebhookUrl, 300);
-      const safeWebhook = rawWebhook && isSafeCallbackUrl(rawWebhook) ? rawWebhook : "";
+      const rawWebhook = clampText(body.alertWebhookUrl, 300);
+      let safeWebhook = cur.alertWebhookUrl;
+      if (rawWebhook) {
+        safeWebhook = isSafeCallbackUrl(rawWebhook) ? rawWebhook : "";
+      } else if (body.clearAlertWebhook === true) {
+        safeWebhook = "";
+      }
       const next: OfficeSettings = {
         dailyTokenCap: Math.max(1000, Math.round(Number(body.dailyTokenCap ?? cur.dailyTokenCap))),
         dailyCostCapUsd: Math.max(0.1, Number(body.dailyCostCapUsd ?? cur.dailyCostCapUsd)),
@@ -1166,8 +1205,10 @@ export class OfficeHub extends DurableObject<Env> {
         hardBudgetStop:
           body.hardBudgetStop !== undefined ? Boolean(body.hardBudgetStop) : cur.hardBudgetStop,
         alertWebhookUrl: safeWebhook,
+        alertWebhookConfigured: Boolean(safeWebhook),
       };
       for (const [k, v] of Object.entries(next)) {
+        if (k === "alertWebhookConfigured") continue;
         this.sql.exec(
           `INSERT INTO office_settings (key, value) VALUES (?, ?)
            ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
@@ -1176,7 +1217,7 @@ export class OfficeHub extends DurableObject<Env> {
         );
       }
       this.broadcastSnapshot();
-      return jsonResponse({ ok: true, settings: next });
+      return jsonResponse({ ok: true, settings: redactAlertWebhook(next) });
     }
 
     if (url.pathname === "/api/tasks/config" && request.method === "POST") {
@@ -1662,6 +1703,7 @@ export class OfficeHub extends DurableObject<Env> {
         model: string;
         expected_interval_min: number;
         collaborating_with: string | null;
+        checkin_token?: string;
       }>("SELECT * FROM bots WHERE id = ?", botId)
       .toArray()[0];
 
@@ -1708,6 +1750,7 @@ export class OfficeHub extends DurableObject<Env> {
       payload.collaboratingWith !== undefined
         ? clampText(payload.collaboratingWith, 64) || null
         : existing?.collaborating_with ?? null;
+    const checkinToken = existing?.checkin_token?.trim() || crypto.randomUUID();
 
     // Loop Detection: 4+ identical active task pings within 120s triggers Repair Bay alert
     let loopDetected = false;
@@ -1794,7 +1837,8 @@ export class OfficeHub extends DurableObject<Env> {
            expected_interval_min = ?,
            sla_alerted = 0,
            last_seen_at = ?,
-           collaborating_with = ?
+           collaborating_with = ?,
+           checkin_token = ?
          WHERE id = ?`,
         name,
         role,
@@ -1813,6 +1857,7 @@ export class OfficeHub extends DurableObject<Env> {
         expectedIntervalMin,
         now,
         collaboratingWith,
+        checkinToken,
         botId
       );
     } else {
@@ -1820,8 +1865,8 @@ export class OfficeHub extends DurableObject<Env> {
         `INSERT INTO bots (
            id, name, role, department, avatar_color, avatar_shape, desk_index, status, task, model,
            tokens_total, cost_total_usd, requests_total, tasks_completed, error_count,
-           expected_interval_min, sla_alerted, last_seen_at, collaborating_with
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+           expected_interval_min, sla_alerted, last_seen_at, collaborating_with, checkin_token
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
         botId,
         name,
         role,
@@ -1839,7 +1884,8 @@ export class OfficeHub extends DurableObject<Env> {
         isErrorEvent,
         expectedIntervalMin,
         now,
-        collaboratingWith
+        collaboratingWith,
+        checkinToken
       );
     }
 
@@ -2205,7 +2251,16 @@ export class OfficeHub extends DurableObject<Env> {
       autoIdleMinutes: Number(map.get("autoIdleMinutes") ?? DEFAULT_SETTINGS.autoIdleMinutes),
       hardBudgetStop: map.get("hardBudgetStop") === "true",
       alertWebhookUrl: map.get("alertWebhookUrl") ?? DEFAULT_SETTINGS.alertWebhookUrl,
+      alertWebhookConfigured: Boolean((map.get("alertWebhookUrl") ?? "").trim()),
     };
+  }
+
+  private getBotCheckinToken(botId: string): string | null {
+    const row = this.sql
+      .exec<{ checkin_token: string | null }>("SELECT checkin_token FROM bots WHERE id = ?", botId)
+      .toArray()[0];
+    const token = row?.checkin_token?.trim() ?? "";
+    return token || null;
   }
 
   private listObjectives(): Objective[] {
@@ -2475,6 +2530,7 @@ export class OfficeHub extends DurableObject<Env> {
         expected_interval_min: number;
         last_seen_at: string;
         collaborating_with: string | null;
+        checkin_token?: string;
       }>("SELECT * FROM bots ORDER BY desk_index ASC, name ASC")
       .toArray()
       .map((b, idx) => {
@@ -2502,6 +2558,7 @@ export class OfficeHub extends DurableObject<Env> {
           queuedTasks: queueMap.get(b.id) ?? [],
           lastSeenAt: b.last_seen_at,
           collaboratingWith: b.collaborating_with,
+          checkinToken: b.checkin_token?.trim() || "",
           link: connectionLink(
             b.last_seen_at,
             b.expected_interval_min ?? 0,
@@ -2730,7 +2787,7 @@ export class OfficeHub extends DurableObject<Env> {
       taskLists: this.listGoogleTaskLists(),
       tasks: this.listGoogleTasks(bots),
       googleTasksSync,
-      settings,
+      settings: redactAlertWebhook(settings),
       usageSummary: {
         totalTokens: (totals?.tokens_in ?? 0) + (totals?.tokens_out ?? 0),
         totalTokensIn: totals?.tokens_in ?? 0,
@@ -3047,6 +3104,8 @@ export class OfficeHub extends DurableObject<Env> {
     this.sql.exec("DELETE FROM task_runs");
     this.sql.exec("DELETE FROM task_queue");
     this.sql.exec("DELETE FROM objectives");
+    this.sql.exec("DELETE FROM google_tasks");
+    this.sql.exec("DELETE FROM google_task_lists");
   }
 }
 
@@ -3059,29 +3118,28 @@ async function handleXaiProxy(
 ): Promise<Response> {
   const stub = env.OFFICE_HUB.get(env.OFFICE_HUB.idFromName("hq"));
 
-  try {
-    const guardResp = await stub.fetch("https://internal/api/guardrail-check");
-    if (guardResp.ok) {
-      const guardData = (await guardResp.json()) as { blocked?: boolean; reason?: string };
-      if (guardData.blocked) {
-        return withSecurityHeaders(
-          jsonResponse(
-            {
-              error: {
-                message: `Grok Bot HQ Guardrail Circuit-Breaker: ${guardData.reason || "Daily cap reached"}`,
-                type: "office_budget_cap_exceeded",
-                code: "daily_budget_cap_reached",
-              },
+  return runProxyGuard({
+    request,
+    checkGuardrail: () => stub.fetch("https://internal/api/guardrail-check"),
+    onUnavailable: () => {
+      console.log(JSON.stringify({ event: "guardrail_unavailable" }));
+      return withSecurityHeaders(jsonResponse({ error: "Guardrail unavailable" }, 503));
+    },
+    onBlocked: (reason) =>
+      withSecurityHeaders(
+        jsonResponse(
+          {
+            error: {
+              message: `Grok Bot HQ Guardrail Circuit-Breaker: ${reason || "Daily cap reached"}`,
+              type: "office_budget_cap_exceeded",
+              code: "daily_budget_cap_reached",
             },
-            429
-          )
-        );
-      }
-    }
-  } catch {
-    // Non-blocking if check fails
-  }
-
+          },
+          429
+        )
+      ),
+    onTooLarge: (error) => withSecurityHeaders(jsonResponse({ error }, 413)),
+    forward: async (bodyBuffer) => {
   const upstreamBase = (env.AI_GATEWAY_BASE_URL ?? "https://api.x.ai/v1").replace(/\/+$/, "");
   const url = new URL(request.url);
   const upstreamUrl = `${upstreamBase}${restPath}${url.search}`;
@@ -3093,9 +3151,7 @@ async function handleXaiProxy(
   forwardHeaders.delete("x-report-secret");
 
   let requestModel = "grok-4";
-  let bodyBuffer: ArrayBuffer | null = null;
-  if (request.method !== "GET" && request.method !== "HEAD") {
-    bodyBuffer = await request.arrayBuffer();
+  if (bodyBuffer && bodyBuffer.byteLength > 0) {
     try {
       const parsed = JSON.parse(new TextDecoder().decode(bodyBuffer)) as { model?: string };
       if (parsed.model) requestModel = parsed.model;
@@ -3176,6 +3232,8 @@ async function handleXaiProxy(
     statusText: upstreamResp.statusText,
     headers: upstreamResp.headers,
   });
+    },
+  });
 }
 
 async function checkOfficePassword(request: Request, env: Env): Promise<Response | null> {
@@ -3215,17 +3273,10 @@ async function checkOfficePassword(request: Request, env: Env): Promise<Response
   }
 
   return withSecurityHeaders(
-    new Response(
-      `<!doctype html><html><body style="font-family:system-ui;background:#0a0e18;color:#e2e8f0;display:grid;place-items:center;height:100vh;margin:0">
-        <form method="POST" action="/auth" style="background:#121826;padding:2rem;border-radius:14px;border:1px solid #24304a;width:330px;box-shadow:0 20px 50px rgba(0,0,0,0.5)">
-          <h2 style="margin:0 0 0.4rem">Grok Bot Office</h2>
-          <p style="margin:0 0 1.2rem;color:#8b9bb4;font-size:0.9rem">Enter your office password to unlock HQ.</p>
-          <input type="password" name="password" placeholder="Office password" required autofocus style="width:100%;box-sizing:border-box;padding:0.7rem;border-radius:8px;border:1px solid #334155;background:#0a0e18;color:#fff;margin-bottom:1rem" />
-          <button type="submit" style="width:100%;padding:0.7rem;border-radius:8px;border:none;background:#f59e0b;color:#1c1917;font-weight:700;cursor:pointer">Enter Office</button>
-        </form>
-      </body></html>`,
-      { status: 401, headers: { "content-type": "text/html; charset=utf-8" } }
-    )
+    new Response(renderOfficePasswordPage(), {
+      status: 401,
+      headers: { "content-type": "text/html; charset=utf-8" },
+    })
   );
 }
 
@@ -3235,14 +3286,19 @@ export default {
 
     const proxyMatch = url.pathname.match(/^\/proxy\/([^/]+)(\/v1\/.*)$/);
     if (proxyMatch) {
-      if (env.REPORT_SECRET) {
-        const candidate =
-          request.headers.get("x-report-secret")?.trim() ??
-          url.searchParams.get("token")?.trim() ??
-          "";
-        if (!candidate || !(await timingSafeEqualStrings(candidate, env.REPORT_SECRET))) {
-          return withSecurityHeaders(jsonResponse({ error: "Unauthorized proxy access" }, 401));
-        }
+      // Leave Authorization alone: the SDK sends the model API key there.
+      // A per-bot check-in token is not a proxy credential.
+      const proxyAllowed = await decideReportAccess({
+        reportSecret: env.REPORT_SECRET,
+        authorizationHeader: null,
+        reportSecretHeader: request.headers.get("x-report-secret"),
+        tokenQuery: url.searchParams.get("token"),
+        pathname: url.pathname,
+        botId: decodeURIComponent(proxyMatch[1]),
+        ownedCheckinToken: null,
+      });
+      if (!proxyAllowed) {
+        return withSecurityHeaders(jsonResponse({ error: "Unauthorized proxy access" }, 401));
       }
       return handleXaiProxy(
         request,
@@ -3269,7 +3325,12 @@ export default {
           })
         );
       }
-      return withSecurityHeaders(new Response("Invalid password", { status: 403 }));
+      return withSecurityHeaders(
+        new Response(renderOfficePasswordPage("That password didn't match. Try again."), {
+          status: 403,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        })
+      );
     }
 
     const authGate = await checkOfficePassword(request, env);
