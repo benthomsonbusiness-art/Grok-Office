@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&family=Space+Grotesk:wght@600;700&display=swap" />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2307090e'/%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='6.5' fill='none' stroke='%23ffffff' stroke-opacity='0.22'/%3E%3Cpath d='M18.2 6.8L10.2 17.4h5.3l-1.3 7.8 8-10.6h-5.3l1.3-7.8z' fill='%2338bdf8'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="/styles.css?v=8" />
+  <link rel="stylesheet" href="/styles.css?v=11" />
 </head>
 <body>
   <div id="app-root" class="app-root">
@@ -30,25 +30,25 @@
         </div>
 
         <nav class="main-nav" id="main-nav" aria-label="Main navigation">
-          <button class="nav-tab active" data-view="office">
+          <button class="nav-tab active" data-view="office" aria-pressed="true" title="3D Office">
             <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
             <span>3D Office</span>
           </button>
-          <button class="nav-tab" data-view="fleet">
+          <button class="nav-tab" data-view="fleet" aria-pressed="false" title="Fleet">
             <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
             <span>Fleet</span>
             <span id="nav-fleet-badge" class="nav-badge hidden">0</span>
           </button>
-          <button class="nav-tab" data-view="tasks">
+          <button class="nav-tab" data-view="tasks" aria-pressed="false" title="Tasks">
             <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
             <span>Tasks</span>
             <span id="nav-tasks-badge" class="nav-badge hidden">0</span>
           </button>
-          <button class="nav-tab" data-view="metrics">
+          <button class="nav-tab" data-view="metrics" aria-pressed="false" title="Goals & Metrics">
             <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
             <span>Goals &amp; Metrics</span>
           </button>
-          <button class="nav-tab" data-view="needs">
+          <button class="nav-tab" data-view="needs" aria-pressed="false" title="Pending Needs">
             <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
             <span>Pending Needs</span>
             <span id="nav-needs-badge" class="nav-badge hidden">0</span>
@@ -122,13 +122,13 @@
 
         <!-- Bottom-Center Guaranteed Single-Row Room Jumper Dock -->
         <div class="room-bar" id="room-bar">
-          <button class="room-pill active" data-room="all"><span class="room-key">0</span>All <strong id="cnt-all" class="mono">0</strong></button>
-          <button class="room-pill" data-room="working"><i class="dot green"></i>Work <strong id="cnt-working" class="mono">0</strong></button>
-          <button class="room-pill" data-room="waiting"><i class="dot amber"></i>Wait <strong id="cnt-waiting" class="mono">0</strong></button>
-          <button class="room-pill" data-room="error"><i class="dot red"></i>Repair <strong id="cnt-error" class="mono">0</strong></button>
-          <button class="room-pill" data-room="meeting"><i class="dot indigo"></i>War Room <strong id="cnt-meeting" class="mono">0</strong></button>
-          <button class="room-pill" data-room="idle"><i class="dot blue"></i>Lounge <strong id="cnt-idle" class="mono">0</strong></button>
-          <button class="room-pill" data-room="no_report"><i class="dot hollow"></i>Standby <strong id="cnt-noreport" class="mono">0</strong></button>
+          <button class="room-pill active" data-room="all" aria-pressed="true"><span class="room-key">0</span>All <strong id="cnt-all">0</strong></button>
+          <button class="room-pill" data-room="working" aria-pressed="false"><i class="dot green"></i>Work <strong id="cnt-working">0</strong></button>
+          <button class="room-pill" data-room="waiting" aria-pressed="false"><i class="dot amber"></i>Wait <strong id="cnt-waiting">0</strong></button>
+          <button class="room-pill" data-room="error" aria-pressed="false"><i class="dot red"></i>Repair <strong id="cnt-error">0</strong></button>
+          <button class="room-pill" data-room="meeting" aria-pressed="false"><i class="dot indigo"></i>War Room <strong id="cnt-meeting">0</strong></button>
+          <button class="room-pill" data-room="idle" aria-pressed="false"><i class="dot blue"></i>Lounge <strong id="cnt-idle">0</strong></button>
+          <button class="room-pill" data-room="no_report" aria-pressed="false"><i class="dot hollow"></i>Standby <strong id="cnt-noreport">0</strong></button>
         </div>
 
         <!-- Exit Focus 3D Pill -->
@@ -155,11 +155,13 @@
         <!-- Pane 1: Full-Height Fleet Roster -->
         <div id="sb-pane-roster" class="sb-pane active">
           <div class="filter-row" id="team-filters">
-            <button class="fpill active" data-filter="all">All</button>
-            <button class="fpill" data-filter="working">Working</button>
-            <button class="fpill" data-filter="waiting">Waiting</button>
-            <button class="fpill" data-filter="error">Error</button>
-            <button class="fpill" data-filter="idle">Idle</button>
+            <button class="fpill active" data-filter="all" aria-pressed="true">All</button>
+            <button class="fpill" data-filter="working" aria-pressed="false">Work</button>
+            <button class="fpill" data-filter="waiting" aria-pressed="false">Wait</button>
+            <button class="fpill" data-filter="error" aria-pressed="false">Repair</button>
+            <button class="fpill" data-filter="meeting" aria-pressed="false">War Room</button>
+            <button class="fpill" data-filter="idle" aria-pressed="false">Lounge</button>
+            <button class="fpill" data-filter="no_report" aria-pressed="false">Standby</button>
           </div>
           <div id="team-list" class="team-list">
             <div class="empty-msg">Loading fleet…</div>
@@ -622,12 +624,12 @@
   </div>
 
   <!-- Add Grok Bot Modal -->
-  <div id="add-bot-modal" class="modal hidden">
+  <div id="add-bot-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="add-bot-title">
     <div class="modal-backdrop"></div>
     <div class="modal-card modal-sm">
       <div class="modal-header">
-        <h3>Add Grok Bot to Office</h3>
-        <button id="btn-close-add-bot" class="btn-icon">✕</button>
+        <h3 id="add-bot-title">Add Grok Bot to Office</h3>
+        <button id="btn-close-add-bot" class="btn-icon" type="button" aria-label="Close">✕</button>
       </div>
       <form id="add-bot-form" class="settings-form">
         <label>
@@ -672,18 +674,18 @@
         <label>
           <span>Starting Room</span>
           <select id="add-bot-status" class="modal-select">
-            <option value="idle">Lounge (Idle)</option>
-            <option value="working">Workfloor (Active)</option>
-            <option value="meeting">War Room (Meeting)</option>
-            <option value="no_report">Standby Dock (Sleeping)</option>
+            <option value="idle">Lounge</option>
+            <option value="working">Work</option>
+            <option value="meeting">War Room</option>
+            <option value="no_report">Standby</option>
           </select>
         </label>
         <div class="prompt-preview-box">
           <div class="prompt-preview-head">
             <span>Paste into your Grok Bot's Instructions:</span>
-            <button type="button" class="link-btn copy-btn" data-target="add-bot-prompt-preview">Copy Prompt</button>
           </div>
-          <pre id="add-bot-prompt-preview" class="code-block" style="margin:6px 0 0;font-size:0.74rem"></pre>
+          <p class="prompt-note">The token in this preview is a stand-in. Add the bot to copy the real prompt.</p>
+          <pre id="add-bot-prompt-preview" class="code-block" tabindex="0"></pre>
         </div>
         <button type="submit" class="btn btn-primary" style="width:100%;margin-top:4px">Add Bot &amp; Copy Grok App Prompt</button>
       </form>
@@ -691,12 +693,12 @@
   </div>
 
   <!-- Connect Grok Bot Modal -->
-  <div id="connect-modal" class="modal hidden">
+  <div id="connect-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="connect-title">
     <div class="modal-backdrop"></div>
     <div class="modal-card">
       <div class="modal-header">
-        <h3>Connect Your Grok Bots</h3>
-        <button id="btn-close-connect" class="btn-icon">✕</button>
+        <h3 id="connect-title">Connect Your Grok Bots</h3>
+        <button id="btn-close-connect" class="btn-icon" type="button" aria-label="Close">✕</button>
       </div>
       <div class="modal-body">
         <label class="connect-bot-pick">
@@ -706,21 +708,21 @@
         <div class="connect-opt">
           <h4>1. Grok App System Prompt (No Coding Required)</h4>
           <p class="muted">Paste this at the bottom of the bot's instructions. Each fetch updates the Fleet board. The JSON that comes back is the bot's next order: a task, a decision, a goal, or a budget stop.</p>
-          <pre id="ping-snippet" class="code-block"></pre>
+          <pre id="ping-snippet" class="code-block" tabindex="0"></pre>
           <button class="btn btn-secondary copy-btn" data-target="ping-snippet">Copy Grok App Instructions</button>
         </div>
 
         <div class="connect-opt">
           <h4>2. Zero-Token Auto-Tracking Proxy (Python / Node Scripts)</h4>
           <p class="muted">If you run custom scripts, point your xAI / OpenAI SDK <code>baseURL</code> here — tokens, cost, latency, errors, and budget circuit-breakers log automatically with <strong>0 extra prompts</strong>:</p>
-          <pre id="proxy-snippet" class="code-block"></pre>
+          <pre id="proxy-snippet" class="code-block" tabindex="0"></pre>
           <button class="btn btn-secondary copy-btn" data-target="proxy-snippet">Copy SDK Snippet</button>
         </div>
 
         <div class="connect-opt">
           <h4>3. Poll Assigned Tasks &amp; Approval Decisions (Optional)</h4>
           <p class="muted">Check if you approved a bot's request or assigned it a new task from the 3D Inspector:</p>
-          <pre id="report-snippet" class="code-block"></pre>
+          <pre id="report-snippet" class="code-block" tabindex="0"></pre>
           <button class="btn btn-secondary copy-btn" data-target="report-snippet">Copy Status Check</button>
         </div>
       </div>
@@ -728,12 +730,12 @@
   </div>
 
   <!-- Guardrails & Alerts Modal -->
-  <div id="settings-modal" class="modal hidden">
+  <div id="settings-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <div class="modal-backdrop"></div>
     <div class="modal-card modal-sm">
       <div class="modal-header">
-        <h3>Office Guardrails, Circuit-Breaker &amp; Alerts</h3>
-        <button id="btn-close-settings" class="btn-icon">✕</button>
+        <h3 id="settings-title">Office Guardrails, Circuit-Breaker &amp; Alerts</h3>
+        <button id="btn-close-settings" class="btn-icon" type="button" aria-label="Close">✕</button>
       </div>
       <form id="settings-form" class="settings-form">
         <label><span>Daily Spend Cap ($ USD)</span><input id="set-cost-cap" type="number" step="0.5" min="0.5" required /></label>
@@ -748,18 +750,19 @@
           <span>Outbound Alert Webhook URL (Discord / Slack / HTTPS)</span>
           <input id="set-webhook-url" type="url" placeholder="https://discord.com/api/webhooks/..." />
         </label>
+        <button id="btn-clear-webhook" type="button" class="btn btn-secondary hidden">Clear saved webhook</button>
         <button type="submit" class="btn btn-primary" style="width:100%;margin-top:8px">Save Guardrails</button>
       </form>
     </div>
   </div>
 
   <!-- Connect Google Tasks Modal (Zero-OAuth Apps Script Bridge) -->
-  <div id="gtasks-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="Connect Google Tasks">
+  <div id="gtasks-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="gtasks-title">
     <div class="modal-backdrop"></div>
     <div class="modal-card modal-lg">
       <div class="modal-header">
-        <h3>Connect Google Tasks (Two-Way Auto-Sync)</h3>
-        <button id="btn-close-gtasks" class="btn-icon">✕</button>
+        <h3 id="gtasks-title">Connect Google Tasks (Two-Way Auto-Sync)</h3>
+        <button id="btn-close-gtasks" class="btn-icon" type="button" aria-label="Close">✕</button>
       </div>
       <div class="modal-body">
         <p class="muted" style="margin-top:0">
@@ -774,7 +777,7 @@
               <button type="button" class="btn btn-primary copy-btn" data-target="gtasks-script-code" style="padding:5px 11px;font-size:0.75rem">Copy Script</button>
             </div>
           </div>
-          <pre id="gtasks-script-code" class="code-block" style="max-height:175px;overflow:auto"></pre>
+          <pre id="gtasks-script-code" class="code-block" tabindex="0"></pre>
         </div>
 
         <div class="connect-opt">
@@ -782,7 +785,7 @@
           <ol class="gtasks-steps">
             <li>Click <strong>New project</strong> at <code>script.google.com</code> and replace the default code with the script you just copied.</li>
             <li>In the left sidebar next to <strong>Services</strong>, click <strong>+</strong> → select <strong>Tasks API</strong> → click <strong>Add</strong>.</li>
-            <li>Click <strong>Deploy → New deployment</strong> → gear icon → <strong>Web app</strong> → set <strong>Execute as: Me</strong> and <strong>Who has access: Anyone</strong> → click <strong>Deploy</strong>, authorize once, and copy the Web App URL.</li>
+            <li>Click <strong>Deploy → New deployment</strong> → gear icon → <strong>Web app</strong> → set <strong>Execute as: Me</strong> and <strong>Who has access: Anyone</strong> → click <strong>Deploy</strong>, authorize once, and copy the Web App URL. The web app is public. The bridge secret is created in this page and kept in this browser (grok_hq_gtasks_secret) and in the office database. This is safe only while the Grok Bot HQ password is the only way in.</li>
           </ol>
         </div>
 
@@ -807,7 +810,7 @@
     </div>
   </div>
 
-  <script src="/office3d.bundle.js?v=8"></script>
-  <script src="/app.js?v=8"></script>
+  <script src="/office3d.bundle.js?v=11"></script>
+  <script type="module" src="/app.js?v=11"></script>
 </body>
 </html>

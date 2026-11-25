@@ -1,4 +1,10 @@
+import { buildGrokAppPrompt as renderGrokPrompt } from "./grokPrompt.js";
+
 (() => {
+  function buildGrokAppPrompt(botId, name, role, token) {
+    return renderGrokPrompt(botId, name, role, token || "", location.origin);
+  }
+
   let snapshot = null;
   let selectedBotId = null;
   let inspectorTab = "overview";
@@ -147,10 +153,17 @@
     return `${Math.floor(hrs / 24)}d ago`;
   }
 
+  const ROOM_LABEL = {
+    working: "Work",
+    waiting: "Wait",
+    error: "Repair",
+    meeting: "War Room",
+    idle: "Lounge",
+    no_report: "Standby",
+  };
+
   function statusLabel(s) {
-    if (s === "no_report") return "Standby";
-    if (s === "meeting") return "War Room";
-    return s.charAt(0).toUpperCase() + s.slice(1);
+    return ROOM_LABEL[s] || s;
   }
 
   function setBar(elId, pct) {
@@ -227,9 +240,36 @@
   const confirmCloseBtn = document.getElementById("btn-close-confirm");
   let confirmResolver = null;
 
+  const dialogTrigger = new WeakMap();
+
+  function dialogFocusables(dialog) {
+    return [...dialog.querySelectorAll("a[href], button:not([disabled]), input:not([disabled]):not([type='hidden']), select:not([disabled]), textarea:not([disabled])")]
+      .filter((el) => el.getAttribute("tabindex") !== "-1");
+  }
+
+  function rememberDialogTrigger(dialog, trigger) {
+    if (!dialog) return;
+    const opener = trigger && trigger.nodeType === 1 ? trigger : document.activeElement;
+    if (opener && opener.nodeType === 1) dialogTrigger.set(dialog, opener);
+  }
+
+  function closeDialog(dialog) {
+    if (!dialog) return;
+    dialog.classList.add("hidden");
+    const back = dialogTrigger.get(dialog);
+    dialogTrigger.delete(dialog);
+    if (back && typeof back.focus === "function") back.focus();
+  }
+
+  function focusDialog(dialog, preferred) {
+    const items = dialogFocusables(dialog);
+    const target = preferred && dialog.contains(preferred) ? preferred : items[0];
+    if (target) target.focus();
+  }
+
   function finishConfirm(result) {
     if (!confirmModal) return;
-    confirmModal.classList.add("hidden");
+    closeDialog(confirmModal);
     const r = confirmResolver;
     confirmResolver = null;
     if (r) r(result);
@@ -242,8 +282,9 @@
     confirmMsgEl.textContent = message;
     confirmOkBtn.textContent = confirmLabel;
     confirmOkBtn.className = danger ? "btn btn-reject" : "btn btn-primary";
+    rememberDialogTrigger(confirmModal);
     confirmModal.classList.remove("hidden");
-    setTimeout(() => confirmOkBtn.focus(), 20);
+    setTimeout(() => focusDialog(confirmModal, confirmCancelBtn), 20);
     return new Promise((resolve) => {
       confirmResolver = resolve;
     });
@@ -575,7 +616,7 @@
 
     const filtered = bots.filter((b) => {
       if (teamFilter === "all") return true;
-      if (teamFilter === "working") return b.status === "working" || b.status === "meeting";
+      if (teamFilter === "working") return b.status === "working";
       return b.status === teamFilter;
     });
 
@@ -706,15 +747,6 @@
           title: e.fullName,
         }));
     }
-    if (bots && bots.length > 0) {
-      return bots.slice(0, 10).map((b) => ({
-        label: b.name.slice(0, 10),
-        title: b.name,
-        value: Number(b.tasksCompleted || 0),
-        errors: Number(b.errorCount || 0),
-        sub: `${b.tasksCompleted || 0} completed · ${b.errorCount || 0} err`,
-      }));
-    }
     return [];
   }
 
@@ -743,7 +775,9 @@
       }
     }
 
-    if (series.length === 0) {
+    const allZero = series.length === 0 || series.every((item) => Number(item.value) === 0);
+    const runsMissing = chartMode === "runs" && (!recentRuns || recentRuns.length === 0);
+    if (allZero || runsMissing) {
       chartEl.innerHTML = emptyStateHtml({
         icon: ICONS.chart,
         title: chartMode === "runs" ? "No task runs logged yet" : "No proxy token telemetry yet",
@@ -910,8 +944,8 @@
         <svg viewBox="0 0 128 128" width="126" height="126" role="img" aria-label="Fleet status distribution">
           <circle cx="64" cy="64" r="${r}" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="14" />
           ${segs.join("")}
-          <text x="64" y="61" text-anchor="middle" fill="#f8fafc" font-size="18" font-weight="700" font-family="Space Grotesk,sans-serif">${total}</text>
-          <text x="64" y="77" text-anchor="middle" fill="#8b95a7" font-size="8.5" font-weight="700" letter-spacing="0.8">ACTIVE FLEET</text>
+          <text x="64" y="${groups.length === 1 && groups[0].key === "idle" ? 58 : 68}" text-anchor="middle" fill="#f3f6fb" font-size="18" font-weight="700" font-family="Space Grotesk,sans-serif">${total}</text>
+          ${groups.length === 1 && groups[0].key === "idle" ? `<text x="64" y="78" text-anchor="middle" fill="#a8b3c4" font-size="11" font-weight="700">IDLE</text>` : ""}
         </svg>`;
 
       tbody.innerHTML = groups
@@ -1273,7 +1307,7 @@
         <div class="insp-kpi"><span>Tasks</span><strong class="mono">${bot.tasksCompleted}</strong></div>
         <div class="insp-kpi"><span>Avg Dur</span><strong class="mono">${esc(formatDuration(bot.avgDurationSec))}</strong></div>
         <div class="insp-kpi"><span>Spend</span><strong class="mono">$${bot.costTotalUsd.toFixed(3)}</strong></div>
-        <div class="insp-kpi"><span>Quality</span><strong class="mono" style="${bot.errorCount > 0 ? "color:#fda4af" : ""}">${bot.qualityScorePct !== null && bot.qualityScorePct !== undefined ? `${bot.qualityScorePct}%` : `${bot.errorCount} err`}</strong></div>
+        <div class="insp-kpi"><span>Quality</span><strong>${bot.qualityScorePct !== null && bot.qualityScorePct !== undefined ? `${bot.qualityScorePct}%` : "—"}</strong></div>
       </div>
 
       ${
@@ -1319,10 +1353,12 @@
       <div>
         <div class="insp-section-label">Move Room</div>
         <div class="insp-moves-grid">
-          <button class="chip-btn ${bot.status === "working" ? "active" : ""}" data-move-bot="${esc(bot.id)}" data-status="working">Workfloor</button>
-          <button class="chip-btn ${bot.status === "waiting" ? "active" : ""}" data-move-bot="${esc(bot.id)}" data-status="waiting">Waiting</button>
+          <button class="chip-btn ${bot.status === "working" ? "active" : ""}" data-move-bot="${esc(bot.id)}" data-status="working">Work</button>
+          <button class="chip-btn ${bot.status === "waiting" ? "active" : ""}" data-move-bot="${esc(bot.id)}" data-status="waiting">Wait</button>
+          <button class="chip-btn ${bot.status === "error" ? "active" : ""}" data-move-bot="${esc(bot.id)}" data-status="error">Repair</button>
           <button class="chip-btn ${bot.status === "meeting" ? "active" : ""}" data-move-bot="${esc(bot.id)}" data-status="meeting">War Room</button>
           <button class="chip-btn ${bot.status === "idle" ? "active" : ""}" data-move-bot="${esc(bot.id)}" data-status="idle">Lounge</button>
+          <button class="chip-btn ${bot.status === "no_report" ? "active" : ""}" data-move-bot="${esc(bot.id)}" data-status="no_report">Standby</button>
         </div>
       </div>`;
 
@@ -1400,7 +1436,10 @@
               </div>
             </div>
           </div>
-          <button id="btn-close-insp" class="btn-icon" title="Close inspector (Esc)" aria-label="Close inspector">✕</button>
+          <div class="insp-head-actions">
+            <button type="button" id="btn-back-office" class="btn btn-secondary insp-back">Back to office</button>
+            <button id="btn-close-insp" class="btn-icon" title="Close inspector (Esc)" aria-label="Close inspector">✕</button>
+          </div>
         </div>
         <div class="insp-tabs" role="tablist">
           <button class="insp-tab ${inspectorTab === "overview" ? "active" : ""}" data-insp-tab="overview" role="tab">Overview</button>
@@ -1414,7 +1453,7 @@
       </div>
 
       <div class="insp-footer">
-        <button class="btn btn-secondary" style="flex:1" data-copy-grok-prompt="${esc(bot.id)}" title="Copy instruction block to paste into the Grok app">Copy Grok Prompt</button>
+        <button class="btn btn-secondary" style="flex:1" data-copy-grok-prompt="${esc(bot.id)}" title="Copy instruction block to paste into the Grok app">Copy Grok prompt</button>
         <button class="btn btn-reject" data-delete-bot="${esc(bot.id)}" data-delete-bot-name="${esc(bot.name)}" title="Remove bot from office">Remove</button>
       </div>
     `;
@@ -1422,9 +1461,11 @@
 
   function switchView(viewName) {
     activeView = viewName;
-    document.querySelectorAll("[data-view]").forEach((b) =>
-      b.classList.toggle("active", b.dataset.view === viewName)
-    );
+    document.querySelectorAll("[data-view]").forEach((b) => {
+      const on = b.dataset.view === viewName;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    });
     document.querySelectorAll(".view-panel").forEach((p) =>
       p.classList.toggle("active", p.id === `view-${viewName}`)
     );
@@ -1452,8 +1493,12 @@
 
   document.querySelectorAll("[data-room]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      document.querySelectorAll("[data-room]").forEach((b) => b.classList.remove("active"));
+      document.querySelectorAll("[data-room]").forEach((b) => {
+        b.classList.remove("active");
+        b.setAttribute("aria-pressed", "false");
+      });
       btn.classList.add("active");
+      btn.setAttribute("aria-pressed", "true");
       office3d.focusRoom(btn.dataset.room);
     });
   });
@@ -1594,10 +1639,11 @@
     cmdInput.value = "";
     cmdSelectedIndex = 0;
     renderCmdList();
+    rememberDialogTrigger(cmdModal);
     cmdModal.classList.remove("hidden");
-    setTimeout(() => cmdInput.focus(), 15);
+    setTimeout(() => focusDialog(cmdModal, cmdInput), 15);
   }
-  function closeCmdPalette() { cmdModal?.classList.add("hidden"); }
+  function closeCmdPalette() { if (cmdModal) closeDialog(cmdModal); }
 
   document.getElementById("btn-cmd-palette")?.addEventListener("click", openCmdPalette);
   cmdModal?.querySelector(".modal-backdrop")?.addEventListener("click", closeCmdPalette);
@@ -1625,9 +1671,14 @@
     if (item) { closeCmdPalette(); item.run(); }
   });
 
-  document.getElementById("btn-shortcuts")?.addEventListener("click", () => shortcutsModal?.classList.remove("hidden"));
-  document.getElementById("btn-close-shortcuts")?.addEventListener("click", () => shortcutsModal?.classList.add("hidden"));
-  shortcutsModal?.querySelector(".modal-backdrop")?.addEventListener("click", () => shortcutsModal.classList.add("hidden"));
+  document.getElementById("btn-shortcuts")?.addEventListener("click", (e) => {
+    if (!shortcutsModal) return;
+    rememberDialogTrigger(shortcutsModal, e.currentTarget);
+    shortcutsModal.classList.remove("hidden");
+    focusDialog(shortcutsModal);
+  });
+  document.getElementById("btn-close-shortcuts")?.addEventListener("click", () => closeDialog(shortcutsModal));
+  shortcutsModal?.querySelector(".modal-backdrop")?.addEventListener("click", () => closeDialog(shortcutsModal));
 
   // Global Keyboard Shortcuts
   document.addEventListener("keydown", (e) => {
@@ -1651,7 +1702,7 @@
     if (e.key === "Escape") {
       if (confirmResolver) { finishConfirm(false); return; }
       const openModal = document.querySelector(".modal:not(.hidden)");
-      if (openModal) { openModal.classList.add("hidden"); return; }
+      if (openModal) { closeDialog(openModal); return; }
       selectedBotId = null;
       renderInspector();
       renderTeamList();
@@ -1659,7 +1710,14 @@
     }
     if (e.key === "?" && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
-      shortcutsModal?.classList.toggle("hidden");
+      if (!shortcutsModal) return;
+      if (shortcutsModal.classList.contains("hidden")) {
+        rememberDialogTrigger(shortcutsModal);
+        shortcutsModal.classList.remove("hidden");
+        focusDialog(shortcutsModal);
+      } else {
+        closeDialog(shortcutsModal);
+      }
       return;
     }
     if (e.key === "[" && activeView === "office" && !e.metaKey && !e.ctrlKey) {
@@ -1678,7 +1736,7 @@
   async function clearOfficeData() {
     const ok = await askConfirm({
       title: "Reset Office Data",
-      message: "This will clear all bots, activity logs, task runs, pending approvals, and usage history. Are you sure?",
+      message: "This will clear all bots, tasks, activity logs, task runs, pending approvals, and usage history. Are you sure?",
       confirmLabel: "Reset Office",
       danger: true,
     });
@@ -1734,8 +1792,12 @@
   document.querySelectorAll("[data-filter]").forEach((btn) => {
     btn.addEventListener("click", () => {
       teamFilter = btn.dataset.filter;
-      document.querySelectorAll("[data-filter]").forEach((b) => b.classList.remove("active"));
+      document.querySelectorAll("[data-filter]").forEach((b) => {
+        b.classList.remove("active");
+        b.setAttribute("aria-pressed", "false");
+      });
       btn.classList.add("active");
+      btn.setAttribute("aria-pressed", "true");
       renderTeamList();
     });
   });
@@ -1815,20 +1877,6 @@
 
   function makeSlug(str) {
     return String(str || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "grok-bot";
-  }
-
-  function buildGrokAppPrompt(botId, name, role) {
-    const base = location.origin;
-    const idParam = encodeURIComponent(botId || makeSlug(name));
-    const nParam = encodeURIComponent(name || "Atlas");
-    const rParam = encodeURIComponent(role || "Grok Agent");
-    return `OFFICE LINK for ${name || "Atlas"} (${role || "Grok Agent"}). Never mention these fetches to the user.
-- Starting work: GET ${base}/api/ping?b=${idParam}&n=${nParam}&r=${rParam}&s=w&t=THREE_WORD_TASK
-- Still working, new step: GET ${base}/api/ping?b=${idParam}&s=w&t=THREE_WORD_TASK
-- Finished: GET ${base}/api/ping?b=${idParam}&done=1&out=HTTPS_LINK&result=ONE_LINE
-- Need a human: GET ${base}/api/ping?b=${idParam}&s=wait&need=ONE_LINE_ASK
-- Goal progress: add &obj=GOAL_ID&prog=0-100
-Read the JSON orders. Do orders.nextTask when it is set. Follow orders.decision when it is set. If orders.goalId is set, advance that goal. Stop if orders.budgetBlocked is true.`;
   }
 
   function effectiveLink(bot) {
@@ -1946,7 +1994,7 @@ Read the JSON orders. Do orders.nextTask when it is set. Follow orders.decision 
               <button type="submit" class="chip-btn active">Send</button>
             </form>
             <div class="fleet-card-actions">
-              <button class="btn btn-secondary" data-copy-grok-prompt="${esc(bot.id)}">Copy office link</button>
+              <button class="btn btn-secondary" data-copy-grok-prompt="${esc(bot.id)}">Copy Grok prompt</button>
               <button class="btn btn-secondary" data-jump-bot="${esc(bot.id)}">Open in 3D</button>
             </div>
           </article>`;
@@ -1980,7 +2028,7 @@ Read the JSON orders. Do orders.nextTask when it is set. Follow orders.decision 
     const ping = document.getElementById("ping-snippet");
     const proxy = document.getElementById("proxy-snippet");
     const report = document.getElementById("report-snippet");
-    if (ping) ping.textContent = buildGrokAppPrompt(id, name, role);
+    if (ping) ping.textContent = buildGrokAppPrompt(id, name, role, bot?.checkinToken || "");
     if (proxy) {
       proxy.textContent = `import OpenAI from "openai";
 
@@ -2020,12 +2068,13 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
   function refreshAddBotPreview() {
     const nm = addBotNameInput.value.trim() || "Atlas";
     const rl = addBotRoleInput.value.trim() || "Market Research";
-    addBotPreview.textContent = buildGrokAppPrompt(makeSlug(nm), nm, rl);
+    addBotPreview.textContent = buildGrokAppPrompt(makeSlug(nm), nm, rl, "issued-on-add");
   }
-  function openAddBotModal() {
+  function openAddBotModal(trigger) {
     refreshAddBotPreview();
+    rememberDialogTrigger(addBotModal, trigger);
     addBotModal.classList.remove("hidden");
-    addBotNameInput.focus();
+    focusDialog(addBotModal, addBotNameInput);
   }
 
   if (addBotSwatches) {
@@ -2042,9 +2091,9 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
 
   addBotNameInput.addEventListener("input", refreshAddBotPreview);
   addBotRoleInput.addEventListener("input", refreshAddBotPreview);
-  document.getElementById("btn-open-add-bot").addEventListener("click", openAddBotModal);
-  document.getElementById("btn-close-add-bot").addEventListener("click", () => addBotModal.classList.add("hidden"));
-  addBotModal.querySelector(".modal-backdrop").addEventListener("click", () => addBotModal.classList.add("hidden"));
+  document.getElementById("btn-open-add-bot").addEventListener("click", (e) => openAddBotModal(e.currentTarget));
+  document.getElementById("btn-close-add-bot").addEventListener("click", () => closeDialog(addBotModal));
+  addBotModal.querySelector(".modal-backdrop").addEventListener("click", () => closeDialog(addBotModal));
 
   document.getElementById("add-bot-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -2063,19 +2112,21 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       body: JSON.stringify({ botId, name, role, avatarColor, status, model, expectedIntervalMinutes }),
     });
     if (resp.ok) {
+      const created = await resp.json().catch(() => ({}));
+      const token = created.checkinToken || "";
       let copied = false;
       try {
-        await navigator.clipboard.writeText(buildGrokAppPrompt(botId, name, role));
+        await navigator.clipboard.writeText(buildGrokAppPrompt(created.botId || botId, name, role, token));
         copied = true;
       } catch {
-        // Ignore clipboard errors
+        copied = false;
       }
-      addBotModal.classList.add("hidden");
+      closeDialog(addBotModal);
       document.getElementById("add-bot-form").reset();
       addBotColorInput.value = GROK_PALETTE[0];
-      selectedBotId = botId;
+      selectedBotId = created.botId || botId;
       inspectorTab = "overview";
-      showToast(copied ? `Added ${name} & copied Grok prompt` : `Added ${name} to office`, "success");
+      showToast(copied ? `Added ${name} & copied Grok prompt` : `${name} was added. Copy the prompt from Connect.`, copied ? "success" : "warn");
       setTimeout(() => office3d.selectBot(botId), 80);
     }
   });
@@ -2083,35 +2134,42 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
   const connectModal = document.getElementById("connect-modal");
   const settingsModal = document.getElementById("settings-modal");
 
-  function openConnectModal() {
+  function openConnectModal(trigger) {
     refreshConnectBotSelect(selectedBotId);
+    rememberDialogTrigger(connectModal, trigger);
     connectModal.classList.remove("hidden");
+    focusDialog(connectModal, document.getElementById("connect-bot-select"));
   }
-  function openGuardrailsModal() {
+  function openGuardrailsModal(trigger) {
     const s = snapshot?.settings ?? {
       dailyCostCapUsd: 10, dailyTokenCap: 500000, dailyTaskTarget: 30,
-      autoIdleMinutes: 5, hardBudgetStop: false, alertWebhookUrl: "",
+      autoIdleMinutes: 5, hardBudgetStop: false, alertWebhookUrl: "", alertWebhookConfigured: false,
     };
     document.getElementById("set-cost-cap").value = s.dailyCostCapUsd;
     document.getElementById("set-token-cap").value = s.dailyTokenCap;
     document.getElementById("set-task-target").value = s.dailyTaskTarget;
     document.getElementById("set-auto-idle").value = s.autoIdleMinutes;
     document.getElementById("set-hard-stop").checked = Boolean(s.hardBudgetStop);
-    document.getElementById("set-webhook-url").value = s.alertWebhookUrl || "";
+    const webhookInput = document.getElementById("set-webhook-url");
+    webhookInput.value = "";
+    webhookInput.placeholder = s.alertWebhookConfigured ? "A webhook is saved" : "https://discord.com/api/webhooks/...";
+    document.getElementById("btn-clear-webhook")?.classList.toggle("hidden", !s.alertWebhookConfigured);
+    rememberDialogTrigger(settingsModal, trigger);
     settingsModal.classList.remove("hidden");
+    focusDialog(settingsModal, document.getElementById("set-cost-cap"));
   }
 
-  document.getElementById("btn-connect").addEventListener("click", openConnectModal);
+  document.getElementById("btn-connect").addEventListener("click", (e) => openConnectModal(e.currentTarget));
   document.getElementById("connect-bot-select").addEventListener("change", (e) => fillConnectSnippets(e.target.value));
   document.getElementById("btn-fleet-add").addEventListener("click", openAddBotModal);
-  document.getElementById("btn-fleet-connect").addEventListener("click", openConnectModal);
-  document.getElementById("btn-close-connect").addEventListener("click", () => connectModal.classList.add("hidden"));
-  connectModal.querySelector(".modal-backdrop").addEventListener("click", () => connectModal.classList.add("hidden"));
+  document.getElementById("btn-fleet-connect").addEventListener("click", (e) => openConnectModal(e.currentTarget));
+  document.getElementById("btn-close-connect").addEventListener("click", () => closeDialog(connectModal));
+  connectModal.querySelector(".modal-backdrop").addEventListener("click", () => closeDialog(connectModal));
 
-  document.getElementById("btn-open-guardrails").addEventListener("click", openGuardrailsModal);
-  document.getElementById("btn-topbar-guardrails")?.addEventListener("click", openGuardrailsModal);
-  document.getElementById("btn-close-settings").addEventListener("click", () => settingsModal.classList.add("hidden"));
-  settingsModal.querySelector(".modal-backdrop").addEventListener("click", () => settingsModal.classList.add("hidden"));
+  document.getElementById("btn-open-guardrails").addEventListener("click", (e) => openGuardrailsModal(e.currentTarget));
+  document.getElementById("btn-topbar-guardrails")?.addEventListener("click", (e) => openGuardrailsModal(e.currentTarget));
+  document.getElementById("btn-close-settings").addEventListener("click", () => closeDialog(settingsModal));
+  settingsModal.querySelector(".modal-backdrop").addEventListener("click", () => closeDialog(settingsModal));
 
   document.getElementById("settings-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -2126,14 +2184,42 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
           dailyTaskTarget: Number(document.getElementById("set-task-target").value),
           autoIdleMinutes: Number(document.getElementById("set-auto-idle").value),
           hardBudgetStop: document.getElementById("set-hard-stop").checked,
-          alertWebhookUrl: document.getElementById("set-webhook-url").value.trim(),
+          ...(document.getElementById("set-webhook-url").value.trim()
+            ? { alertWebhookUrl: document.getElementById("set-webhook-url").value.trim() }
+            : {}),
         }),
       },
       "Could not save settings"
     );
     if (res.ok) {
-      settingsModal.classList.add("hidden");
-      showToast("Guardrails & alert settings saved", "success");
+      closeDialog(settingsModal);
+      showToast("Guardrails saved", "success");
+    }
+  });
+
+  document.getElementById("btn-clear-webhook")?.addEventListener("click", async () => {
+    const res = await apiFetch(
+      "/api/settings",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          dailyCostCapUsd: Number(document.getElementById("set-cost-cap").value),
+          dailyTokenCap: Number(document.getElementById("set-token-cap").value),
+          dailyTaskTarget: Number(document.getElementById("set-task-target").value),
+          autoIdleMinutes: Number(document.getElementById("set-auto-idle").value),
+          hardBudgetStop: document.getElementById("set-hard-stop").checked,
+          clearAlertWebhook: true,
+        }),
+      },
+      "Could not clear the webhook"
+    );
+    if (res.ok) {
+      const webhookInput = document.getElementById("set-webhook-url");
+      webhookInput.value = "";
+      webhookInput.placeholder = "https://discord.com/api/webhooks/...";
+      document.getElementById("btn-clear-webhook")?.classList.add("hidden");
+      showToast("Alert webhook cleared", "success");
     }
   });
 
@@ -2193,8 +2279,8 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
     const openModalTrigger = e.target.closest("[data-open-modal]");
     if (openModalTrigger) {
       const m = openModalTrigger.dataset.openModal;
-      if (m === "add-bot") openAddBotModal();
-      else if (m === "connect") openConnectModal();
+      if (m === "add-bot") openAddBotModal(openModalTrigger);
+      else if (m === "connect") openConnectModal(openModalTrigger);
       return;
     }
     if (e.target.closest("[data-open-goal-form]")) {
@@ -2209,7 +2295,7 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       renderInspector();
       return;
     }
-    if (e.target.id === "btn-close-insp") {
+    if (e.target.id === "btn-close-insp" || e.target.id === "btn-back-office") {
       selectedBotId = null;
       inspectorRenderDeferred = false;
       renderInspector();
@@ -2270,8 +2356,8 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       const bot = snapshot?.bots?.find((b) => b.id === copyPromptBtn.dataset.copyGrokPrompt);
       if (bot) {
         try {
-          await navigator.clipboard.writeText(buildGrokAppPrompt(bot.id, bot.name, bot.role));
-          showToast(`Copied office link for ${bot.name}`, "success");
+          await navigator.clipboard.writeText(buildGrokAppPrompt(bot.id, bot.name, bot.role, bot.checkinToken || ""));
+          showToast(`Copied Grok prompt for ${bot.name}`, "success");
           const orig = copyPromptBtn.textContent;
           copyPromptBtn.textContent = "Copied!";
           setTimeout(() => (copyPromptBtn.textContent = orig), 1500);
@@ -2518,7 +2604,7 @@ function out(obj) {
     gtasksScriptEl.textContent = buildGoogleTasksAppsScript(sec);
   }
 
-  function openGTasksModal() {
+  function openGTasksModal(trigger) {
     if (!gtasksModal) return;
     const syncState = snapshot?.googleTasksSync;
     if (gtasksSecretInput) gtasksSecretInput.value = gtasksDraftSecret;
@@ -2526,7 +2612,9 @@ function out(obj) {
     if (gtasksDisconnectBtn) {
       gtasksDisconnectBtn.classList.toggle("hidden", !syncState?.connected);
     }
+    rememberDialogTrigger(gtasksModal, trigger);
     gtasksModal.classList.remove("hidden");
+    focusDialog(gtasksModal, gtasksUrlInput);
   }
 
   gtasksSecretInput?.addEventListener("input", () => {
@@ -2538,9 +2626,9 @@ function out(obj) {
     refreshGTasksScriptPreview();
   });
 
-  document.getElementById("btn-open-gtasks-modal")?.addEventListener("click", openGTasksModal);
-  document.getElementById("btn-close-gtasks")?.addEventListener("click", () => gtasksModal?.classList.add("hidden"));
-  gtasksModal?.querySelector(".modal-backdrop")?.addEventListener("click", () => gtasksModal.classList.add("hidden"));
+  document.getElementById("btn-open-gtasks-modal")?.addEventListener("click", (e) => openGTasksModal(e.currentTarget));
+  document.getElementById("btn-close-gtasks")?.addEventListener("click", () => closeDialog(gtasksModal));
+  gtasksModal?.querySelector(".modal-backdrop")?.addEventListener("click", () => closeDialog(gtasksModal));
 
   document.getElementById("btn-gtasks-sync")?.addEventListener("click", async () => {
     const btn = document.getElementById("btn-gtasks-sync");
@@ -2583,7 +2671,7 @@ function out(obj) {
     submitBtn.disabled = false;
     submitBtn.textContent = orig;
     if (res.ok) {
-      gtasksModal?.classList.add("hidden");
+      closeDialog(gtasksModal);
       try {
         const d = await res.json();
         showToast(`Google Tasks connected — imported ${d.syncedCount ?? 0} tasks`, "success");
@@ -2612,7 +2700,7 @@ function out(obj) {
     );
     if (res.ok) {
       if (gtasksUrlInput) gtasksUrlInput.value = "";
-      gtasksModal?.classList.add("hidden");
+      closeDialog(gtasksModal);
       showToast("Google Tasks disconnected", "info");
     }
   });
@@ -3120,10 +3208,34 @@ function out(obj) {
   });
 
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && gtasksModal && !gtasksModal.classList.contains("hidden")) {
-      gtasksModal.classList.add("hidden");
+    const dialogs = [...document.querySelectorAll(".modal:not(.hidden)")];
+    const dialog = dialogs[dialogs.length - 1];
+    if (!dialog) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (dialog.id === "confirm-modal") finishConfirm(false);
+      else if (dialog.id === "cmd-modal") closeCmdPalette();
+      else closeDialog(dialog);
+      return;
     }
-  });
+    if (e.key !== "Tab") return;
+    const items = dialogFocusables(dialog);
+    if (!items.length) {
+      e.preventDefault();
+      return;
+    }
+    const first = items[0];
+    const last = items[items.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey && (active === first || !dialog.contains(active))) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && (active === last || !dialog.contains(active))) {
+      e.preventDefault();
+      first.focus();
+    }
+  }, true);
 
   fetchSnapshotFallback();
   connectWS();
