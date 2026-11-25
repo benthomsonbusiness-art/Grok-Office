@@ -787,7 +787,7 @@ kbd {
   font-size: 0.78rem;
   margin-bottom: 9px;
 }
-.act-search:focus { outline: none; border-color: rgba(56, 189, 248, 0.5); }
+.act-search:focus { border-color: rgba(56, 189, 248, 0.5); }
 
 .team-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 2px; }
 
@@ -925,7 +925,8 @@ kbd {
   background: rgba(255, 255, 255, 0.02);
   flex-shrink: 0;
 }
-.insp-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.insp-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.insp-back-btn { flex: 1 0 100%; padding: 6px 10px; font-size: 0.78rem; }
 .insp-name { font-family: var(--font-display); font-size: 1.08rem; font-weight: 700; color: var(--text-bright); }
 .insp-tabs {
   display: flex;
@@ -1009,7 +1010,7 @@ kbd {
   padding: 7px 10px;
   font-size: 0.79rem;
 }
-.insp-input:focus { outline: none; border-color: rgba(56, 189, 248, 0.5); }
+.insp-input:focus { border-color: rgba(56, 189, 248, 0.5); }
 .insp-logs { display: flex; flex-direction: column; gap: 7px; }
 .insp-log-item {
   font-size: 0.78rem;
@@ -1581,8 +1582,9 @@ kbd {
   padding: 11px 13px;
   font-family: var(--font-mono);
   font-size: 0.77rem;
-  white-space: pre-wrap;
-  word-break: break-word;
+  white-space: pre;
+  overflow-x: auto;
+  word-break: normal;
   color: #bae6fd;
 }
 
@@ -2081,7 +2083,20 @@ kbd {
   .sidebar { width: 100%; height: 42vh; border-left: none; border-top: 1px solid var(--border); }
   .office-layout.sidebar-collapsed .sidebar { height: 0; width: 100%; }
   .stage-controls-bar { display: none; }
-  .bot-inspector { width: 100%; max-width: 100%; }
+  #bot-inspector.bot-inspector {
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 72px;
+    width: 100%;
+    max-width: 100%;
+    height: min(62vh, 100%);
+    border-left: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.14);
+    box-shadow: 0 -18px 40px rgba(0, 0, 0, 0.55);
+    z-index: 30;
+  }
+  #room-bar.room-bar { z-index: 60; }
   .task-row-main { flex-wrap: wrap; }
   .task-row-actions { width: 100%; justify-content: flex-end; }
   .task-edit-row { grid-template-columns: 1fr; }
@@ -2099,7 +2114,7 @@ kbd {
   .brand-name { font-size: 0.9rem; white-space: nowrap; }
   .brand-live-tag { display: none; }
   .topbar-right { order: 2; gap: 6px; }
-  .cmd-trigger, #btn-shortcuts, #btn-sound-toggle { display: none; }
+  #btn-shortcuts, #btn-sound-toggle { display: none; }
   .main-nav {
     order: 3;
     flex: 1 0 100%;
@@ -2116,7 +2131,7 @@ kbd {
     min-width: 0;
   }
   .nav-tab .ui-ico { display: none; }
-  .nav-tab > span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .nav-tab > span:first-of-type { overflow: visible; text-overflow: clip; white-space: normal; line-height: 1.15; }
   .stage-chip-bar {
     top: 10px;
     left: 10px;

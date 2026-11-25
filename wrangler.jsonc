@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "grok-office",
   "main": "src/index.ts",
-  "compatibility_date": "2026-11-20",
+  "compatibility_date": "2026-11-25",
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
     "directory": "./public",
@@ -22,5 +22,10 @@
       "tag": "v1",
       "new_sqlite_classes": ["OfficeHub"]
     }
-  ]
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "invocation_logs": true },
+    "traces": { "enabled": true, "head_sampling_rate": 0.1 }
+  }
 }

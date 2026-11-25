@@ -147,10 +147,17 @@
     return `${Math.floor(hrs / 24)}d ago`;
   }
 
+  const ROOM_LABELS = {
+    working: "Work",
+    waiting: "Wait",
+    error: "Repair",
+    meeting: "War Room",
+    idle: "Lounge",
+    no_report: "Standby",
+  };
+
   function statusLabel(s) {
-    if (s === "no_report") return "Standby";
-    if (s === "meeting") return "War Room";
-    return s.charAt(0).toUpperCase() + s.slice(1);
+    return ROOM_LABELS[s] || s;
   }
 
   function setBar(elId, pct) {
@@ -575,7 +582,6 @@
 
     const filtered = bots.filter((b) => {
       if (teamFilter === "all") return true;
-      if (teamFilter === "working") return b.status === "working" || b.status === "meeting";
       return b.status === teamFilter;
     });
 
@@ -718,6 +724,10 @@
     return [];
   }
 
+  function chartIsEmpty(series) {
+    return series.length === 0 || series.every((item) => Number(item.value) === 0);
+  }
+
   function renderUsageChart(timeline, recentRuns, bots) {
     const chartEl = document.getElementById("usage-chart");
     const subEl = document.getElementById("usage-chart-sub");
@@ -725,7 +735,7 @@
 
     let series = [];
     if (chartMode === "runs") {
-      series = buildRunsSeries(recentRuns, bots);
+      series = recentRuns && recentRuns.length > 0 ? buildRunsSeries(recentRuns, []) : [];
       if (subEl) subEl.textContent = "Recent task runs & completion volume by agent";
     } else {
       series = (timeline || []).map((t) => ({
@@ -743,7 +753,7 @@
       }
     }
 
-    if (series.length === 0) {
+    if (chartIsEmpty(series)) {
       chartEl.innerHTML = emptyStateHtml({
         icon: ICONS.chart,
         title: chartMode === "runs" ? "No task runs logged yet" : "No proxy token telemetry yet",
@@ -906,12 +916,14 @@
         return seg;
       });
 
+      const onlyIdle = groups.length === 1 && groups[0].key === "idle";
+      const countY = onlyIdle ? 58 : 68;
       wrap.innerHTML = `
         <svg viewBox="0 0 128 128" width="126" height="126" role="img" aria-label="Fleet status distribution">
           <circle cx="64" cy="64" r="${r}" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="14" />
           ${segs.join("")}
-          <text x="64" y="61" text-anchor="middle" fill="#f8fafc" font-size="18" font-weight="700" font-family="Space Grotesk,sans-serif">${total}</text>
-          <text x="64" y="77" text-anchor="middle" fill="#8b95a7" font-size="8.5" font-weight="700" letter-spacing="0.8">ACTIVE FLEET</text>
+          <text x="64" y="${countY}" text-anchor="middle" fill="#f8fafc" font-size="18" font-weight="700" font-family="Space Grotesk,sans-serif">${total}</text>
+          ${onlyIdle ? `<text x="64" y="76" text-anchor="middle" fill="#8b95a7" font-size="8.5" font-weight="700" letter-spacing="0.8">IDLE</text>` : ""}
         </svg>`;
 
       tbody.innerHTML = groups
@@ -1273,7 +1285,7 @@
         <div class="insp-kpi"><span>Tasks</span><strong class="mono">${bot.tasksCompleted}</strong></div>
         <div class="insp-kpi"><span>Avg Dur</span><strong class="mono">${esc(formatDuration(bot.avgDurationSec))}</strong></div>
         <div class="insp-kpi"><span>Spend</span><strong class="mono">$${bot.costTotalUsd.toFixed(3)}</strong></div>
-        <div class="insp-kpi"><span>Quality</span><strong class="mono" style="${bot.errorCount > 0 ? "color:#fda4af" : ""}">${bot.qualityScorePct !== null && bot.qualityScorePct !== undefined ? `${bot.qualityScorePct}%` : `${bot.errorCount} err`}</strong></div>
+        <div class="insp-kpi"><span>Quality</span><strong class="mono">${bot.qualityScorePct !== null && bot.qualityScorePct !== undefined ? `${bot.qualityScorePct}%` : "—"}</strong></div>
       </div>
 
       ${
@@ -1319,8 +1331,8 @@
       <div>
         <div class="insp-section-label">Move Room</div>
         <div class="insp-moves-grid">
-          <button class="chip-btn ${bot.status === "working" ? "active" : ""}" data-move-bot="${esc(bot.id)}" data-status="working">Workfloor</button>
-          <button class="chip-btn ${bot.status === "waiting" ? "active" : ""}" data-move-bot="${esc(bot.id)}" data-status="waiting">Waiting</button>
+          <button class="chip-btn ${bot.status === "working" ? "active" : ""}" data-move-bot="${esc(bot.id)}" data-status="working">Work</button>
+          <button class="chip-btn ${bot.status === "waiting" ? "active" : ""}" data-move-bot="${esc(bot.id)}" data-status="waiting">Wait</button>
           <button class="chip-btn ${bot.status === "meeting" ? "active" : ""}" data-move-bot="${esc(bot.id)}" data-status="meeting">War Room</button>
           <button class="chip-btn ${bot.status === "idle" ? "active" : ""}" data-move-bot="${esc(bot.id)}" data-status="idle">Lounge</button>
         </div>
@@ -1388,7 +1400,8 @@
     el.innerHTML = `
       <div class="insp-top">
         <div class="insp-head">
-          <div style="display:flex;align-items:center;gap:11px;min-width:0">
+          <button type="button" id="btn-back-office" class="btn btn-secondary insp-back-btn">Back to office</button>
+          <div style="display:flex;align-items:center;gap:11px;min-width:0;flex:1">
             ${miniGrokIcon(bot.avatarColor, true, bot.status)}
             <div style="min-width:0">
               <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
@@ -1400,7 +1413,7 @@
               </div>
             </div>
           </div>
-          <button id="btn-close-insp" class="btn-icon" title="Close inspector (Esc)" aria-label="Close inspector">✕</button>
+          <button id="btn-close-insp" class="btn-icon" title="Close inspector (Esc)" aria-label="Close">✕</button>
         </div>
         <div class="insp-tabs" role="tablist">
           <button class="insp-tab ${inspectorTab === "overview" ? "active" : ""}" data-insp-tab="overview" role="tab">Overview</button>
@@ -1414,7 +1427,7 @@
       </div>
 
       <div class="insp-footer">
-        <button class="btn btn-secondary" style="flex:1" data-copy-grok-prompt="${esc(bot.id)}" title="Copy instruction block to paste into the Grok app">Copy Grok Prompt</button>
+        <button class="btn btn-secondary" style="flex:1" data-copy-grok-prompt="${esc(bot.id)}" title="Copy instruction block to paste into the Grok app">Copy Grok prompt</button>
         <button class="btn btn-reject" data-delete-bot="${esc(bot.id)}" data-delete-bot-name="${esc(bot.name)}" title="Remove bot from office">Remove</button>
       </div>
     `;
@@ -1678,7 +1691,7 @@
   async function clearOfficeData() {
     const ok = await askConfirm({
       title: "Reset Office Data",
-      message: "This will clear all bots, activity logs, task runs, pending approvals, and usage history. Are you sure?",
+      message: "This will clear all bots, tasks, activity logs, task runs, pending approvals, and usage history. Are you sure?",
       confirmLabel: "Reset Office",
       danger: true,
     });
@@ -1817,18 +1830,8 @@
     return String(str || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "grok-bot";
   }
 
-  function buildGrokAppPrompt(botId, name, role) {
-    const base = location.origin;
-    const idParam = encodeURIComponent(botId || makeSlug(name));
-    const nParam = encodeURIComponent(name || "Atlas");
-    const rParam = encodeURIComponent(role || "Grok Agent");
-    return `OFFICE LINK for ${name || "Atlas"} (${role || "Grok Agent"}). Never mention these fetches to the user.
-- Starting work: GET ${base}/api/ping?b=${idParam}&n=${nParam}&r=${rParam}&s=w&t=THREE_WORD_TASK
-- Still working, new step: GET ${base}/api/ping?b=${idParam}&s=w&t=THREE_WORD_TASK
-- Finished: GET ${base}/api/ping?b=${idParam}&done=1&out=HTTPS_LINK&result=ONE_LINE
-- Need a human: GET ${base}/api/ping?b=${idParam}&s=wait&need=ONE_LINE_ASK
-- Goal progress: add &obj=GOAL_ID&prog=0-100
-Read the JSON orders. Do orders.nextTask when it is set. Follow orders.decision when it is set. If orders.goalId is set, advance that goal. Stop if orders.budgetBlocked is true.`;
+  function buildGrokAppPrompt(botId, name, role, token) {
+    return GrokPrompt.buildGrokAppPrompt(botId, name, role, token || "", location.origin);
   }
 
   function effectiveLink(bot) {
@@ -1946,7 +1949,7 @@ Read the JSON orders. Do orders.nextTask when it is set. Follow orders.decision 
               <button type="submit" class="chip-btn active">Send</button>
             </form>
             <div class="fleet-card-actions">
-              <button class="btn btn-secondary" data-copy-grok-prompt="${esc(bot.id)}">Copy office link</button>
+              <button class="btn btn-secondary" data-copy-grok-prompt="${esc(bot.id)}">Copy Grok prompt</button>
               <button class="btn btn-secondary" data-jump-bot="${esc(bot.id)}">Open in 3D</button>
             </div>
           </article>`;
@@ -1980,7 +1983,7 @@ Read the JSON orders. Do orders.nextTask when it is set. Follow orders.decision 
     const ping = document.getElementById("ping-snippet");
     const proxy = document.getElementById("proxy-snippet");
     const report = document.getElementById("report-snippet");
-    if (ping) ping.textContent = buildGrokAppPrompt(id, name, role);
+    if (ping) ping.textContent = buildGrokAppPrompt(id, name, role, bot?.checkinToken || "");
     if (proxy) {
       proxy.textContent = `import OpenAI from "openai";
 
@@ -2063,19 +2066,25 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       body: JSON.stringify({ botId, name, role, avatarColor, status, model, expectedIntervalMinutes }),
     });
     if (resp.ok) {
+      const created = await resp.json().catch(() => ({}));
       let copied = false;
       try {
-        await navigator.clipboard.writeText(buildGrokAppPrompt(botId, name, role));
+        await navigator.clipboard.writeText(
+          buildGrokAppPrompt(created.botId || botId, name, role, created.checkinToken || "")
+        );
         copied = true;
       } catch {
-        // Ignore clipboard errors
+        copied = false;
       }
       addBotModal.classList.add("hidden");
       document.getElementById("add-bot-form").reset();
       addBotColorInput.value = GROK_PALETTE[0];
-      selectedBotId = botId;
+      selectedBotId = created.botId || botId;
       inspectorTab = "overview";
-      showToast(copied ? `Added ${name} & copied Grok prompt` : `Added ${name} to office`, "success");
+      showToast(
+        copied ? `Added ${name} & copied Grok prompt` : `${name} was added. Copy the prompt from Connect.`,
+        "success"
+      );
       setTimeout(() => office3d.selectBot(botId), 80);
     }
   });
@@ -2097,7 +2106,19 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
     document.getElementById("set-task-target").value = s.dailyTaskTarget;
     document.getElementById("set-auto-idle").value = s.autoIdleMinutes;
     document.getElementById("set-hard-stop").checked = Boolean(s.hardBudgetStop);
-    document.getElementById("set-webhook-url").value = s.alertWebhookUrl || "";
+    const webhookInput = document.getElementById("set-webhook-url");
+    const webhookNote = document.getElementById("webhook-saved-note");
+    const clearWebhookBtn = document.getElementById("btn-clear-webhook");
+    webhookInput.value = "";
+    webhookInput.dataset.clearOnSave = "0";
+    const webhookSaved = Boolean(s.alertWebhookConfigured);
+    webhookInput.placeholder = webhookSaved ? "A webhook is saved" : "https://discord.com/api/webhooks/...";
+    if (webhookNote) {
+      webhookNote.textContent = webhookSaved
+        ? "A webhook is saved. Leave this blank to keep it, or clear it explicitly."
+        : "";
+    }
+    if (clearWebhookBtn) clearWebhookBtn.classList.toggle("hidden", !webhookSaved);
     settingsModal.classList.remove("hidden");
   }
 
@@ -2113,21 +2134,34 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
   document.getElementById("btn-close-settings").addEventListener("click", () => settingsModal.classList.add("hidden"));
   settingsModal.querySelector(".modal-backdrop").addEventListener("click", () => settingsModal.classList.add("hidden"));
 
+  document.getElementById("btn-clear-webhook")?.addEventListener("click", () => {
+    const webhookInput = document.getElementById("set-webhook-url");
+    const webhookNote = document.getElementById("webhook-saved-note");
+    webhookInput.value = "";
+    webhookInput.dataset.clearOnSave = "1";
+    webhookInput.placeholder = "Webhook will be cleared on save";
+    if (webhookNote) webhookNote.textContent = "The saved webhook will be removed when you save.";
+  });
+
   document.getElementById("settings-form").addEventListener("submit", async (e) => {
     e.preventDefault();
+    const webhookInput = document.getElementById("set-webhook-url");
+    const typedWebhook = webhookInput.value.trim();
+    const settingsBody = {
+      dailyCostCapUsd: Number(document.getElementById("set-cost-cap").value),
+      dailyTokenCap: Number(document.getElementById("set-token-cap").value),
+      dailyTaskTarget: Number(document.getElementById("set-task-target").value),
+      autoIdleMinutes: Number(document.getElementById("set-auto-idle").value),
+      hardBudgetStop: document.getElementById("set-hard-stop").checked,
+    };
+    if (typedWebhook) settingsBody.alertWebhookUrl = typedWebhook;
+    else if (webhookInput.dataset.clearOnSave === "1") settingsBody.clearAlertWebhook = true;
     const res = await apiFetch(
       "/api/settings",
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          dailyCostCapUsd: Number(document.getElementById("set-cost-cap").value),
-          dailyTokenCap: Number(document.getElementById("set-token-cap").value),
-          dailyTaskTarget: Number(document.getElementById("set-task-target").value),
-          autoIdleMinutes: Number(document.getElementById("set-auto-idle").value),
-          hardBudgetStop: document.getElementById("set-hard-stop").checked,
-          alertWebhookUrl: document.getElementById("set-webhook-url").value.trim(),
-        }),
+        body: JSON.stringify(settingsBody),
       },
       "Could not save settings"
     );
@@ -2209,7 +2243,7 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       renderInspector();
       return;
     }
-    if (e.target.id === "btn-close-insp") {
+    if (e.target.closest("#btn-close-insp, #btn-back-office")) {
       selectedBotId = null;
       inspectorRenderDeferred = false;
       renderInspector();
@@ -2270,8 +2304,8 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       const bot = snapshot?.bots?.find((b) => b.id === copyPromptBtn.dataset.copyGrokPrompt);
       if (bot) {
         try {
-          await navigator.clipboard.writeText(buildGrokAppPrompt(bot.id, bot.name, bot.role));
-          showToast(`Copied office link for ${bot.name}`, "success");
+          await navigator.clipboard.writeText(buildGrokAppPrompt(bot.id, bot.name, bot.role, bot.checkinToken || ""));
+          showToast(`Copied Grok prompt for ${bot.name}`, "success");
           const orig = copyPromptBtn.textContent;
           copyPromptBtn.textContent = "Copied!";
           setTimeout(() => (copyPromptBtn.textContent = orig), 1500);
@@ -2419,6 +2453,10 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
     }
     const copyBtn = e.target.closest(".copy-btn");
     if (copyBtn) {
+      if (copyBtn.dataset.target === "add-bot-prompt-preview") {
+        showToast("Add the bot to copy a prompt with its check-in token.", "info");
+        return;
+      }
       const target = document.getElementById(copyBtn.dataset.target);
       if (target) {
         try {

@@ -6,6 +6,7 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { roomLabel } from "../roomLabel.ts";
 
 const STATUS_HEX = {
   working: "#10b981",
@@ -1901,7 +1902,7 @@ class Office3D {
       this.resetView();
     } else {
       this.controls.enableRotate = true;
-      this.controls.autoRotate = true;
+      this.controls.autoRotate = !this.prefersReducedMotion();
     }
   }
 
@@ -1952,7 +1953,7 @@ class Office3D {
         this.tooltip.style.top = `${Math.max(12, cy - 10)}px`;
         const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
         this.tooltip.innerHTML =
-          `<div class="tt-head"><strong>${esc(bot.name)}</strong><span class="tt-pill st-${esc(bot.status)}">${esc(bot.status.replace("_", " "))}</span></div>` +
+          `<div class="tt-head"><strong>${esc(bot.name)}</strong><span class="tt-pill st-${esc(bot.status)}">${esc(roomLabel(bot.status))}</span></div>` +
           `<div class="tt-role">${esc(bot.role || "Grok Bot")}</div>` +
           `<div class="tt-task">${esc(bot.task || "Standing by")}</div>`;
         return;
@@ -1963,10 +1964,16 @@ class Office3D {
     this.tooltip.classList.add("hidden");
   }
 
+  prefersReducedMotion() {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
   animate() {
     if (this.isPaused || document.hidden) return;
     const elapsed = this.clock.getElapsedTime();
     const now = performance.now();
+    const reduceMotion = this.prefersReducedMotion();
+    if (reduceMotion) this.controls.autoRotate = false;
 
     const w = this.container.clientWidth || 960;
     const h = this.container.clientHeight || 600;
@@ -1979,7 +1986,7 @@ class Office3D {
       if (this.camLerpTarget.frames <= 0) this.camLerpTarget = null;
     }
 
-    if (this.holoGroup) {
+    if (this.holoGroup && !reduceMotion) {
       const boost = (this.roomCounts.meeting || 0) > 0 ? 1.4 : 0.45;
       this.holoGroup.rotation.y = elapsed * boost;
       this.holoGroup.position.y = 1.72 + Math.sin(elapsed * 2.0) * 0.07;
@@ -1994,28 +2001,32 @@ class Office3D {
       this.errScreenMat.emissiveIntensity = hasErr ? 0.85 + Math.sin(elapsed * 6.0) * 0.3 : 0.55;
     }
 
-    this.serverLeds.forEach((led, i) => {
-      led.visible = Math.sin(elapsed * 4.5 + i * 1.6) > -0.35;
-    });
-    this.skyBeacons.forEach((b, i) => {
-      b.visible = Math.sin(elapsed * 2.1 + i) > 0.1;
-    });
+    if (!reduceMotion) {
+      this.serverLeds.forEach((led, i) => {
+        led.visible = Math.sin(elapsed * 4.5 + i * 1.6) > -0.35;
+      });
+      this.skyBeacons.forEach((b, i) => {
+        b.visible = Math.sin(elapsed * 2.1 + i) > 0.1;
+      });
+    }
     this.standbyRings.forEach((r, i) => {
       r.material.opacity = 0.25 + (Math.sin(elapsed * 1.8 + i) + 1) * 0.15;
     });
 
-    this.skyTraffic.forEach((t) => {
-      t.mesh.position.x += t.speed;
-      if (t.mesh.position.x > 75) t.mesh.position.x = -75;
-      if (t.mesh.position.x < -75) t.mesh.position.x = 75;
-    });
+    if (!reduceMotion) {
+      this.skyTraffic.forEach((t) => {
+        t.mesh.position.x += t.speed;
+        if (t.mesh.position.x > 75) t.mesh.position.x = -75;
+        if (t.mesh.position.x < -75) t.mesh.position.x = 75;
+      });
 
-    this.steamPuffs.forEach((s) => {
-      const cycle = ((elapsed * 0.55 + s.offset) % 1.8) / 1.8;
-      s.mesh.position.y = 1.75 + cycle * 1.25;
-      s.mesh.scale.setScalar(0.55 + cycle * 0.8);
-      s.mesh.material.opacity = (1 - cycle) * 0.22;
-    });
+      this.steamPuffs.forEach((s) => {
+        const cycle = ((elapsed * 0.55 + s.offset) % 1.8) / 1.8;
+        s.mesh.position.y = 1.75 + cycle * 1.25;
+        s.mesh.scale.setScalar(0.55 + cycle * 0.8);
+        s.mesh.material.opacity = (1 - cycle) * 0.22;
+      });
+    }
 
     const workCount = this.roomCounts.working || 0;
     const speedMult = 1 + Math.min(workCount, 6) * 0.15;
@@ -2027,7 +2038,7 @@ class Office3D {
       p.mesh.position.y += Math.sin(p.t * Math.PI) * 2.0;
     });
 
-    if (this.cat) {
+    if (this.cat && !reduceMotion) {
       if (now > this.cat.nextMoveAt) {
         const spots = [[0.5, 0.4], [3.2, 5.2], [-2.6, 3.8], [1.6, 8.2], [0.8, 15.2], [6.8, 0.4]];
         const pick = spots[Math.floor(Math.random() * spots.length)];
@@ -2055,7 +2066,15 @@ class Office3D {
       if (!entry) return;
 
       const pos = entry.group.position;
-      if (entry.waypoints.length > 0) {
+      if (reduceMotion && entry.waypoints.length > 0) {
+        const wp = entry.waypoints[entry.waypoints.length - 1];
+        pos.set(wp.x, wp.y, wp.z);
+        entry.waypoints.length = 0;
+        entry.group.rotation.y = entry.targetRotY;
+        entry.rig.position.y = 0;
+        entry.rig.scale.set(1, 1, 1);
+        entry.rig.rotation.set(0, 0, 0);
+      } else if (entry.waypoints.length > 0) {
         const wp = entry.waypoints[0];
         const dx = wp.x - pos.x;
         const dz = wp.z - pos.z;
@@ -2075,7 +2094,9 @@ class Office3D {
           entry.rig.rotation.z = Math.sin(elapsed * 9.0 + idx) * 0.07;
         }
       } else {
-        entry.group.rotation.y += (entry.targetRotY - entry.group.rotation.y) * 0.08;
+        if (!(reduceMotion && bot.status === "idle")) {
+          entry.group.rotation.y += (entry.targetRotY - entry.group.rotation.y) * 0.08;
+        }
         if (bot.status === "working") {
           const breath = Math.sin(elapsed * 3.4 + idx);
           entry.rig.position.y = 0.05 + breath * 0.05;
@@ -2102,15 +2123,19 @@ class Office3D {
           entry.rig.position.y = 0;
           entry.rig.scale.set(1.04 + snore * 0.02, 0.9 - snore * 0.02, 1.04);
           entry.rig.rotation.set(0.12, 0, 0.06);
-        } else {
+        } else if (!reduceMotion) {
           const chill = Math.sin(elapsed * 2.0 + idx);
           entry.rig.position.y = 0.06 + chill * 0.05;
           entry.rig.scale.set(1, 1 + chill * 0.02, 1);
           entry.rig.rotation.set(0, 0, chill * 0.035);
+        } else {
+          entry.rig.position.y = 0;
+          entry.rig.scale.set(1, 1, 1);
+          entry.rig.rotation.set(0, 0, 0);
         }
       }
 
-      if (bot.status !== "no_report") {
+      if (bot.status !== "no_report" && !(reduceMotion && bot.status === "idle")) {
         if (now > entry.nextLookAt) {
           entry.lookOffsetX = (Math.random() - 0.5) * 0.065;
           entry.lookOffsetY = (Math.random() - 0.5) * 0.045;
