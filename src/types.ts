@@ -77,6 +77,7 @@ export interface BotRecord {
   lastSeenAt: string;
   collaboratingWith: string | null;
   link: ConnectionLink;
+  checkinToken: string;
 }
 
 export interface PendingNeed {
@@ -123,6 +124,7 @@ export interface OfficeSettings {
   autoIdleMinutes: number;
   hardBudgetStop: boolean;
   alertWebhookUrl: string;
+  alertWebhookConfigured: boolean;
 }
 
 export interface UsageByModel {

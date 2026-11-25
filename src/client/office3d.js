@@ -1895,13 +1895,14 @@ class Office3D {
 
   setCameraMode(mode) {
     this.cameraMode = mode;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (mode === "fixed") {
       this.controls.autoRotate = false;
       this.controls.enableRotate = false;
       this.resetView();
     } else {
       this.controls.enableRotate = true;
-      this.controls.autoRotate = true;
+      this.controls.autoRotate = !reduceMotion;
     }
   }
 
@@ -1951,8 +1952,16 @@ class Office3D {
         this.tooltip.style.left = `${Math.min(cx + 16, this.container.clientWidth - 260)}px`;
         this.tooltip.style.top = `${Math.max(12, cy - 10)}px`;
         const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+        const roomLabel = {
+          working: "Work",
+          waiting: "Wait",
+          error: "Repair",
+          meeting: "War Room",
+          idle: "Lounge",
+          no_report: "Standby",
+        }[bot.status] || bot.status;
         this.tooltip.innerHTML =
-          `<div class="tt-head"><strong>${esc(bot.name)}</strong><span class="tt-pill st-${esc(bot.status)}">${esc(bot.status.replace("_", " "))}</span></div>` +
+          `<div class="tt-head"><strong>${esc(bot.name)}</strong><span class="tt-pill st-${esc(bot.status)}">${esc(roomLabel)}</span></div>` +
           `<div class="tt-role">${esc(bot.role || "Grok Bot")}</div>` +
           `<div class="tt-task">${esc(bot.task || "Standing by")}</div>`;
         return;
@@ -1979,43 +1988,49 @@ class Office3D {
       if (this.camLerpTarget.frames <= 0) this.camLerpTarget = null;
     }
 
-    if (this.holoGroup) {
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduceMotion) this.controls.autoRotate = false;
+
+    if (!reduceMotion && this.holoGroup) {
       const boost = (this.roomCounts.meeting || 0) > 0 ? 1.4 : 0.45;
       this.holoGroup.rotation.y = elapsed * boost;
       this.holoGroup.position.y = 1.72 + Math.sin(elapsed * 2.0) * 0.07;
     }
 
-    if (this.waitScreenMat) {
+    if (!reduceMotion && this.waitScreenMat) {
       const hasWait = (this.roomCounts.waiting || 0) > 0;
       this.waitScreenMat.emissiveIntensity = hasWait ? 0.8 + Math.sin(elapsed * 4.0) * 0.25 : 0.55;
     }
-    if (this.errScreenMat) {
+    if (!reduceMotion && this.errScreenMat) {
       const hasErr = (this.roomCounts.error || 0) > 0;
       this.errScreenMat.emissiveIntensity = hasErr ? 0.85 + Math.sin(elapsed * 6.0) * 0.3 : 0.55;
     }
 
-    this.serverLeds.forEach((led, i) => {
-      led.visible = Math.sin(elapsed * 4.5 + i * 1.6) > -0.35;
-    });
-    this.skyBeacons.forEach((b, i) => {
-      b.visible = Math.sin(elapsed * 2.1 + i) > 0.1;
-    });
-    this.standbyRings.forEach((r, i) => {
-      r.material.opacity = 0.25 + (Math.sin(elapsed * 1.8 + i) + 1) * 0.15;
-    });
-
-    this.skyTraffic.forEach((t) => {
-      t.mesh.position.x += t.speed;
-      if (t.mesh.position.x > 75) t.mesh.position.x = -75;
-      if (t.mesh.position.x < -75) t.mesh.position.x = 75;
-    });
-
-    this.steamPuffs.forEach((s) => {
-      const cycle = ((elapsed * 0.55 + s.offset) % 1.8) / 1.8;
-      s.mesh.position.y = 1.75 + cycle * 1.25;
-      s.mesh.scale.setScalar(0.55 + cycle * 0.8);
-      s.mesh.material.opacity = (1 - cycle) * 0.22;
-    });
+    if (!reduceMotion) {
+      this.serverLeds.forEach((led, i) => {
+        led.visible = Math.sin(elapsed * 4.5 + i * 1.6) > -0.35;
+      });
+      this.skyBeacons.forEach((b, i) => {
+        b.visible = Math.sin(elapsed * 2.1 + i) > 0.1;
+      });
+      this.standbyRings.forEach((r, i) => {
+        r.material.opacity = 0.25 + (Math.sin(elapsed * 1.8 + i) + 1) * 0.15;
+      });
+      this.skyTraffic.forEach((t) => {
+        t.mesh.position.x += t.speed;
+        if (t.mesh.position.x > 75) t.mesh.position.x = -75;
+        if (t.mesh.position.x < -75) t.mesh.position.x = 75;
+      });
+      this.steamPuffs.forEach((s) => {
+        const cycle = ((elapsed * 0.55 + s.offset) % 1.8) / 1.8;
+        s.mesh.position.y = 1.75 + cycle * 1.25;
+        s.mesh.scale.setScalar(0.55 + cycle * 0.8);
+        s.mesh.material.opacity = (1 - cycle) * 0.22;
+      });
+    } else {
+      this.serverLeds.forEach((led) => { led.visible = true; });
+      this.skyBeacons.forEach((b) => { b.visible = true; });
+    }
 
     const workCount = this.roomCounts.working || 0;
     const speedMult = 1 + Math.min(workCount, 6) * 0.15;
@@ -2027,7 +2042,7 @@ class Office3D {
       p.mesh.position.y += Math.sin(p.t * Math.PI) * 2.0;
     });
 
-    if (this.cat) {
+    if (!reduceMotion && this.cat) {
       if (now > this.cat.nextMoveAt) {
         const spots = [[0.5, 0.4], [3.2, 5.2], [-2.6, 3.8], [1.6, 8.2], [0.8, 15.2], [6.8, 0.4]];
         const pick = spots[Math.floor(Math.random() * spots.length)];
@@ -2055,7 +2070,11 @@ class Office3D {
       if (!entry) return;
 
       const pos = entry.group.position;
-      if (entry.waypoints.length > 0) {
+      if (reduceMotion) {
+        entry.rig.position.y = 0;
+        entry.rig.scale.set(1, 1, 1);
+        entry.rig.rotation.set(0, 0, 0);
+      } else if (entry.waypoints.length > 0) {
         const wp = entry.waypoints[0];
         const dx = wp.x - pos.x;
         const dz = wp.z - pos.z;
@@ -2138,7 +2157,7 @@ class Office3D {
           d.position.y = Math.sin(elapsed * 5.5 - di * 0.7) * 0.06;
         });
       }
-      if (entry.beacon.visible) {
+      if (entry.beacon.visible && !reduceMotion) {
         entry.beacon.position.y = 1.78 + Math.sin(elapsed * 5.0) * 0.1;
       }
 
