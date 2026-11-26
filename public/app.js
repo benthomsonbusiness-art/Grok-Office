@@ -525,7 +525,10 @@
     renderStatusStrip();
     if (activeView === "today") {
       const todayEl = document.getElementById("view-today");
-      if (!force && isEditingInside(todayEl)) return;
+      if (!force && isEditingInside(todayEl)) {
+        renderTodayRequests(); // keep the request tracker live while the bar has focus
+        return;
+      }
       renderTodayPage();
     } else if (activeView === "calendar") {
       const calEl = document.getElementById("view-calendar");
@@ -3623,6 +3626,7 @@ Every response includes orders.nextTask: run it next.`;
   // =========================================================================
   function renderTodayPage() {
     if (!snapshot) return;
+    renderTodayRequests();
     const now = new Date();
     const todayKey = localDateKey(now);
     const bots = snapshot.bots || [];
@@ -4256,32 +4260,140 @@ function out(obj) {
 
   const todayCaptureInput = document.getElementById("today-capture-input");
   const todayCaptureHint = document.getElementById("today-capture-hint");
+  // ---- Today bar: plain text goes to Jared; task:/event:/@agent keep their shortcuts ----
+  function ceoBot() {
+    const id = snapshot?.ceoId;
+    return id ? (snapshot.bots || []).find((b) => b.id === id) || null : null;
+  }
   function currentTodayCapture() {
     const raw = todayCaptureInput?.value || "";
     if (!raw.trim() || !window.QuickCapture) return null;
-    return QuickCapture.parseQuickCapture(raw) || QuickCapture.parseAsTask(raw);
+    return QuickCapture.parseQuickCapture(raw);
   }
-  todayCaptureInput?.addEventListener("input", () => {
-    const c = currentTodayCapture();
+  function autoGrow() {
+    if (!todayCaptureInput) return;
+    todayCaptureInput.style.height = "auto";
+    todayCaptureInput.style.height = `${Math.min(160, todayCaptureInput.scrollHeight)}px`;
+  }
+  function updateJaredHint() {
     if (!todayCaptureHint) return;
-    if (!c) {
+    const raw = todayCaptureInput?.value || "";
+    if (!raw.trim()) {
       todayCaptureHint.textContent = "";
       return;
     }
-    const kindLabel = c.kind === "bot" ? `→ @${c.botHandle}` : c.kind === "event" ? "event" : "task";
+    const c = currentTodayCapture();
+    if (!c) {
+      todayCaptureHint.textContent = `→ ${ceoBot()?.name || "Jared"}`;
+      return;
+    }
+    const kindLabel = c.kind === "bot" ? `→ @${c.botHandle}` : c.kind === "event" ? "event" : "your task";
     const when = QuickCapture.describeCapture(c);
     todayCaptureHint.textContent = when ? `${kindLabel} · ${when}` : kindLabel;
+  }
+  todayCaptureInput?.addEventListener("input", () => {
+    autoGrow();
+    updateJaredHint();
   });
-  document.getElementById("today-capture")?.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const c = currentTodayCapture();
-    if (!c) return;
-    const ok = await runCapture(c);
-    if (ok && todayCaptureInput) {
-      todayCaptureInput.value = "";
-      if (todayCaptureHint) todayCaptureHint.textContent = "";
+  todayCaptureInput?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      document.getElementById("today-capture")?.requestSubmit();
     }
   });
+
+  let sendingToJared = false;
+  async function sendToJared(text) {
+    const res = await apiFetch(
+      "/api/requests",
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) },
+      "Could not reach Jared"
+    );
+    if (!res.ok) return false;
+    const d = await res.json().catch(() => ({}));
+    const name = ceoBot()?.name || "Jared";
+    showToast(d.wakeConfigured ? `Sent. Waking ${name} now.` : `Sent to ${name}. He'll get it on his next check-in.`, "success");
+    return true;
+  }
+
+  document.getElementById("today-capture")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (sendingToJared) return;
+    const raw = (todayCaptureInput?.value || "").trim();
+    if (!raw) return;
+    sendingToJared = true;
+    const form = e.currentTarget;
+    form.classList.add("is-sending");
+    const c = currentTodayCapture();
+    const ok = c ? await runCapture(c) : await sendToJared(raw);
+    form.classList.remove("is-sending");
+    sendingToJared = false;
+    if (ok && todayCaptureInput) {
+      todayCaptureInput.value = "";
+      autoGrow();
+      updateJaredHint();
+      todayCaptureInput.focus();
+    }
+  });
+
+  const REQ_STEPS = [
+    { key: "sent", label: "Sent" },
+    { key: "picked", label: "Picked up" },
+    { key: "handed", label: "Handed off" },
+    { key: "done", label: "Done" },
+  ];
+  function requestStage(r) {
+    if (r.status === "done") return 3;
+    const kids = r.handoffs || [];
+    if (kids.length && kids.every((k) => k.status === "done")) return 3;
+    if (kids.length) return 2;
+    if (r.status === "dispatched") return 1;
+    return 0;
+  }
+  function renderTodayRequests() {
+    const el = document.getElementById("today-requests");
+    if (!el || !snapshot) return;
+    const ceo = ceoBot();
+    const avatar = document.getElementById("jared-bar-avatar");
+    if (avatar) avatar.innerHTML = ceo ? miniGrokIcon(ceo.avatarColor, true, ceo.status) : "";
+    const nameEl = document.getElementById("jared-bar-name");
+    if (nameEl) nameEl.textContent = ceo?.name || "Jared";
+    if (todayCaptureInput) todayCaptureInput.placeholder = ceo ? `Tell ${ceo.name} what you need…` : "Set a CEO agent on the Agents page to use this bar";
+    const reqs = (snapshot.requests || []).slice(0, 5);
+    if (!reqs.length) {
+      el.innerHTML = "";
+      return;
+    }
+    el.innerHTML = reqs
+      .map((r) => {
+        const stage = requestStage(r);
+        const kids = r.handoffs || [];
+        const link = r.outputUrl ? safeHttpsUrl(r.outputUrl) : null;
+        const steps = REQ_STEPS.map((s, i) => {
+          let label = s.label;
+          if (s.key === "handed" && kids.length) label = `To ${[...new Set(kids.map((k) => k.botName))].join(", ")}`;
+          if (s.key === "handed" && !kids.length && stage === 3) label = "Did it himself";
+          const cls = stage === 3 || i < stage ? "done" : i === stage ? "now" : "";
+          return `<span class="req-step ${cls}">${esc(label)}</span>`;
+        }).join("");
+        const kidLines = kids
+          .map((k) => {
+            const kl = k.outputUrl ? safeHttpsUrl(k.outputUrl) : null;
+            return `<div class="req-kid"><span class="req-kid-dot st-${esc(k.status)}"></span><strong>${esc(k.botName)}</strong> ${esc(k.task)}${k.result ? ` <span class="muted">· ${esc(k.result)}</span>` : ""}${kl ? ` <a href="${esc(kl)}" target="_blank" rel="noopener noreferrer">open ↗</a>` : ""}</div>`;
+          })
+          .join("");
+        return `<article class="req-card ${stage === 3 ? "is-done" : ""}">
+          <div class="req-top">
+            <div class="req-text">${esc(r.text)}</div>
+            <span class="req-time mono" data-live-ts="${esc(r.createdAt)}">${esc(timeAgo(r.createdAt))}</span>
+          </div>
+          <div class="req-steps">${steps}</div>
+          ${r.result || link ? `<div class="req-result">${r.result ? esc(r.result) : ""}${link ? ` <a href="${esc(link)}" target="_blank" rel="noopener noreferrer">open result ↗</a>` : ""}</div>` : ""}
+          ${kidLines ? `<div class="req-kids">${kidLines}</div>` : ""}
+        </article>`;
+      })
+      .join("");
+  }
 
   // Keep "today" accurate across midnight and refresh the now-line.
   setInterval(() => {

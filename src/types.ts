@@ -192,6 +192,8 @@ export interface OfficeSnapshot {
   tasks: GoogleTaskItem[];
   googleTasksSync: GoogleTasksSyncState;
   routines: Array<Record<string, unknown>>;
+  requests: Array<Record<string, unknown>>;
+  ceoId: string | null;
   asks: Array<Record<string, unknown>>;
   notify: Record<string, unknown>;
   handbook: string;

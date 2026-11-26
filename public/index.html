@@ -15,7 +15,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,650;12..96,750&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2307090e'/%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='6.5' fill='none' stroke='%23ffffff' stroke-opacity='0.22'/%3E%3Cpath d='M18.2 6.8L10.2 17.4h5.3l-1.3 7.8 8-10.6h-5.3l1.3-7.8z' fill='%23ffb547'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="/styles.css?v=12" />
+  <link rel="stylesheet" href="/styles.css?v=13" />
 </head>
 <body>
   <div id="app-root" class="app-root">
@@ -108,14 +108,22 @@
             <h1 id="today-greeting">Good evening.</h1>
             <p class="page-lead" id="today-summary">Loading your day…</p>
           </div>
-          <form id="today-capture" class="capture-bar" autocomplete="off">
-            <span class="capture-glyph" aria-hidden="true">+</span>
-            <input id="today-capture-input" type="text" maxlength="240" aria-label="Quick capture"
-              placeholder="task: call Mike tomorrow · event: dentist fri 2pm · @atlas research X" />
-            <span id="today-capture-hint" class="capture-hint mono"></span>
-            <button type="submit" class="btn btn-primary">Add</button>
-          </form>
         </header>
+
+        <section class="jared-bar-wrap" aria-label="Tell Jared what you need">
+          <form id="today-capture" class="jared-bar" autocomplete="off">
+            <span class="jared-avatar" id="jared-bar-avatar" aria-hidden="true"></span>
+            <textarea id="today-capture-input" rows="1" maxlength="1000" aria-label="Tell Jared what you need"
+              placeholder="Tell Jared what you need…"></textarea>
+            <span id="today-capture-hint" class="jared-hint mono"></span>
+            <button type="submit" class="btn btn-primary jared-send" aria-label="Send">
+              <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+              <span>Send</span>
+            </button>
+          </form>
+          <div class="jared-help mono">Enter sends to <strong id="jared-bar-name">Jared</strong>, who wakes up, does it or hands it to the right agent · Shift+Enter for a new line · <em>task:</em> your own to-do · <em>event:</em> calendar · <em>@bruce</em> skip Jared</div>
+          <div id="today-requests" class="request-list"></div>
+        </section>
 
         <section class="rail-card" aria-labelledby="rail-title">
           <div class="rail-head">
@@ -1169,8 +1177,8 @@
     </div>
   </div>
 
-  <script src="/grokPrompt.js?v=12"></script>
-  <script src="/quickCapture.js?v=12"></script>
-  <script src="/app.js?v=12"></script>
+  <script src="/grokPrompt.js?v=13"></script>
+  <script src="/quickCapture.js?v=13"></script>
+  <script src="/app.js?v=13"></script>
 </body>
 </html>

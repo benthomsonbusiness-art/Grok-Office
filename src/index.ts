@@ -453,6 +453,18 @@ export class OfficeHub extends DurableObject<Env> {
     if (!queueCols.includes("source")) {
       this.sql.exec("ALTER TABLE task_queue ADD COLUMN source TEXT NOT NULL DEFAULT 'owner'");
     }
+    if (!queueCols.includes("parent_id")) {
+      this.sql.exec("ALTER TABLE task_queue ADD COLUMN parent_id TEXT");
+    }
+    if (!queueCols.includes("result")) {
+      this.sql.exec("ALTER TABLE task_queue ADD COLUMN result TEXT");
+    }
+    if (!queueCols.includes("output_url")) {
+      this.sql.exec("ALTER TABLE task_queue ADD COLUMN output_url TEXT");
+    }
+    if (!queueCols.includes("updated_at")) {
+      this.sql.exec("ALTER TABLE task_queue ADD COLUMN updated_at TEXT");
+    }
     if (!botCols.includes("placeholder")) {
       this.sql.exec("ALTER TABLE bots ADD COLUMN placeholder INTEGER NOT NULL DEFAULT 0");
     }
@@ -904,7 +916,14 @@ export class OfficeHub extends DurableObject<Env> {
       const popped = typeof base.orders.nextTask === "string" ? base.orders.nextTask : null;
       const taskList = (orders.tasks as Array<{ id: string; task: string; from: string }>) || [];
       if (popped && !taskList.some((t) => t.task === popped)) {
-        orders.tasks = [{ id: "current", task: popped, from: "queue" }, ...taskList];
+        const row = this.sql
+          .exec<{ id: string; source: string }>(
+            "SELECT id, source FROM task_queue WHERE bot_id = ? AND task = ? ORDER BY created_at DESC LIMIT 1",
+            botId,
+            popped
+          )
+          .toArray()[0];
+        orders.tasks = [{ id: row?.id ?? "current", task: popped, from: row?.source ?? "queue" }, ...taskList];
       }
       const isDaily = url.searchParams.get("daily") === "1";
       if (isDaily) this.markDailyDelivered(botId, orders);
@@ -1079,7 +1098,7 @@ export class OfficeHub extends DurableObject<Env> {
       const shouldPop = url.searchParams.get("pop") === "1";
       let nextTask = queuedRows[0]?.task ?? null;
       if (shouldPop && queuedRows.length > 0) {
-        this.sql.exec("UPDATE task_queue SET status = 'dispatched' WHERE id = ?", queuedRows[0].id);
+        this.sql.exec("UPDATE task_queue SET status = 'dispatched', updated_at = ? WHERE id = ?", new Date().toISOString(), queuedRows[0].id);
         this.sql.exec("UPDATE bots SET task = ? WHERE id = ?", queuedRows[0].task, botId);
         nextTask = queuedRows[0].task;
         this.broadcastSnapshot();
@@ -1097,6 +1116,8 @@ export class OfficeHub extends DurableObject<Env> {
         assignedTask: shouldPop && nextTask ? nextTask : botRow?.task ?? null,
         nextTask: orders.nextTask,
         queuedTasks: shouldPop ? queuedRows.slice(1).map((q) => q.task) : queuedRows.map((q) => q.task),
+        nextTaskId: shouldPop && queuedRows.length > 0 ? queuedRows[0].id : queuedRows[0]?.id ?? null,
+        queuedTaskIds: shouldPop ? queuedRows.slice(1).map((q) => q.id) : queuedRows.map((q) => q.id),
         role: botRow?.role ?? null,
         model: botRow?.model ?? null,
         openNeeds,
@@ -1513,6 +1534,20 @@ export class OfficeHub extends DurableObject<Env> {
       await this.ensureAlarmScheduled();
       this.broadcastSnapshot();
       return jsonResponse({ ok: synced.ok, connected: true, syncedCount: synced.count, error: synced.error });
+    }
+
+    // ---- Today bar: send a request to Jared (the CEO agent) ----
+    if (url.pathname === "/api/requests" && request.method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as { text?: string };
+      const text = clampText(body.text, 1000);
+      if (!text) return jsonResponse({ error: "Type what you need" }, 400);
+      const ceo = this.getCeoId();
+      if (!ceo) return jsonResponse({ error: "No CEO agent yet. Set one on the Agents page." }, 409);
+      const id = this.enqueueTaskForBot(ceo, text, { source: "request", maxLen: 1000 });
+      const me = this.sql.exec<{ name: string; avatar_color: string; status: BotStatus }>("SELECT name, avatar_color, status FROM bots WHERE id = ?", ceo).toArray()[0];
+      if (me) this.insertLog(ceo, me.name, me.avatar_color, me.status, "info", `New request from you: "${clampText(text, 100)}"`);
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true, id, to: ceo, wakeConfigured: Boolean(this.env.HQ_WEBHOOK_URL && this.env.HQ_WEBHOOK_KEY) });
     }
 
     // ---- Routines ----
@@ -3395,6 +3430,8 @@ export class OfficeHub extends DurableObject<Env> {
       googleTasksSync,
       calendar: this.getCalendarSnapshot(),
       routines: this.listRoutines(),
+      requests: this.listRequests(),
+      ceoId: this.getCeoId(),
       asks: this.sql
         .exec<{ id: string; bot_id: string; question: string; status: string; answer: string | null; delivered_at: string | null; answered_at: string | null; acknowledged: number; created_at: string }>(
           "SELECT * FROM agent_asks ORDER BY created_at DESC LIMIT 40"
@@ -3496,10 +3533,15 @@ export class OfficeHub extends DurableObject<Env> {
   private enqueueTaskForBot(
     botId: string,
     taskText: string,
-    opts: { source?: "owner" | "routine" | "delegation" | "task"; fromBotId?: string | null } = {}
-  ): void {
-    const clean = clampText(taskText, 200);
-    if (!clean) return;
+    opts: {
+      source?: "owner" | "routine" | "delegation" | "task" | "request";
+      fromBotId?: string | null;
+      parentId?: string | null;
+      maxLen?: number;
+    } = {}
+  ): string | null {
+    const clean = clampText(taskText, opts.maxLen ?? 200);
+    if (!clean) return null;
     const dup = this.sql
       .exec<{ id: string }>(
         "SELECT id FROM task_queue WHERE bot_id = ? AND status = 'queued' AND lower(trim(task)) = lower(trim(?)) LIMIT 1",
@@ -3507,26 +3549,92 @@ export class OfficeHub extends DurableObject<Env> {
         clean
       )
       .toArray()[0];
+    let qid: string | null = dup?.id ?? null;
     if (!dup) {
-      const qid = crypto.randomUUID();
+      qid = crypto.randomUUID();
+      const nowIso = new Date().toISOString();
       this.sql.exec(
-        "INSERT INTO task_queue (id, bot_id, task, status, created_at, source, from_bot_id) VALUES (?, ?, ?, 'queued', ?, ?, ?)",
+        "INSERT INTO task_queue (id, bot_id, task, status, created_at, source, from_bot_id, parent_id, updated_at) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?)",
         qid,
         botId,
         clean,
-        new Date().toISOString(),
+        nowIso,
         opts.source ?? "owner",
-        opts.fromBotId ?? null
+        opts.fromBotId ?? null,
+        opts.parentId ?? null,
+        nowIso
       );
       this.wakeCeo(
         qid,
         botId,
         clean,
-        opts.source === "routine" ? "routine" : opts.source === "delegation" ? "delegation" : "task-assign",
+        opts.source === "routine"
+          ? "routine"
+          : opts.source === "delegation"
+          ? "delegation"
+          : opts.source === "request"
+          ? "today-bar"
+          : "task-assign",
         opts.source === "delegation" ? opts.fromBotId ?? "unknown-agent" : null
       );
     }
     this.pushPendingDispatch(botId);
+    return qid;
+  }
+
+  /** The agent that receives Today-bar requests: "primary" if present, else the org chart's top manager. */
+  private getCeoId(): string | null {
+    const primary = this.sql.exec<{ id: string }>("SELECT id FROM bots WHERE id = ? AND archived = 0", CEO_BOT_ID).toArray()[0];
+    if (primary) return primary.id;
+    const titled = this.sql
+      .exec<{ id: string }>("SELECT id FROM bots WHERE archived = 0 AND lower(org_title) = 'ceo' ORDER BY desk_index LIMIT 1")
+      .toArray()[0];
+    if (titled) return titled.id;
+    const root = this.sql
+      .exec<{ id: string }>(
+        "SELECT b.id FROM bots b WHERE b.archived = 0 AND b.reports_to IS NULL AND EXISTS (SELECT 1 FROM bots c WHERE c.reports_to = b.id AND c.archived = 0) ORDER BY b.desk_index LIMIT 1"
+      )
+      .toArray()[0];
+    return root?.id ?? null;
+  }
+
+  /** Recent Today-bar requests with what happened to them. */
+  private listRequests(): Array<Record<string, unknown>> {
+    const names = new Map(this.sql.exec<{ id: string; name: string }>("SELECT id, name FROM bots").toArray().map((b) => [b.id, b.name]));
+    const rows = this.sql
+      .exec<{ id: string; bot_id: string; task: string; status: string; created_at: string; updated_at: string | null; result: string | null; output_url: string | null }>(
+        "SELECT id, bot_id, task, status, created_at, updated_at, result, output_url FROM task_queue WHERE source = 'request' ORDER BY created_at DESC LIMIT 12"
+      )
+      .toArray();
+    return rows.map((r) => {
+      const children = this.sql
+        .exec<{ id: string; bot_id: string; task: string; status: string; result: string | null; output_url: string | null }>(
+          "SELECT id, bot_id, task, status, result, output_url FROM task_queue WHERE parent_id = ? ORDER BY created_at ASC LIMIT 10",
+          r.id
+        )
+        .toArray()
+        .map((c) => ({
+          id: c.id,
+          botId: c.bot_id,
+          botName: names.get(c.bot_id) ?? c.bot_id,
+          task: c.task,
+          status: c.status,
+          result: c.result,
+          outputUrl: c.output_url && /^https:\/\//.test(c.output_url) ? c.output_url : null,
+        }));
+      return {
+        id: r.id,
+        botId: r.bot_id,
+        botName: names.get(r.bot_id) ?? r.bot_id,
+        text: r.task,
+        status: r.status,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+        result: r.result,
+        outputUrl: r.output_url && /^https:\/\//.test(r.output_url) ? r.output_url : null,
+        handoffs: children,
+      };
+    });
   }
 
   /**
@@ -3986,13 +4094,13 @@ export class OfficeHub extends DurableObject<Env> {
     const t = encodeURIComponent(token);
     const how: Record<string, string> = {
       dailyCheckIn: `${base}/api/ping?b=${b}&daily=1&token=${t}`,
-      reportDone: `${base}/api/ping?b=${b}&done=1&t=TASK&out=HTTPS_LINK&result=ONE_LINE&tok=TOKENS_USED&token=${t}`,
+      reportDone: `${base}/api/ping?b=${b}&done=1&req=TASK_ID&t=TASK&out=HTTPS_LINK&result=ONE_LINE&tok=TOKENS_USED&token=${t}`,
       needOwner: `${base}/api/ping?b=${b}&s=wait&need=ONE_LINE_QUESTION&token=${t}`,
       answerAsk: `${base}/api/ping?b=${b}&ask=ASK_ID&answer=YOUR_ANSWER&token=${t}`,
       proposeRoutine: `${base}/api/ping?b=${b}&routine=AGENT_ID|SCHEDULE|TASK&token=${t}`,
       scheduleFormat: "daily 07:00 · weekdays 07:00 · mon,thu 09:30 · weekly fri 16:00 · monthly 1 08:00 · monthly last 17:00",
     };
-    if (hasTeam) how.delegate = `${base}/api/ping?b=${b}&delegate=AGENT_ID&dt=TASK&token=${t}`;
+    if (hasTeam) how.delegate = `${base}/api/ping?b=${b}&delegate=AGENT_ID&dt=TASK&parent=TASK_ID&token=${t}`;
     return how;
   }
 
@@ -4071,9 +4179,44 @@ export class OfficeHub extends DurableObject<Env> {
         results.delegate = { ok: false, error: `${target.name} is not on your team. Delegate only to orders.canDelegateTo.` };
       else if (!delegateTask) results.delegate = { ok: false, error: "Add &dt=TASK" };
       else {
-        this.enqueueTaskForBot(target.id, delegateTask, { source: "delegation", fromBotId: botId });
+        const parentId = clampText(params.get("parent") ?? params.get("req"), 64) || null;
+        const parentOk =
+          parentId &&
+          this.sql.exec<{ id: string }>("SELECT id FROM task_queue WHERE id = ? AND bot_id = ?", parentId, botId).toArray()[0];
+        this.enqueueTaskForBot(target.id, delegateTask, {
+          source: "delegation",
+          fromBotId: botId,
+          parentId: parentOk ? parentId : null,
+        });
+        if (parentOk) {
+          this.sql.exec(
+            "UPDATE task_queue SET status = CASE WHEN status = 'queued' THEN 'dispatched' ELSE status END, updated_at = ? WHERE id = ?",
+            now,
+            parentId
+          );
+        }
         this.insertLog(botId, me.name, me.avatar_color, me.status, "info", `Delegated to ${target.name}: "${clampText(delegateTask, 100)}"`);
         results.delegate = { ok: true, to: target.id, task: delegateTask };
+      }
+    }
+
+    const reqId = clampText(params.get("req"), 64);
+    if (reqId && (params.get("done") === "1" || params.get("done") === "true") && !delegateTo) {
+      const row = this.sql
+        .exec<{ id: string; bot_id: string }>("SELECT id, bot_id FROM task_queue WHERE id = ?", reqId)
+        .toArray()[0];
+      if (!row || row.bot_id !== botId) {
+        results.request = { ok: false, error: "Unknown request id (req=)" };
+      } else {
+        const out = clampText(params.get("out") ?? params.get("outputUrl"), 400);
+        this.sql.exec(
+          "UPDATE task_queue SET status = 'done', result = ?, output_url = ?, updated_at = ? WHERE id = ?",
+          clampText(params.get("result") ?? params.get("summary"), 600) || null,
+          out && isSafeCallbackUrl(out) ? out : null,
+          now,
+          reqId
+        );
+        results.request = { ok: true, id: reqId, status: "done" };
       }
     }
 
