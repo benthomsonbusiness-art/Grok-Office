@@ -7,7 +7,8 @@
     "dev": "npm run build:client && wrangler dev",
     "deploy": "npm run build:client && wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test tests/*.test.mjs"
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "deploy:embedded": "npm run build:client && node scripts/embed-assets.mjs && wrangler deploy -c wrangler.embedded.jsonc"
   },
   "dependencies": {
     "three": "^0.172.0"

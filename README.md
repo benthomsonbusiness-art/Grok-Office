@@ -48,3 +48,7 @@ npm test
    ```bash
    npm run deploy
    ```
+   If the static-asset upload fails with `401` on `/workers/assets/upload` (happens behind proxies that rewrite the Authorization header), use the embedded build, which bundles `public/` into the Worker script:
+   ```bash
+   npm run deploy:embedded
+   ```
