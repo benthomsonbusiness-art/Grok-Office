@@ -12,7 +12,7 @@ const STATUS_HEX = {
   working: "#10b981",
   waiting: "#f59e0b",
   error: "#f43f5e",
-  idle: "#38bdf8",
+  idle: "#4fd1b5",
   meeting: "#818cf8",
   no_report: "#64748b",
 };
@@ -120,25 +120,26 @@ const ROOM_CAMERA_TARGETS = {
 /* ---------- Refined Architectural Lighting Presets (Blade Runner 2049 / Nordic Glass / Obsidian Night) ---------- */
 const LIGHTING_PRESETS = {
   night: {
-    skyTop: "#04060b",
-    skyMid: "#090e19",
-    skyHorizon: "#162032",
-    fog: 0x070a12,
-    fogDensity: 0.0054,
-    ambient: 0xcbd5e1,
-    ambientInt: 0.42,
-    hemiSky: 0x64748b,
-    hemiGround: 0x0b0e16,
-    hemiInt: 0.55,
-    sun: 0x93c5fd,
-    sunInt: 0.92,
+    // Night shift: lamplit interiors, warm city glow on the horizon, cool moonlight key
+    skyTop: "#05060b",
+    skyMid: "#12101b",
+    skyHorizon: "#4a2c18",
+    fog: 0x0d0b0f,
+    fogDensity: 0.0050,
+    ambient: 0xffe6c7,
+    ambientInt: 0.4,
+    hemiSky: 0x8f8296,
+    hemiGround: 0x0c0a0b,
+    hemiInt: 0.5,
+    sun: 0xb9c6ff,
+    sunInt: 0.78,
     sunPos: [20, 34, -18],
-    fill: 0xf59e0b,
-    fillInt: 0.28,
-    lampInt: 1.55,
-    envInt: 0.54,
-    bloomStrength: 0.2,
-    starsOpacity: 0.65,
+    fill: 0xffb547,
+    fillInt: 0.46,
+    lampInt: 2.05,
+    envInt: 0.5,
+    bloomStrength: 0.34,
+    starsOpacity: 0.55,
   },
   evening: {
     // Blade Runner 2049 warm burnt-amber dusk atmosphere
@@ -152,10 +153,10 @@ const LIGHTING_PRESETS = {
     hemiSky: 0xfb923c,
     hemiGround: 0x110c0f,
     hemiInt: 0.55,
-    sun: 0xf59e0b,
+    sun: 0xffb547,
     sunInt: 1.15,
     sunPos: [-28, 16, 22],
-    fill: 0x38bdf8,
+    fill: 0x4fd1b5,
     fillInt: 0.34,
     lampInt: 1.45,
     envInt: 0.48,
@@ -177,7 +178,7 @@ const LIGHTING_PRESETS = {
     sun: 0xfff8eb,
     sunInt: 1.38,
     sunPos: [24, 38, 22],
-    fill: 0x7dd3fc,
+    fill: 0x9fe8d6,
     fillInt: 0.45,
     lampInt: 0.78,
     envInt: 0.72,
@@ -361,15 +362,15 @@ function makeArchitecturalGlassFacade(seed = 1) {
   for (let y = 7; y < 504; y += 20) {
     const floorOccupied = rand() > 0.62;
     if (!floorOccupied) continue;
-    const warmFloor = rand() > 0.45;
+    const warmFloor = rand() > 0.28;
     const startBay = Math.floor(rand() * 4);
     const spanBays = 2 + Math.floor(rand() * 5);
     for (let b = startBay; b < Math.min(8, startBay + spanBays); b++) {
       if (rand() < 0.22) continue;
       const alpha = 0.22 + rand() * 0.45;
       ctx.fillStyle = warmFloor
-        ? `rgba(253, 230, 138, ${alpha.toFixed(2)})`
-        : `rgba(186, 230, 253, ${(alpha * 0.72).toFixed(2)})`;
+        ? `rgba(255, 196, 120, ${alpha.toFixed(2)})`
+        : `rgba(214, 224, 255, ${(alpha * 0.6).toFixed(2)})`;
       ctx.fillRect(b * 32 + 4, y, 24, 6);
     }
   }
@@ -378,6 +379,25 @@ function makeArchitecturalGlassFacade(seed = 1) {
   tex.wrapT = THREE.RepeatWrapping;
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
+}
+
+let lightPoolTexture = null;
+function makeLightPoolTexture() {
+  if (lightPoolTexture) return lightPoolTexture;
+  const c = document.createElement("canvas");
+  c.width = 128;
+  c.height = 128;
+  const ctx = c.getContext("2d");
+  const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, "rgba(255,255,255,0.9)");
+  g.addColorStop(0.35, "rgba(255,255,255,0.35)");
+  g.addColorStop(0.7, "rgba(255,255,255,0.08)");
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 128, 128);
+  lightPoolTexture = new THREE.CanvasTexture(c);
+  lightPoolTexture.colorSpace = THREE.SRGBColorSpace;
+  return lightPoolTexture;
 }
 
 function makeSkyGradientTexture(top, mid, horizon) {
@@ -389,14 +409,14 @@ function makeSkyGradientTexture(top, mid, horizon) {
   g.addColorStop(0, top);
   g.addColorStop(0.48, mid);
   g.addColorStop(0.75, horizon);
-  g.addColorStop(0.9, "#070a12");
-  g.addColorStop(1, "#04060b");
+  g.addColorStop(0.9, "#0b0908");
+  g.addColorStop(1, "#050507");
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, 32, 256);
   return new THREE.CanvasTexture(c);
 }
 
-function makeMinimalTelemetryScreen(accent = "#38bdf8", titleText = "SYS // LIVE") {
+function makeMinimalTelemetryScreen(accent = "#4fd1b5", titleText = "SYS // LIVE") {
   const c = document.createElement("canvas");
   c.width = 256;
   c.height = 128;
@@ -544,7 +564,7 @@ class Office3D {
     const h = this.container.clientHeight || 600;
 
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.FogExp2(0x070a12, 0.0054);
+    this.scene.fog = new THREE.FogExp2(0x0d0b0f, 0.005);
 
     // Closer cinematic architectural camera framing so bots & interior own ~75% of viewport
     this.camera = new THREE.PerspectiveCamera(35, w / h, 0.5, 420);
@@ -558,7 +578,7 @@ class Office3D {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.12;
+    this.renderer.toneMappingExposure = 1.2;
     this.container.appendChild(this.renderer.domElement);
 
     // Studio IBL Reflections via PMREMGenerator + RoomEnvironment (deferred so initial load never blocks!)
@@ -579,7 +599,7 @@ class Office3D {
     this.composer = new EffectComposer(this.renderer);
     this.composer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), 0.2, 0.36, 0.9);
+    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), 0.34, 0.5, 0.8);
     this.composer.addPass(this.bloomPass);
     this.composer.addPass(new OutputPass());
 
@@ -612,25 +632,46 @@ class Office3D {
     this.sunLight.shadow.bias = -0.00045;
     this.scene.add(this.sunLight);
 
-    this.fillLight = new THREE.DirectionalLight(0xf59e0b, 0.28);
+    this.fillLight = new THREE.DirectionalLight(0xffb547, 0.28);
     this.fillLight.position.set(-22, 16, 24);
     this.scene.add(this.fillLight);
 
     // Warm Tungsten + Cool Ice-Cyan Architectural Practical Pools
     [
-      [-14.0, 5.2, -4.5, 0xbae6fd, 24, 1.3],  // Workfloor crisp neutral-cool task light
+      [-14.0, 5.2, -4.5, 0xffe2b8, 24, 1.45],  // Workfloor crisp neutral-cool task light
       [-0.4, 4.8, -8.4, 0xfde68a, 18, 1.45],  // Approval Desk warm tungsten hospitality glow
-      [13.4, 4.8, -8.2, 0xfda4af, 17, 1.1],   // Repair Bay restrained diagnostic accent
-      [-14.2, 4.8, 8.9, 0xc7d2fe, 18, 1.15],  // War Room cool studio pendant
+      [13.4, 4.8, -8.2, 0xffa89c, 17, 1.15],   // Repair Bay restrained diagnostic accent
+      [-14.2, 4.8, 8.9, 0xd4ccff, 18, 1.2],  // War Room cool studio pendant
       [0.2, 5.0, 8.2, 0xfef3c7, 22, 1.55],    // Lounge warm amber architectural glow
-      [14.2, 4.8, 8.5, 0x94a3b8, 18, 1.0],    // Standby Dock calm neutral slate light
-      [2.6, 4.0, 15.8, 0xf59e0b, 16, 1.4],    // Outdoor Sky-Terrace warm hearth glow
+      [14.2, 4.8, 8.5, 0xcfc6ba, 18, 1.05],    // Standby Dock calm neutral slate light
+      [2.6, 4.0, 15.8, 0xffb547, 16, 1.6],    // Outdoor Sky-Terrace warm hearth glow
     ].forEach(([lx, ly, lz, color, dist, baseMult]) => {
       const lamp = new THREE.PointLight(color, 1.4 * baseMult, dist);
       lamp.position.set(lx, ly, lz);
       lamp.userData.baseMult = baseMult;
       this.scene.add(lamp);
       this.interiorLamps.push(lamp);
+
+      // Soft pool of lamplight on the floor under each practical light
+      const pool = new THREE.Mesh(
+        new THREE.PlaneGeometry(dist * 0.62, dist * 0.62),
+        new THREE.MeshBasicMaterial({
+          map: makeLightPoolTexture(),
+          color,
+          transparent: true,
+          opacity: 0.32 * baseMult,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          fog: false,
+        })
+      );
+      pool.rotation.x = -Math.PI / 2;
+      pool.position.set(lx, 0.16, lz);
+      pool.renderOrder = 2;
+      pool.userData.baseOpacity = 0.32 * baseMult;
+      this.scene.add(pool);
+      this.lightPools = this.lightPools || [];
+      this.lightPools.push(pool);
     });
   }
 
@@ -843,7 +884,7 @@ class Office3D {
 
         const beacon = new THREE.Mesh(
           new THREE.SphereGeometry(0.22, 8, 8),
-          new THREE.MeshBasicMaterial({ color: 0xf43f5e })
+          new THREE.MeshBasicMaterial({ color: 0xff6b5e })
         );
         beacon.position.set(t.x, t.topY + 7.5, t.z);
         this.scene.add(beacon);
@@ -864,7 +905,7 @@ class Office3D {
 
     // Restrained distant aerial traffic specks (warm amber & soft white, zero bright pink lasers)
     for (let i = 0; i < 10; i++) {
-      const col = i % 2 === 0 ? 0xfde68a : 0xbae6fd;
+      const col = i % 2 === 0 ? 0xfde68a : 0xffe2b8;
       const streak = new THREE.Mesh(
         new THREE.BoxGeometry(2.0, 0.1, 0.12),
         new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.65 })
@@ -982,34 +1023,34 @@ class Office3D {
   /* ---------- 2. Refined Obsidian Penthouse Command Deck ---------- */
   buildCommandPenthouse() {
     // Structural Penthouse Slab (Matte dark architectural basalt + brushed titanium coping)
-    this.addBox(43.4, 1.35, 33.8, 0x0b0e16, 0, -0.68, 1.7, {
+    this.addBox(43.4, 1.35, 33.8, 0x100e0d, 0, -0.68, 1.7, {
       castShadow: false,
       roughness: 0.44,
       metalness: 0.42,
     });
     // Crisp brushed gunmetal perimeter coping (replaces thick cyan/purple exterior neon bars)
-    this.addBox(43.6, 0.12, 0.22, 0x263042, 0, 0.02, -15.2, { castShadow: false, metalness: 0.72, roughness: 0.3 });
-    this.addBox(43.6, 0.12, 0.22, 0x263042, 0, 0.02, 18.6, { castShadow: false, metalness: 0.72, roughness: 0.3 });
+    this.addBox(43.6, 0.12, 0.22, 0x3a3129, 0, 0.02, -15.2, { castShadow: false, metalness: 0.72, roughness: 0.3 });
+    this.addBox(43.6, 0.12, 0.22, 0x3a3129, 0, 0.02, 18.6, { castShadow: false, metalness: 0.72, roughness: 0.3 });
 
     // Main Honed Obsidian Slate Floor Concourse
     const matConcourse = new THREE.MeshStandardMaterial({
-      map: makeObsidianStoneTexture("#111520", "rgba(255,255,255,0.045)", 128),
-      roughness: 0.28,
+      map: makeObsidianStoneTexture("#1a1713", "rgba(255,214,160,0.05)", 128),
+      roughness: 0.3,
       metalness: 0.22,
     });
     this.addBox(41.4, 0.14, 28.4, matConcourse, 0, 0.01, 0, { castShadow: false });
 
     // Subtle hairline recessed guide strip down central concourse
-    this.addLightLine(36.0, 0.014, 0.035, 0x38bdf8, 0, 0.09, 0.2, 0.65);
+    this.addLightLine(36.0, 0.014, 0.035, 0x4fd1b5, 0, 0.09, 0.2, 0.65);
 
     // --- ZONE 1: ACTIVE WORKFLOOR (Honed Dark Slate + Thin Emerald Inlay) ---
     const matWork = new THREE.MeshStandardMaterial({
-      map: makeObsidianStoneTexture("#121924", "rgba(56,189,248,0.06)", 128),
+      map: makeObsidianStoneTexture("#151a17", "rgba(79,209,181,0.06)", 128),
       roughness: 0.26,
       metalness: 0.24,
     });
     this.addBox(13.2, 0.16, 18.2, matWork, -13.8, 0.03, -4.9, { castShadow: false });
-    this.addZoneInlay(-13.8, -4.9, 13.0, 18.0, 0x10b981);
+    this.addZoneInlay(-13.8, -4.9, 13.0, 18.0, 0x4fd1b5);
     this.addFloorStamp("WORKFLOOR", -14.2, 3.25, 6.8, 1.1, "rgba(148,163,184,0.28)");
 
     // --- ZONE 2: APPROVAL & WAITING DAIS (Dark Acoustic Weave + Warm Amber Step Light) ---
@@ -1019,19 +1060,19 @@ class Office3D {
       metalness: 0.06,
     });
     this.addBox(11.6, 0.34, 10.6, matWaiting, -0.4, 0.13, -8.6, { castShadow: false });
-    this.addZoneInlay(-0.4, -8.6, 11.4, 10.4, 0xf59e0b, 0.31);
+    this.addZoneInlay(-0.4, -8.6, 11.4, 10.4, 0xffb547, 0.31);
     this.addBox(4.8, 0.16, 0.85, 0x1f2533, -0.4, 0.08, -2.9, { castShadow: false, radius: 0.03 });
-    this.addLightLine(4.6, 0.02, 0.035, 0xf59e0b, -0.4, 0.17, -2.48, 0.95);
+    this.addLightLine(4.6, 0.02, 0.035, 0xffb547, -0.4, 0.17, -2.48, 0.95);
     this.addFloorStamp("APPROVAL DESK", -0.4, -4.4, 6.6, 1.1, "rgba(251,191,36,0.32)");
 
     // --- ZONE 3: REPAIR BAY (Matte Basalt Concrete + Thin Crimson Inlay) ---
     const matError = new THREE.MeshStandardMaterial({
-      map: makeObsidianStoneTexture("#161116", "rgba(244,63,94,0.065)", 128),
+      map: makeObsidianStoneTexture("#1b1413", "rgba(255,107,94,0.065)", 128),
       roughness: 0.34,
       metalness: 0.22,
     });
     this.addBox(13.8, 0.16, 11.5, matError, 13.5, 0.03, -8.2, { castShadow: false });
-    this.addZoneInlay(13.5, -8.2, 13.6, 11.3, 0xf43f5e);
+    this.addZoneInlay(13.5, -8.2, 13.6, 11.3, 0xff6b5e);
     this.addFloorStamp("REPAIR BAY", 13.5, -3.4, 6.4, 1.1, "rgba(244,63,94,0.30)");
 
     // --- ZONE 4: WAR ROOM (Charcoal Acoustic Carpet + Soft Indigo-Slate Inlay) ---
@@ -1041,7 +1082,7 @@ class Office3D {
       metalness: 0.06,
     });
     this.addBox(13.2, 0.16, 8.9, matWar, -13.8, 0.03, 9.4, { castShadow: false });
-    this.addZoneInlay(-13.8, 9.4, 13.0, 8.7, 0x818cf8);
+    this.addZoneInlay(-13.8, 9.4, 13.0, 8.7, 0x9b8cff);
     this.addFloorStamp("WAR ROOM", -14.2, 13.0, 5.8, 1.1, "rgba(165,180,252,0.28)");
 
     // --- ZONE 5: ARCHITECTURAL LOUNGE (Smoked Dark Walnut Planks — Warm & Inviting!) ---
@@ -1055,7 +1096,7 @@ class Office3D {
 
     // --- ZONE 6: STANDBY DOCK (Brushed Obsidian Concrete + Subtle Slate Inlay) ---
     const matStandby = new THREE.MeshStandardMaterial({
-      map: makeObsidianStoneTexture("#111520", "rgba(148,163,184,0.055)", 128),
+      map: makeObsidianStoneTexture("#171615", "rgba(207,198,186,0.05)", 128),
       roughness: 0.3,
       metalness: 0.25,
     });
@@ -1079,8 +1120,8 @@ class Office3D {
     });
     // Minimalist Obsidian Ember Hearth Table
     this.addBox(1.5, 0.42, 0.92, 0x161b26, 0.3, 0.25, 16.1, { metalness: 0.35, roughness: 0.38, radius: 0.06 });
-    this.addBox(1.0, 0.05, 0.44, 0xf59e0b, 0.3, 0.47, 16.1, {
-      emissive: 0xf59e0b,
+    this.addBox(1.0, 0.05, 0.44, 0xffb547, 0.3, 0.47, 16.1, {
+      emissive: 0xffb547,
       emissiveIntensity: 1.5,
       castShadow: false,
     });
@@ -1101,9 +1142,9 @@ class Office3D {
     this.addGlassWall(0.12, divH, 8.2, 8.2, divH / 2, 9.8, null);
 
     // Perimeter Recessed Architectural Cove Lights (clean sightlines — zero floating rods blocking bots!)
-    this.addArchitecturalPendant(5.6, -14.2, 3.25, -13.9, 0xe0f2fe);
+    this.addArchitecturalPendant(5.6, -14.2, 3.25, -13.9, 0xfff1dc);
     this.addArchitecturalPendant(4.2, -0.4, 3.25, -13.9, 0xfef3c7);
-    this.addArchitecturalPendant(4.0, 13.6, 3.25, -13.9, 0xfda4af);
+    this.addArchitecturalPendant(4.0, 13.6, 3.25, -13.9, 0xffb3a8);
     this.addArchitecturalPendant(3.8, 6.2, 3.1, 6.8, 0xfde68a, Math.PI / 2);
 
     // --- TELEMETRY COMMAND WALL (Workfloor Back Wall) ---
@@ -1131,7 +1172,7 @@ class Office3D {
     this.addArchitecturalSign("STANDBY DOCK", "IDLE > 24H // SLEEP", "#64748b", 20.1, 2.0, 8.2, -Math.PI / 2);
 
     // --- ROOM 1: SCULPTED WORKFLOOR DESKS (8 Primary Dual-Screen Monoliths) ---
-    const deskScreenTex = makeMinimalTelemetryScreen("#38bdf8", "GROK // ACTIVE");
+    const deskScreenTex = makeMinimalTelemetryScreen("#4fd1b5", "GROK // ACTIVE");
     this.codeScreenMat = new THREE.MeshStandardMaterial({
       map: deskScreenTex,
       emissive: 0xffffff,
@@ -1145,7 +1186,7 @@ class Office3D {
     WORKFLOOR_DESKS.slice(0, 6).forEach((d, idx) => {
       const orb = new THREE.Mesh(
         new THREE.SphereGeometry(0.09, 10, 10),
-        new THREE.MeshBasicMaterial({ color: 0x38bdf8 })
+        new THREE.MeshBasicMaterial({ color: 0x4fd1b5 })
       );
       this.scene.add(orb);
       this.dataPackets.push({
@@ -1160,7 +1201,7 @@ class Office3D {
     // --- ROOM 2: APPROVAL & WAITING DESK (Sculpted Stone Monolith + Warm Cove Lip) ---
     this.addBox(5.4, 1.04, 1.1, 0x1a1f2b, -0.4, 0.84, -10.8, { roughness: 0.32, metalness: 0.45, radius: 0.06 });
     this.addBox(5.65, 0.09, 1.28, 0x2b3242, -0.4, 1.38, -10.8, { roughness: 0.22, metalness: 0.4, radius: 0.03 });
-    this.addLightLine(5.1, 0.03, 0.04, 0xf59e0b, -0.4, 1.3, -10.22, 1.15);
+    this.addLightLine(5.1, 0.03, 0.04, 0xffb547, -0.4, 1.3, -10.22, 1.15);
 
     const waitTex = makeMinimalTelemetryScreen("#f59e0b", "APPROVAL QUEUE");
     this.waitScreenMat = new THREE.MeshStandardMaterial({
@@ -1184,7 +1225,7 @@ class Office3D {
         this.addBox(0.05, 0.2, 1.36, 0x1e2534, sx - 0.59, 0.46 + r * 0.34, sz, { castShadow: false });
         const led = new THREE.Mesh(
           new THREE.BoxGeometry(0.04, 0.04, 0.14),
-          new THREE.MeshBasicMaterial({ color: r % 3 === 0 ? 0xf43f5e : 0x38bdf8 })
+          new THREE.MeshBasicMaterial({ color: r % 3 === 0 ? 0xff6b5e : 0x4fd1b5 })
         );
         led.position.set(sx - 0.62, 0.46 + r * 0.34, sz - 0.4 + (r % 3) * 0.24);
         this.scene.add(led);
@@ -1238,7 +1279,7 @@ class Office3D {
     this.holoGroup.position.set(-14.2, 1.72, 8.9);
     const globe = new THREE.Mesh(
       new THREE.IcosahedronGeometry(0.52, 1),
-      new THREE.MeshBasicMaterial({ color: 0x38bdf8, wireframe: true, transparent: true, opacity: 0.55 })
+      new THREE.MeshBasicMaterial({ color: 0x4fd1b5, wireframe: true, transparent: true, opacity: 0.55 })
     );
     const ring1 = new THREE.Mesh(
       new THREE.TorusGeometry(0.86, 0.015, 10, 48),
@@ -1251,7 +1292,7 @@ class Office3D {
     WAR_ROOM_SPOTS.slice(0, 4).forEach((s) => this.buildSculptedChair(s.x, s.z, 0x2a3142));
 
     // --- ROOM 5: ARCHITECTURAL LOUNGE (Warm Minimalist Sectionals + Brushed Steel Espresso Bar) ---
-    this.buildLoungeCluster(-1.8, 6.2, 0x1d222e, 0x282f3e, 0xd97706);
+    this.buildLoungeCluster(-1.8, 6.2, 0x1d222e, 0x282f3e, 0xd98a2b);
     this.buildLoungeCluster(-1.8, 10.6, 0x1d222e, 0x262c3a, 0x94a3b8);
 
     // Brushed Steel & Dark Stone Espresso Bar (Zero bright orange/cyan neon strips!)
@@ -1302,7 +1343,7 @@ class Office3D {
 
       const ring = new THREE.Mesh(
         new THREE.RingGeometry(0.8, 0.87, 32),
-        new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide, transparent: true, opacity: 0.45 })
+        new THREE.MeshBasicMaterial({ color: 0x4fd1b5, side: THREE.DoubleSide, transparent: true, opacity: 0.45 })
       );
       ring.rotation.x = -Math.PI / 2;
       ring.position.set(pad.x, 0.185, pad.z);
@@ -1500,7 +1541,7 @@ class Office3D {
 
     ctx.fillStyle = "rgba(255,255,255,0.08)";
     ctx.fillRect(22, 128, 468, 14);
-    ctx.fillStyle = remainingPct > 25 ? "#38bdf8" : "#f43f5e";
+    ctx.fillStyle = remainingPct > 25 ? "#4fd1b5" : "#f43f5e";
     ctx.fillRect(22, 128, Math.max(8, (468 * remainingPct) / 100), 14);
     this.usageTex.needsUpdate = true;
   }
@@ -1661,7 +1702,7 @@ class Office3D {
 
     const beacon = new THREE.Mesh(
       new THREE.SphereGeometry(0.15, 16, 16),
-      new THREE.MeshStandardMaterial({ color: 0xf59e0b, emissive: 0xf59e0b, emissiveIntensity: 1.5, roughness: 0.2 })
+      new THREE.MeshStandardMaterial({ color: 0xffb547, emissive: 0xffb547, emissiveIntensity: 1.5, roughness: 0.2 })
     );
     beacon.position.set(0.45, 1.8, 0.18);
     beacon.visible = bot.status === "waiting" || bot.status === "error";
@@ -1891,6 +1932,7 @@ class Office3D {
     this.fillLight.intensity = p.fillInt;
     this.scene.environmentIntensity = p.envInt;
     this.interiorLamps.forEach((l) => (l.intensity = p.lampInt * (l.userData.baseMult || 1)));
+    (this.lightPools || []).forEach((m) => (m.material.opacity = m.userData.baseOpacity * Math.min(1.2, p.lampInt / 1.6)));
     this.bloomPass.strength = p.bloomStrength;
   }
 

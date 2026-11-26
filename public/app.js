@@ -51,6 +51,9 @@
   }
   let gtasksDraftSecret = randomSecret();
   let calDraftSecret = randomSecret();
+  // Task clicks the server has not confirmed yet. Incoming snapshots cannot undo them.
+  const pendingTaskStatus = new Map();
+  const inflightTaskIds = new Set();
   let cmdSelectedIndex = 0;
   let cmdItems = [];
 
@@ -480,6 +483,18 @@
   }
 
   function applySnapshot(data) {
+    if (pendingTaskStatus.size && Array.isArray(data.tasks)) {
+      const now = Date.now();
+      for (const [id, p] of pendingTaskStatus) {
+        const t = data.tasks.find((x) => x.id === id);
+        if (!t || t.status === p.status || now - p.at > 20000) {
+          if (!inflightTaskIds.has(id)) pendingTaskStatus.delete(id);
+          if (!t || t.status === p.status) continue;
+        }
+        t.status = p.status;
+        t.completedAt = p.status === "completed" ? t.completedAt || new Date(p.at).toISOString() : null;
+      }
+    }
     snapshot = data;
 
     const openNeeds = (data.pendingNeeds || []).filter((n) => n.status === "open");
@@ -674,10 +689,10 @@
     if (bots.length === 0) {
       el.innerHTML = emptyStateHtml({
         icon: ICONS.cpu,
-        title: "No Grok bots connected yet",
-        subtitle: "Add your first bot to spawn it in the 3D office and generate its check-in prompt.",
+        title: "No agents yet",
+        subtitle: "Add your first agent and it walks into the office.",
         compact: true,
-        actionsHtml: `<button class="btn btn-primary" style="padding:5px 11px;font-size:0.76rem" data-open-modal="add-bot">+ Add First Bot</button>
+        actionsHtml: `<button class="btn btn-primary" style="padding:5px 11px;font-size:0.76rem" data-open-modal="add-bot">+ Add agent</button>
           <button class="btn btn-secondary" style="padding:5px 11px;font-size:0.76rem" data-open-modal="connect">Connect Guide</button>`,
       });
       return;
@@ -687,20 +702,59 @@
       return;
     }
 
-    el.innerHTML = filtered
-      .map(
-        (b) => `
-      <div class="team-row ${selectedBotId === b.id ? "selected" : ""}" data-select-bot="${esc(b.id)}">
-        ${miniGrokIcon(b.avatarColor, false, b.status)}
-        <div class="team-info">
-          <div class="team-name-row">
-            <span class="team-name">${esc(b.name)} <span class="team-role-tag">· ${esc(b.role)}</span></span>
-          </div>
-          <div class="team-sub">${esc(b.task || "Standing by")}</div>
-        </div>
-        <span class="st-pill st-${esc(b.status)}">${esc(statusLabel(b.status))}</span>
-      </div>`
-      )
+    // Group the roster by the org chart: leaders first, then each manager's team.
+    const { roots, kids } = orgChildren(bots);
+    const shown = new Set(filtered.map((b) => b.id));
+    const row = (b) => {
+      const lnk = b.placeholder ? "waiting" : effectiveLink(b);
+      const q = (b.queuedTasks || []).length;
+      return `
+      <button type="button" class="team-row st-${esc(b.status)} ${selectedBotId === b.id ? "selected" : ""} ${b.placeholder ? "is-placeholder" : ""}" data-select-bot="${esc(b.id)}" style="--bot:${esc(b.avatarColor)}">
+        <span class="team-avatar">${miniGrokIcon(b.avatarColor, false, b.placeholder ? null : b.status)}</span>
+        <span class="team-info">
+          <span class="team-name-row">
+            <span class="team-name">${esc(b.name)}</span>
+            ${b.orgTitle ? `<span class="team-title mono">${esc(b.orgTitle)}</span>` : ""}
+          </span>
+          <span class="team-sub">${esc(b.placeholder ? "Not connected yet" : b.task || "Standing by")}</span>
+        </span>
+        <span class="team-side">
+          <span class="room-tag st-${esc(b.status)}">${esc(b.placeholder ? "Setup" : statusLabel(b.status))}</span>
+          <span class="team-time mono">${b.placeholder ? "—" : `<span data-live-ts="${esc(b.lastSeenAt)}">${esc(timeAgo(b.lastSeenAt))}</span>`}${q ? ` · ${q}q` : ""}</span>
+        </span>
+        <i class="team-link link-dot-${esc(lnk)}" aria-hidden="true"></i>
+      </button>`;
+    };
+    const sections = [];
+    const leaders = bots.filter((b) => kids.has(b.id));
+    const placed = new Set();
+    if (leaders.length) {
+      const ordered = [];
+      const walk = (b) => {
+        if (!kids.has(b.id) || placed.has(b.id)) return;
+        ordered.push(b);
+        placed.add(b.id);
+        (kids.get(b.id) || []).forEach(walk);
+      };
+      roots.forEach(walk);
+      sections.push({ label: "Leadership", items: ordered });
+      ordered.forEach((m) => {
+        const team = (kids.get(m.id) || []).filter((c) => !kids.has(c.id));
+        if (team.length) {
+          team.forEach((c) => placed.add(c.id));
+          sections.push({ label: `${m.name}'s team`, sub: m.orgTitle || m.role, items: team });
+        }
+      });
+    }
+    const rest = bots.filter((b) => !placed.has(b.id));
+    if (rest.length) sections.push({ label: leaders.length ? "Not in the org yet" : "Agents", items: rest });
+
+    el.innerHTML = sections
+      .map((sec) => {
+        const items = sec.items.filter((b) => shown.has(b.id));
+        if (!items.length) return "";
+        return `<div class="team-section"><div class="team-section-head"><span>${esc(sec.label)}</span>${sec.sub ? `<em>${esc(sec.sub)}</em>` : ""}<strong class="mono">${items.length}</strong></div>${items.map(row).join("")}</div>`;
+      })
       .join("");
   }
 
@@ -1105,6 +1159,7 @@
   }
 
   function renderMetricsPage() {
+    renderInsightsExtras();
     const { bots = [], recentRuns = [], objectives = [], settings, usageSummary } = snapshot;
 
     document.getElementById("dig-cost-per-task").textContent = `$${(usageSummary.costPerCompletedTaskUsd ?? 0).toFixed(4)}`;
@@ -1814,8 +1869,10 @@
     const tag = document.activeElement?.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
       if (e.key === "Escape") {
+        const inModal = document.activeElement.closest(".modal:not(.hidden)");
         document.activeElement.blur();
         if (cmdModal && !cmdModal.classList.contains("hidden")) closeCmdPalette();
+        else if (inModal && inModal.id !== "confirm-modal") inModal.classList.add("hidden");
       } else if (e.key === "Enter") {
         if (document.activeElement.id === "insp-task-input") document.querySelector("[data-save-bot-task]")?.click();
         else if (document.activeElement.id === "insp-queue-input") document.querySelector("[data-add-queue]")?.click();
@@ -2017,6 +2074,8 @@
     const grid = document.getElementById("fleet-grid");
     const updates = document.getElementById("fleet-updates");
     if (!grid || !snapshot) return;
+    renderOrgChart();
+    renderArchived();
     const bots = snapshot.bots || [];
     const needs = snapshot.pendingNeeds || [];
     const openNeeds = needs.filter((n) => n.status === "open");
@@ -2112,7 +2171,7 @@
             </form>
             <div class="fleet-card-actions">
               <button class="btn btn-secondary" data-copy-grok-prompt="${esc(bot.id)}">Copy setup</button>
-              <button class="btn btn-secondary" data-jump-bot="${esc(bot.id)}">Open in 3D</button>
+              <button class="btn btn-secondary" data-edit-bot="${esc(bot.id)}">Edit</button>
             </div>
           </article>`;
         })
@@ -2244,12 +2303,13 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
 
   addBotNameInput.addEventListener("input", refreshAddBotPreview);
   addBotRoleInput.addEventListener("input", refreshAddBotPreview);
-  document.getElementById("btn-open-add-bot").addEventListener("click", openAddBotModal);
+  document.getElementById("btn-open-add-bot").addEventListener("click", () => openAddBotModal());
   document.getElementById("btn-close-add-bot").addEventListener("click", () => addBotModal.classList.add("hidden"));
   addBotModal.querySelector(".modal-backdrop").addEventListener("click", () => addBotModal.classList.add("hidden"));
 
   document.getElementById("add-bot-form").addEventListener("submit", async (e) => {
     e.preventDefault();
+    if (editingBotId) return; // edit mode is handled by the edit listener
     const name = addBotNameInput.value.trim();
     const role = addBotRoleInput.value.trim();
     const avatarColor = addBotColorInput.value;
@@ -2271,7 +2331,11 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ botId, name, role, avatarColor, status, model, expectedIntervalMinutes, agentKind, dispatchUrl }),
+        body: JSON.stringify({
+          botId, name, role, avatarColor, status, model, expectedIntervalMinutes, agentKind, dispatchUrl,
+          orgTitle: document.getElementById("add-bot-orgtitle")?.value.trim() || "",
+          reportsTo: document.getElementById("add-bot-reports")?.value || null,
+        }),
       },
       "Could not add agent"
     );
@@ -2335,7 +2399,7 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
 
   document.getElementById("btn-connect").addEventListener("click", () => openAddBotModal());
   document.getElementById("connect-bot-select").addEventListener("change", (e) => fillConnectSnippets(e.target.value));
-  document.getElementById("btn-fleet-add").addEventListener("click", openAddBotModal);
+  document.getElementById("btn-fleet-add").addEventListener("click", () => openAddBotModal());
   document.getElementById("btn-fleet-connect").addEventListener("click", openConnectModal);
   document.getElementById("btn-close-connect").addEventListener("click", () => connectModal.classList.add("hidden"));
   connectModal.querySelector(".modal-backdrop").addEventListener("click", () => connectModal.classList.add("hidden"));
@@ -3044,6 +3108,7 @@ function out(obj) {
               ${t.notes ? `<div class="task-row-notes">${esc(t.notes)}</div>` : ""}
               <div class="task-row-meta">
                 <span class="task-chip ${t.source === "google" ? "google" : ""}">${t.source === "google" ? "Google · " : ""}${esc(listTitle)}</span>
+                ${t.syncPending || pendingTaskStatus.has(t.id) ? `<span class="task-chip saving" title="Saved here, sending to Google">syncing…</span>` : ""}
                 ${formatDueChip(t.due, isDone)}
                 ${t.assignedBotName ? `<span class="task-chip bot-chip">Bot: ${esc(t.assignedBotName)}</span>` : ""}
               </div>
@@ -3238,6 +3303,13 @@ function out(obj) {
   });
 
   async function toggleTaskCompletion(taskId, nextStatus) {
+    if (inflightTaskIds.has(taskId)) return; // ignore double-clicks while saving
+    if (String(taskId).startsWith("optimistic-")) {
+      showToast("Still saving that task, one second", "info");
+      return;
+    }
+    inflightTaskIds.add(taskId);
+    pendingTaskStatus.set(taskId, { status: nextStatus, at: Date.now() });
     const task = (snapshot?.tasks || []).find((t) => t.id === taskId);
     const prevStatus = task ? task.status : nextStatus === "completed" ? "needsAction" : "completed";
     const isCompleting = nextStatus === "completed";
@@ -3284,7 +3356,9 @@ function out(obj) {
       },
       "Could not update task status"
     );
+    inflightTaskIds.delete(taskId);
     if (!res.ok) {
+      pendingTaskStatus.delete(taskId);
       completingTaskIds.delete(taskId);
       exitingTaskIds.delete(taskId);
       if (task) task.status = prevStatus;
@@ -3964,14 +4038,16 @@ function out(obj) {
   }
   function openCalModal() {
     if (!calModal) return;
-    const connected = Boolean(snapshot?.calendar?.sync?.connected);
+    const connected = Boolean(snapshot?.calendar?.sync?.bridgeConnected);
     if (calSecretInput) {
       calSecretInput.value = connected ? "" : calDraftSecret;
       calSecretInput.placeholder = connected ? "Saved. Leave blank to keep it, or paste a new one." : "";
     }
     refreshCalScript();
-    document.getElementById("btn-cal-disconnect")?.classList.toggle("hidden", !connected);
+    document.getElementById("btn-cal-disconnect")?.classList.toggle("hidden", !snapshot?.calendar?.sync?.bridgeConnected);
+    renderCalFeedList();
     calModal.classList.remove("hidden");
+    setTimeout(() => document.getElementById("cal-feed-url")?.focus(), 30);
   }
   calSecretInput?.addEventListener("input", () => {
     const v = calSecretInput.value.trim();
@@ -4077,11 +4153,6 @@ function out(obj) {
   }
 
   async function createCalendarEvent({ title, date, startMin, durationMin, allDay }) {
-    if (!snapshot?.calendar?.sync?.connected) {
-      showToast("Connect Google Calendar first", "info");
-      openCalModal();
-      return false;
-    }
     let start;
     let end;
     if (allDay || startMin === null) {
@@ -4092,6 +4163,12 @@ function out(obj) {
     } else {
       start = localToIso(date, startMin);
       end = new Date(Date.parse(start) + Math.max(15, durationMin || 60) * 60000).toISOString();
+    }
+    if (!snapshot?.calendar?.sync?.canCreate) {
+      // No two-way bridge: open Google Calendar pre-filled; the linked feed picks it up afterwards.
+      window.open(googleTemplateUrl(title, start, end, allDay), "_blank", "noopener");
+      showToast("Opened Google Calendar with the event filled in. Click Save there.", "info");
+      return true;
     }
     const res = await apiFetch(
       "/api/calendar/events",
@@ -4211,6 +4288,416 @@ function out(obj) {
     }
   });
 
+  // =========================================================================
+  // AGENTS: ORG CHART, EDIT, ARCHIVE
+  // =========================================================================
+  let agentsView = (() => {
+    try {
+      return localStorage.getItem("grok_hq_agents_view") === "cards" ? "cards" : "org";
+    } catch {
+      return "org";
+    }
+  })();
+
+  function applyAgentsView() {
+    document.querySelectorAll("[data-agents-view]").forEach((b) => b.classList.toggle("active", b.dataset.agentsView === agentsView));
+    document.getElementById("org-chart-wrap")?.classList.toggle("hidden", agentsView !== "org");
+    document.querySelectorAll(".agents-cards-only").forEach((el) => el.classList.toggle("hidden", agentsView !== "cards"));
+  }
+
+  document.addEventListener("click", (e) => {
+    const t = e.target.closest("[data-agents-view]");
+    if (!t) return;
+    agentsView = t.dataset.agentsView;
+    try {
+      localStorage.setItem("grok_hq_agents_view", agentsView);
+    } catch {
+      // Storage blocked
+    }
+    applyAgentsView();
+    renderFleet();
+  });
+
+  function orgChildren(bots) {
+    const ids = new Set(bots.map((b) => b.id));
+    const kids = new Map();
+    const roots = [];
+    bots.forEach((b) => {
+      if (b.reportsTo && ids.has(b.reportsTo) && b.reportsTo !== b.id) {
+        if (!kids.has(b.reportsTo)) kids.set(b.reportsTo, []);
+        kids.get(b.reportsTo).push(b);
+      } else {
+        roots.push(b);
+      }
+    });
+    const rank = (b) => (b.placeholder ? 1 : 0);
+    kids.forEach((arr) => arr.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name)));
+    // Roots with reports first (the real top of the org), loose agents after.
+    roots.sort((a, b) => (kids.has(b.id) ? 1 : 0) - (kids.has(a.id) ? 1 : 0) || a.name.localeCompare(b.name));
+    return { roots, kids };
+  }
+
+  function descendantsOf(botId, bots) {
+    const { kids } = orgChildren(bots);
+    const out = new Set();
+    const walk = (id) => (kids.get(id) || []).forEach((c) => { if (!out.has(c.id)) { out.add(c.id); walk(c.id); } });
+    walk(botId);
+    return out;
+  }
+
+  function orgNodeHtml(b, depth) {
+    const lnk = effectiveLink(b);
+    const openNeeds = (snapshot.pendingNeeds || []).filter((n) => n.status === "open" && n.botId === b.id).length;
+    const q = (b.queuedTasks || []).length;
+    const title = b.orgTitle || "";
+    const statusText = b.placeholder ? "Not connected yet" : b.task || "No task reported";
+    return `<button type="button" class="org-node ${depth === 0 ? "org-root" : ""} ${b.placeholder ? "is-placeholder" : ""} st-${esc(b.status)}" data-edit-bot="${esc(b.id)}" style="--bot:${esc(b.avatarColor)}" title="Edit ${esc(b.name)}">
+      <span class="org-avatar">${miniGrokIcon(b.avatarColor, true, b.placeholder ? null : b.status)}</span>
+      <span class="org-text">
+        ${title ? `<span class="org-title mono">${esc(title)}</span>` : ""}
+        <span class="org-name">${esc(b.name)}</span>
+        <span class="org-role">${esc(b.role)}</span>
+        <span class="org-task">${esc(statusText)}</span>
+      </span>
+      <span class="org-meta">
+        <span class="kind-pill kind-${esc(b.agentKind || "grok")}">${esc(KIND_LABELS[b.agentKind] || "Grok")}</span>
+        ${b.placeholder ? `<span class="link-pill link-waiting">Placeholder</span>` : `<span class="link-pill link-${esc(lnk)}">${linkLabel(lnk)}</span>`}
+        ${openNeeds ? `<span class="org-flag">${openNeeds} need${openNeeds === 1 ? "s" : ""} you</span>` : ""}
+        ${q ? `<span class="org-flag q">${q} queued</span>` : ""}
+      </span>
+    </button>`;
+  }
+
+  function renderOrgChart() {
+    const el = document.getElementById("org-chart");
+    if (!el || !snapshot) return;
+    const bots = snapshot.bots || [];
+    if (!bots.length) {
+      el.innerHTML = emptyStateHtml({
+        icon: ICONS.cpu,
+        title: "No agents yet",
+        subtitle: "Add your first agent, then set who reports to whom.",
+        actionsHtml: `<button class="btn btn-primary" data-open-modal="add-bot">+ Add agent</button>`,
+      });
+      return;
+    }
+    const { roots, kids } = orgChildren(bots);
+    const branch = (b, depth, seen) => {
+      if (seen.has(b.id) || depth > 8) return "";
+      seen.add(b.id);
+      const children = kids.get(b.id) || [];
+      return `<li>${orgNodeHtml(b, depth)}${
+        children.length ? `<ul>${children.map((c) => branch(c, depth + 1, seen)).join("")}</ul>` : ""
+      }</li>`;
+    };
+    const seen = new Set();
+    const teams = roots.filter((r) => kids.has(r.id));
+    const loose = roots.filter((r) => !kids.has(r.id));
+    el.innerHTML = `
+      ${teams.length ? `<ul class="org-tree">${teams.map((r) => branch(r, 0, seen)).join("")}</ul>` : ""}
+      ${
+        loose.length
+          ? `<div class="org-loose"><div class="org-loose-label mono">Not in the org yet · click to set a manager</div><div class="org-loose-row">${loose
+              .map((b) => orgNodeHtml(b, 1))
+              .join("")}</div></div>`
+          : ""
+      }`;
+  }
+
+  function renderArchived() {
+    const wrap = document.getElementById("archived-wrap");
+    const list = document.getElementById("archived-list");
+    const arch = snapshot?.archivedBots || [];
+    if (!wrap || !list) return;
+    wrap.classList.toggle("hidden", arch.length === 0);
+    document.getElementById("archived-count").textContent = String(arch.length);
+    list.innerHTML = arch
+      .map(
+        (b) => `<div class="archived-row">${miniGrokIcon(b.avatarColor, false)}<div class="t-main"><div class="t-title">${esc(b.name)}</div><div class="t-sub">${esc(b.role)} · last seen ${esc(timeAgo(b.lastSeenAt))}</div></div>
+        <button class="btn btn-secondary" data-restore-bot="${esc(b.id)}">Restore</button>
+        <button class="btn btn-reject" data-delete-bot="${esc(b.id)}" title="Delete permanently">Delete</button></div>`
+      )
+      .join("");
+  }
+
+  document.addEventListener("click", async (e) => {
+    const restore = e.target.closest("[data-restore-bot]");
+    if (restore) {
+      const res = await apiFetch(`/api/bots/${encodeURIComponent(restore.dataset.restoreBot)}/command`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ archived: false }) }, "Could not restore agent");
+      if (res.ok) showToast("Agent restored", "success");
+      return;
+    }
+    const del = e.target.closest("[data-delete-bot]");
+    if (del) {
+      const b = (snapshot?.archivedBots || []).find((x) => x.id === del.dataset.deleteBot);
+      const ok = await askConfirm({ title: `Delete ${b?.name || "agent"} permanently?`, message: "This removes the agent and its run history. This cannot be undone.", confirmLabel: "Delete", danger: true });
+      if (!ok) return;
+      const res = await apiFetch(`/api/bots/${encodeURIComponent(del.dataset.deleteBot)}`, { method: "DELETE" }, "Could not delete agent");
+      if (res.ok) showToast("Agent deleted", "info");
+      return;
+    }
+    const edit = e.target.closest("[data-edit-bot]");
+    if (edit) {
+      e.preventDefault();
+      openEditBotModal(edit.dataset.editBot);
+    }
+  });
+
+  // ---- Add / edit modal (shared) ----
+  let editingBotId = null;
+  const addBotOrgTitle = document.getElementById("add-bot-orgtitle");
+  const addBotReports = document.getElementById("add-bot-reports");
+  const editExtra = document.getElementById("edit-bot-extra");
+  const addBotSubmit = document.getElementById("add-bot-submit");
+  const modalHeading = addBotModal.querySelector(".modal-header h3");
+
+  function fillReportsSelect(excludeId) {
+    if (!addBotReports) return;
+    const bots = snapshot?.bots || [];
+    const banned = excludeId ? descendantsOf(excludeId, bots) : new Set();
+    addBotReports.innerHTML =
+      `<option value="">Nobody (top level)</option>` +
+      bots
+        .filter((b) => b.id !== excludeId && !banned.has(b.id))
+        .map((b) => `<option value="${esc(b.id)}">${esc(b.name)}${b.orgTitle ? ` · ${esc(b.orgTitle)}` : ""}</option>`)
+        .join("");
+  }
+
+  function setModalMode(mode) {
+    const isEdit = mode === "edit";
+    editExtra?.classList.toggle("hidden", !isEdit);
+    document.getElementById("add-bot-status-wrap")?.classList.toggle("hidden", isEdit);
+    if (addBotSubmit) addBotSubmit.textContent = isEdit ? "Save changes" : "Add agent & copy setup";
+  }
+
+  const baseOpenAddBotModal = openAddBotModal;
+  openAddBotModal = function openAddBotModalWrapped() {
+    editingBotId = null;
+    setModalMode("add");
+    if (modalHeading) modalHeading.textContent = "Add an agent";
+    fillReportsSelect(null);
+    if (addBotOrgTitle) addBotOrgTitle.value = "";
+    if (addBotDispatchInput) addBotDispatchInput.placeholder = "https://your-n8n.example.com/webhook/…";
+    baseOpenAddBotModal();
+  };
+
+  function openEditBotModal(botId) {
+    const b = (snapshot?.bots || []).find((x) => x.id === botId);
+    if (!b) return;
+    editingBotId = botId;
+    setModalMode("edit");
+    if (modalHeading) modalHeading.textContent = `Edit ${b.name}`;
+    document.querySelector(`#add-bot-kind-group [data-kind="${b.agentKind || "grok"}"]`)?.click();
+    addBotNameInput.value = b.name;
+    addBotRoleInput.value = b.role;
+    if (addBotOrgTitle) addBotOrgTitle.value = b.orgTitle || "";
+    fillReportsSelect(botId);
+    if (addBotReports) addBotReports.value = b.reportsTo || "";
+    addBotColorInput.value = b.avatarColor;
+    addBotSwatches?.querySelectorAll(".color-swatch").forEach((s) => s.classList.toggle("active", s.dataset.pickColor?.toLowerCase() === String(b.avatarColor).toLowerCase()));
+    const modelSel = document.getElementById("add-bot-model");
+    if (modelSel) {
+      if (![...modelSel.options].some((o) => o.value === b.model)) modelSel.insertAdjacentHTML("beforeend", `<option value="${esc(b.model)}">${esc(b.model)}</option>`);
+      modelSel.value = b.model;
+    }
+    const sla = document.getElementById("add-bot-sla");
+    if (sla) {
+      const v = String(b.expectedIntervalMinutes || 0);
+      if (![...sla.options].some((o) => o.value === v)) sla.insertAdjacentHTML("beforeend", `<option value="${v}">Every ${v} min</option>`);
+      sla.value = v;
+    }
+    if (addBotDispatchInput) {
+      addBotDispatchInput.value = "";
+      addBotDispatchInput.placeholder = b.dispatchConfigured ? `Saved (${b.dispatchHost}). Leave blank to keep.` : "https://your-n8n.example.com/webhook/…";
+    }
+    addBotPreview.textContent = setupTextForKind(b.agentKind || "grok", b.id, b.name, b.role, b.checkinToken || "");
+    addBotModal.classList.remove("hidden");
+    addBotNameInput.focus();
+  }
+
+  document.getElementById("add-bot-form").addEventListener(
+    "submit",
+    async (e) => {
+      if (!editingBotId) return; // add mode handled by the original listener
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const b = (snapshot?.bots || []).find((x) => x.id === editingBotId);
+      const kind = addBotKindInput?.value || "grok";
+      const typedUrl = addBotDispatchInput?.value.trim() || "";
+      if ((kind === "n8n" || kind === "webhook") && !typedUrl && !b?.dispatchConfigured) {
+        showToast("Add the webhook URL so tasks can be pushed to this agent", "error");
+        return;
+      }
+      const body = {
+        name: addBotNameInput.value.trim(),
+        role: addBotRoleInput.value.trim(),
+        orgTitle: addBotOrgTitle?.value.trim() || "",
+        reportsTo: addBotReports?.value || null,
+        avatarColor: addBotColorInput.value,
+        model: document.getElementById("add-bot-model").value,
+        expectedIntervalMinutes: Number(document.getElementById("add-bot-sla").value || 0),
+        agentKind: kind,
+        enqueue: false,
+      };
+      if (typedUrl) body.dispatchUrl = typedUrl;
+      const res = await apiFetch(`/api/bots/${encodeURIComponent(editingBotId)}/command`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }, "Could not save agent");
+      if (res.ok) {
+        addBotModal.classList.add("hidden");
+        showToast(`Saved ${body.name}`, "success");
+        editingBotId = null;
+      }
+    },
+    true
+  );
+
+  document.getElementById("btn-edit-archive")?.addEventListener("click", async () => {
+    const b = (snapshot?.bots || []).find((x) => x.id === editingBotId);
+    if (!b) return;
+    const ok = await askConfirm({ title: `Archive ${b.name}?`, message: "It disappears from the office and org chart. Anyone reporting to it moves up a level. You can restore it from Archived agents.", confirmLabel: "Archive", danger: true });
+    if (!ok) return;
+    const res = await apiFetch(`/api/bots/${encodeURIComponent(b.id)}/command`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ archived: true }) }, "Could not archive agent");
+    if (res.ok) {
+      addBotModal.classList.add("hidden");
+      editingBotId = null;
+      showToast(`${b.name} archived`, "info");
+    }
+  });
+  document.getElementById("btn-edit-copy-setup")?.addEventListener("click", async () => {
+    const b = (snapshot?.bots || []).find((x) => x.id === editingBotId);
+    if (!b) return;
+    try {
+      await navigator.clipboard.writeText(setupTextForKind(b.agentKind || "grok", b.id, b.name, b.role, b.checkinToken || ""));
+      showToast(`Copied setup for ${b.name}`, "success");
+    } catch {
+      showToast("Clipboard permission blocked", "error");
+    }
+  });
+  document.getElementById("btn-edit-open-3d")?.addEventListener("click", () => {
+    const id = editingBotId;
+    addBotModal.classList.add("hidden");
+    switchView("office");
+    setTimeout(() => office3d.selectBot(id), 80);
+  });
+
+  // =========================================================================
+  // CALENDAR FEEDS (secret iCal links)
+  // =========================================================================
+  function renderCalFeedList() {
+    const el = document.getElementById("cal-feed-list");
+    if (!el) return;
+    const feeds = snapshot?.calendar?.sync?.feeds || [];
+    el.innerHTML = feeds.length
+      ? feeds
+          .map(
+            (f) => `<div class="cal-feed-row"><i style="background:${esc(f.color)}"></i><strong>${esc(f.name)}</strong><span class="muted mono">${esc(f.host)}</span><span class="spacer"></span><button class="link-btn danger-link" data-remove-feed="${esc(f.id)}">Remove</button></div>`
+          )
+          .join("")
+      : "";
+  }
+
+  document.getElementById("cal-feed-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const url = document.getElementById("cal-feed-url").value.trim();
+    const name = document.getElementById("cal-feed-name").value.trim();
+    if (!url) return;
+    const btn = document.getElementById("btn-cal-feed-add");
+    btn.disabled = true;
+    btn.textContent = "Connecting…";
+    const res = await apiFetch("/api/calendar/feeds", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url, name }) }, "Could not connect that calendar");
+    btn.disabled = false;
+    btn.textContent = "Connect";
+    if (res.ok) {
+      const d = await res.json().catch(() => ({}));
+      document.getElementById("cal-feed-url").value = "";
+      document.getElementById("cal-feed-name").value = "";
+      showToast(`Connected ${d.feed?.name || "calendar"}: ${d.syncedCount ?? 0} events`, "success");
+    }
+  });
+
+  document.addEventListener("click", async (e) => {
+    const rm = e.target.closest("[data-remove-feed]");
+    if (!rm) return;
+    const f = (snapshot?.calendar?.sync?.feeds || []).find((x) => x.id === rm.dataset.removeFeed);
+    const ok = await askConfirm({ title: `Disconnect ${f?.name || "calendar"}?`, message: "Its events disappear from the office. Nothing changes in Google.", confirmLabel: "Disconnect", danger: true });
+    if (!ok) return;
+    const res = await apiFetch(`/api/calendar/feeds/${encodeURIComponent(rm.dataset.removeFeed)}`, { method: "DELETE" }, "Could not disconnect");
+    if (res.ok) showToast("Calendar disconnected", "info");
+  });
+
+  function googleTemplateUrl(title, startIso, endIso, allDay) {
+    const fmt = (iso) => (allDay ? iso.slice(0, 10).replace(/-/g, "") : new Date(iso).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, ""));
+    let end = endIso;
+    const params = new URLSearchParams({ action: "TEMPLATE", text: title });
+    if (allDay) {
+      const s = new Date(startIso);
+      const e2 = new Date(endIso);
+      params.set("dates", `${localDateKey(s).replace(/-/g, "")}/${localDateKey(e2).replace(/-/g, "")}`);
+    } else {
+      params.set("dates", `${fmt(startIso)}/${fmt(end)}`);
+    }
+    return `https://calendar.google.com/calendar/render?${params.toString()}`;
+  }
+
+  // =========================================================================
+  // INSIGHTS: usage by agent + 30-day trend
+  // =========================================================================
+  let trendMode = "costUsd";
+  document.addEventListener("click", (e) => {
+    const t = e.target.closest("[data-trend]");
+    if (!t) return;
+    trendMode = t.dataset.trend;
+    document.querySelectorAll("[data-trend]").forEach((b) => b.classList.toggle("active", b === t));
+    renderInsightsExtras();
+  });
+
+  function renderInsightsExtras() {
+    if (!snapshot) return;
+    const usageEl = document.getElementById("usage-by-agent");
+    const bots = snapshot.bots || [];
+    const today = snapshot.usageTodayByBot || {};
+    if (usageEl) {
+      const rows = bots
+        .map((b) => ({ b, t: today[b.id] || { tokens: 0, costUsd: 0, requests: 0 } }))
+        .sort((x, y) => y.b.costTotalUsd - x.b.costTotalUsd || y.b.tokensTotal - x.b.tokensTotal);
+      const maxCost = Math.max(0.0001, ...rows.map((r) => r.b.costTotalUsd));
+      const reporting = rows.filter((r) => r.b.tokensTotal > 0 || r.b.costTotalUsd > 0).length;
+      usageEl.innerHTML = rows.length
+        ? `<div class="uba-note muted">${reporting} of ${rows.length} agents have reported usage${reporting < rows.length ? ". Re-copy setup for the others: their check-in now asks them to add &tok=" : "."}</div>` +
+          rows
+            .map(
+              ({ b, t }) => `<button type="button" class="uba-row" data-edit-bot="${esc(b.id)}">
+              <span class="uba-id">${miniGrokIcon(b.avatarColor, false)}<span><strong>${esc(b.name)}</strong><em>${esc(b.orgTitle || b.role)}</em></span></span>
+              <span class="uba-bar"><i style="width:${Math.max(b.costTotalUsd > 0 ? 2 : 0, (b.costTotalUsd / maxCost) * 100)}%;background:${esc(b.avatarColor)}"></i></span>
+              <span class="uba-num mono"><strong>$${b.costTotalUsd.toFixed(2)}</strong><em>${formatNum(b.tokensTotal)} tok</em></span>
+              <span class="uba-num mono"><strong>$${t.costUsd.toFixed(2)}</strong><em>today · ${formatNum(t.tokens)}</em></span>
+            </button>`
+            )
+            .join("")
+        : `<div class="t-empty">No agents yet.</div>`;
+    }
+
+    const chart = document.getElementById("trend-chart");
+    if (chart) {
+      const days = [];
+      const byDay = new Map((snapshot.dailyRollups || []).map((r) => [r.day, r]));
+      for (let i = 29; i >= 0; i--) {
+        const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+        days.push({ day: d, v: Number(byDay.get(d)?.[trendMode] || 0) });
+      }
+      const max = Math.max(...days.map((d) => d.v), 0);
+      const fmtV = (v) => (trendMode === "costUsd" ? `$${v.toFixed(2)}` : formatNum(v));
+      chart.innerHTML =
+        max === 0
+          ? `<div class="t-empty">No history yet. Each day is recorded automatically from now on.</div>`
+          : `<div class="trend-bars">${days
+              .map(
+                (d) => `<div class="trend-col" title="${esc(d.day)}: ${esc(fmtV(d.v))}"><i style="height:${Math.max(d.v > 0 ? 3 : 0, (d.v / max) * 100)}%"></i></div>`
+              )
+              .join("")}</div><div class="trend-axis mono"><span>${esc(days[0].day.slice(5))}</span><span>max ${esc(fmtV(max))}</span><span>today</span></div>`;
+    }
+  }
+
+  applyAgentsView();
   switchView(activeView);
 
   fetchSnapshotFallback();

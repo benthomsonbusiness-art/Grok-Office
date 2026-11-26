@@ -25,6 +25,7 @@ export function buildGrokAppPrompt(
 - Finished: GET ${base}/api/ping?b=${idParam}&done=1&out=HTTPS_LINK&result=ONE_LINE&token=${tokenParam}
 - Need a human: GET ${base}/api/ping?b=${idParam}&s=wait&need=ONE_LINE_ASK&token=${tokenParam}
 - Goal progress: add &obj=GOAL_ID&prog=0-100
+- Usage: on the Finished link also add &tok=ESTIMATED_TOKENS_USED (whole number for the task)
 If the response is Unauthorized, tell the user the office link was rejected.
 Read the JSON orders. Do orders.nextTask when it is set. Follow orders.decision when it is set. If orders.goalId is set, advance that goal. Stop if orders.budgetBlocked is true.`;
 }

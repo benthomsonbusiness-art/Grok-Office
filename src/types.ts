@@ -81,6 +81,9 @@ export interface BotRecord {
   agentKind: import("./agentKinds").AgentKind;
   dispatchConfigured: boolean;
   dispatchHost: string;
+  reportsTo: string | null;
+  orgTitle: string;
+  placeholder: boolean;
 }
 
 export interface PendingNeed {
@@ -167,6 +170,7 @@ export interface GoogleTaskItem {
   assignedBotName: string | null;
   source: "google" | "local";
   updatedAt: string;
+  syncPending?: boolean;
 }
 
 export interface GoogleTasksSyncState {
@@ -185,6 +189,8 @@ export interface OfficeSnapshot {
   taskLists: GoogleTaskList[];
   tasks: GoogleTaskItem[];
   googleTasksSync: GoogleTasksSyncState;
+  usageTodayByBot: Record<string, { tokens: number; costUsd: number; requests: number }>;
+  archivedBots: Array<{ id: string; name: string; role: string; avatarColor: string; lastSeenAt: string }>;
   calendar: {
     sync: import("./calendar").CalendarSyncState;
     events: import("./calendar").CalendarEvent[];

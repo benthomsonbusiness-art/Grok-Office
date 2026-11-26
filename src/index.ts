@@ -26,6 +26,7 @@ import {
   normalizeBridgeEvent,
   parseNewEvent,
 } from "./calendar";
+import { feedLabel, normalizeFeedUrl, parseIcs } from "./ics";
 import {
   type AgentKind,
   buildDispatchPayload,
@@ -394,6 +395,26 @@ export class OfficeHub extends DurableObject<Env> {
     if (!botCols.includes("dispatch_url")) {
       this.sql.exec("ALTER TABLE bots ADD COLUMN dispatch_url TEXT NOT NULL DEFAULT ''");
     }
+    if (!botCols.includes("reports_to")) {
+      this.sql.exec("ALTER TABLE bots ADD COLUMN reports_to TEXT");
+    }
+    if (!botCols.includes("org_title")) {
+      this.sql.exec("ALTER TABLE bots ADD COLUMN org_title TEXT NOT NULL DEFAULT ''");
+    }
+    if (!botCols.includes("archived")) {
+      this.sql.exec("ALTER TABLE bots ADD COLUMN archived INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!botCols.includes("placeholder")) {
+      this.sql.exec("ALTER TABLE bots ADD COLUMN placeholder INTEGER NOT NULL DEFAULT 0");
+    }
+    const gtCols = this.sql
+      .exec<{ name: string }>("PRAGMA table_info(google_tasks)")
+      .toArray()
+      .map((c) => c.name);
+    if (!gtCols.includes("sync_pending")) {
+      this.sql.exec("ALTER TABLE google_tasks ADD COLUMN sync_pending INTEGER NOT NULL DEFAULT 0");
+    }
+    this.applyOrgChartV1();
     // Pushes cannot be in flight after a restart; return them to the queue.
     this.sql.exec("UPDATE task_queue SET status = 'queued' WHERE status = 'pushing'");
     const missingTokens = this.sql
@@ -521,7 +542,7 @@ export class OfficeHub extends DurableObject<Env> {
         last_seen_at: string;
         expected_interval_min: number;
         sla_alerted: number;
-      }>("SELECT id, name, avatar_color, status, last_seen_at, expected_interval_min, sla_alerted FROM bots")
+      }>("SELECT id, name, avatar_color, status, last_seen_at, expected_interval_min, sla_alerted FROM bots WHERE archived = 0")
       .toArray();
 
     let changed = false;
@@ -632,6 +653,7 @@ export class OfficeHub extends DurableObject<Env> {
     if (gtCfg.bridgeUrl) {
       needNextAlarm = true;
       const lastSyncMs = gtCfg.lastSyncAt ? Date.parse(gtCfg.lastSyncAt) : 0;
+      await this.retryPendingTaskPushes();
       if (!Number.isFinite(lastSyncMs) || nowMs - lastSyncMs >= 120_000) {
         const synced = await this.syncGoogleTasks();
         if (synced.ok) changed = true;
@@ -640,7 +662,7 @@ export class OfficeHub extends DurableObject<Env> {
 
     // Google Calendar background refresh (every 5 minutes when connected)
     const calCfg = this.getCalendarConfig();
-    if (calCfg.bridgeUrl) {
+    if (calCfg.bridgeUrl || this.getCalendarFeeds().length > 0) {
       needNextAlarm = true;
       const lastCalMs = calCfg.lastSyncAt ? Date.parse(calCfg.lastSyncAt) : 0;
       if (!Number.isFinite(lastCalMs) || nowMs - lastCalMs >= 300_000) {
@@ -762,11 +784,28 @@ export class OfficeHub extends DurableObject<Env> {
         result: clampText(url.searchParams.get("result") ?? url.searchParams.get("summary"), 240) || undefined,
         detectLoop: true,
       };
-      const tokensIn = Number(url.searchParams.get("in") ?? 0);
-      const tokensOut = Number(url.searchParams.get("out_tok") ?? url.searchParams.get("tokensOut") ?? 0);
-      const latencyMs = Number(url.searchParams.get("ms") ?? 0);
-      if (tokensIn > 0 || tokensOut > 0) {
-        payload.usage = { model: payload.model, tokensIn, tokensOut, latencyMs };
+      // Usage: in/out_tok (exact), or tok (total estimate, split 75/25), plus optional cost in USD.
+      const num = (k: string) => {
+        const v = Number(url.searchParams.get(k) ?? 0);
+        return Number.isFinite(v) && v > 0 ? v : 0;
+      };
+      let tokensIn = Math.min(num("in"), 50_000_000);
+      let tokensOut = Math.min(num("out_tok") || num("tokensOut"), 50_000_000);
+      const totalTok = Math.min(num("tok"), 50_000_000);
+      if (!tokensIn && !tokensOut && totalTok) {
+        tokensIn = Math.round(totalTok * 0.75);
+        tokensOut = totalTok - tokensIn;
+      }
+      const latencyMs = Math.min(num("ms"), 3_600_000);
+      const reportedCost = Math.min(num("cost"), 10_000);
+      if (tokensIn > 0 || tokensOut > 0 || reportedCost > 0) {
+        payload.usage = {
+          model: payload.model,
+          tokensIn,
+          tokensOut,
+          latencyMs,
+          ...(reportedCost > 0 ? { costUsd: reportedCost } : {}),
+        };
       }
       const objectiveId = clampText(
         url.searchParams.get("obj") ?? url.searchParams.get("objectiveId"),
@@ -829,6 +868,8 @@ export class OfficeHub extends DurableObject<Env> {
         expectedIntervalMinutes?: number;
         agentKind?: string;
         dispatchUrl?: string;
+        reportsTo?: string | null;
+        orgTitle?: string;
       } = {};
       try {
         body = (await request.json()) as typeof body;
@@ -863,9 +904,11 @@ export class OfficeHub extends DurableObject<Env> {
         message: `Added ${name} (${clampText(body.role, 48) || "Grok Agent"}) to HQ`,
       });
       this.sql.exec(
-        "UPDATE bots SET agent_kind = ?, dispatch_url = ? WHERE id = ?",
+        "UPDATE bots SET agent_kind = ?, dispatch_url = ?, reports_to = ?, org_title = ?, archived = 0 WHERE id = ?",
         normalizeAgentKind(body.agentKind),
         dispatchUrlIn,
+        clampText(body.reportsTo, 64) && clampText(body.reportsTo, 64) !== result.botId ? clampText(body.reportsTo, 64) : null,
+        clampText(body.orgTitle, 40),
         result.botId
       );
       this.broadcastSnapshot();
@@ -1062,11 +1105,44 @@ export class OfficeHub extends DurableObject<Env> {
         collaboratingWith?: string | null;
         agentKind?: string;
         dispatchUrl?: string;
+        reportsTo?: string | null;
+        orgTitle?: string;
+        archived?: boolean;
       } = {};
       try {
         body = (await request.json()) as typeof body;
       } catch {
         return jsonResponse({ error: "Invalid JSON" }, 400);
+      }
+      if (body.reportsTo !== undefined) {
+        const boss = clampText(body.reportsTo, 64) || null;
+        if (boss) {
+          if (boss === botId) return jsonResponse({ error: "An agent cannot report to itself" }, 400);
+          // Walk up from the new manager; if we reach this bot, it would form a loop.
+          let cur: string | null = boss;
+          for (let i = 0; cur && i < 50; i++) {
+            if (cur === botId) return jsonResponse({ error: "That would create a reporting loop" }, 400);
+            const r: { reports_to: string | null } | undefined = this.sql
+              .exec<{ reports_to: string | null }>("SELECT reports_to FROM bots WHERE id = ?", cur)
+              .toArray()[0];
+            if (!r && i === 0) return jsonResponse({ error: "Manager not found" }, 404);
+            cur = r?.reports_to ?? null;
+          }
+        }
+        this.sql.exec("UPDATE bots SET reports_to = ? WHERE id = ?", boss, botId);
+      }
+      if (body.orgTitle !== undefined) {
+        this.sql.exec("UPDATE bots SET org_title = ? WHERE id = ?", clampText(body.orgTitle, 40), botId);
+      }
+      if (body.archived !== undefined) {
+        this.sql.exec("UPDATE bots SET archived = ? WHERE id = ?", body.archived ? 1 : 0, botId);
+        if (body.archived) {
+          // Direct reports move up to this agent's manager.
+          const me = this.sql.exec<{ reports_to: string | null }>("SELECT reports_to FROM bots WHERE id = ?", botId).toArray()[0];
+          this.sql.exec("UPDATE bots SET reports_to = ? WHERE reports_to = ?", me?.reports_to ?? null, botId);
+        }
+        this.broadcastSnapshot();
+        return jsonResponse({ ok: true, archived: Boolean(body.archived) });
       }
       if (body.agentKind !== undefined) {
         this.sql.exec("UPDATE bots SET agent_kind = ? WHERE id = ?", normalizeAgentKind(body.agentKind), botId);
@@ -1345,8 +1421,46 @@ export class OfficeHub extends DurableObject<Env> {
       return jsonResponse({ ok: synced.ok, connected: true, syncedCount: synced.count, error: synced.error });
     }
 
+    if (url.pathname === "/api/calendar/feeds" && request.method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as { url?: string; name?: string };
+      const feedUrl = normalizeFeedUrl(clampText(body.url, 1000));
+      if (!feedUrl) return jsonResponse({ error: "Paste the full https:// calendar link (it ends in .ics)" }, 400);
+      const feeds = this.getCalendarFeeds();
+      if (feeds.some((f) => f.url === feedUrl)) return jsonResponse({ error: "That calendar is already connected" }, 409);
+      if (feeds.length >= 12) return jsonResponse({ error: "Up to 12 calendars can be connected" }, 400);
+      const probe = await this.fetchFeed(feedUrl);
+      if (!probe.ok || !probe.text) return jsonResponse({ error: probe.error || "Could not read that calendar" }, 400);
+      const nameFromFeed = probe.text.match(/^X-WR-CALNAME:(.*)$/m)?.[1]?.trim();
+      const palette = ["#9b8cff", "#4fd1b5", "#ffb547", "#ff8a7a", "#6cb8ff", "#e78bd8"];
+      const feed = {
+        id: `ics-${crypto.randomUUID().slice(0, 8)}`,
+        url: feedUrl,
+        name: clampText(body.name, 60) || clampText(nameFromFeed, 60) || feedLabel(feedUrl),
+        color: palette[feeds.length % palette.length],
+      };
+      this.saveCalendarFeeds([...feeds, feed]);
+      const synced = await this.syncCalendar();
+      await this.ensureAlarmScheduled();
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true, feed: { id: feed.id, name: feed.name }, syncedCount: synced.count });
+    }
+
+    const feedDelMatch = url.pathname.match(/^\/api\/calendar\/feeds\/([^/]+)$/);
+    if (feedDelMatch && request.method === "DELETE") {
+      const id = decodeURIComponent(feedDelMatch[1]);
+      const feeds = this.getCalendarFeeds();
+      if (!feeds.some((f) => f.id === id)) return jsonResponse({ error: "Calendar not found" }, 404);
+      this.saveCalendarFeeds(feeds.filter((f) => f.id !== id));
+      this.sql.exec("DELETE FROM calendar_events WHERE calendar_id = ?", id);
+      if (this.getCalendarFeeds().length === 0 && !this.getCalendarConfig().bridgeUrl) {
+        this.saveSettingKey("calendar_error", "");
+      }
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true });
+    }
+
     if (url.pathname === "/api/calendar/sync" && request.method === "POST") {
-      if (!this.getCalendarConfig().bridgeUrl) {
+      if (!this.getCalendarConfig().bridgeUrl && this.getCalendarFeeds().length === 0) {
         return jsonResponse({ error: "Google Calendar is not connected yet" }, 400);
       }
       const synced = await this.syncCalendar();
@@ -1441,6 +1555,7 @@ export class OfficeHub extends DurableObject<Env> {
       if (!cfg.bridgeUrl) {
         return jsonResponse({ error: "Google Tasks is not connected yet" }, 400);
       }
+      await this.retryPendingTaskPushes();
       const synced = await this.syncGoogleTasks();
       await this.ensureAlarmScheduled();
       this.broadcastSnapshot();
@@ -1612,24 +1727,13 @@ export class OfficeHub extends DurableObject<Env> {
           ? clampText(body.assignedBotId, 64) || null
           : existing.assigned_bot_id;
 
+      // Save locally first so the UI never waits on Google, then push in the background.
+      // sync_pending protects this edit from being overwritten by a sync until Google has it.
       const cfg = this.getGoogleTasksConfig();
-      if (cfg.bridgeUrl && existing.source === "google") {
-        const res = await this.callGoogleTasksBridge("update", {
-          listId: existing.list_id,
-          taskId: existing.id,
-          title: nextTitle,
-          notes: nextNotes,
-          due: nextDue,
-          status: nextStatus,
-        });
-        if (!res.ok) {
-          return jsonResponse({ error: res.error || "Google Tasks update failed" }, 502);
-        }
-      }
-
+      const needsPush = Boolean(cfg.bridgeUrl && existing.source === "google");
       this.sql.exec(
         `UPDATE google_tasks
-         SET title = ?, notes = ?, due = ?, status = ?, completed_at = ?, assigned_bot_id = ?, updated_at = ?
+         SET title = ?, notes = ?, due = ?, status = ?, completed_at = ?, assigned_bot_id = ?, updated_at = ?, sync_pending = ?
          WHERE id = ?`,
         nextTitle,
         nextNotes,
@@ -1638,8 +1742,10 @@ export class OfficeHub extends DurableObject<Env> {
         nextCompletedAt,
         nextAssignedBotId,
         now,
+        needsPush ? 1 : 0,
         taskId
       );
+      if (needsPush) this.ctx.waitUntil(this.pushPendingTask(taskId));
 
       if (nextAssignedBotId && nextAssignedBotId !== existing.assigned_bot_id) {
         this.enqueueTaskForBot(nextAssignedBotId, nextTitle);
@@ -2157,6 +2263,7 @@ export class OfficeHub extends DurableObject<Env> {
     // Dispatch queued instructions cleanly on actual bot check-ins (prevents dashboard actions from stealing queue and prevents replay loops)
     let nextTask: string | null = null;
     if (options.isBotCheckIn) {
+      this.sql.exec("UPDATE bots SET placeholder = 0 WHERE id = ? AND placeholder = 1", botId);
       const reportedTaskNorm = clampText(payload.task ?? payload.t, 200).trim().toLowerCase();
       if (reportedTaskNorm) {
         const frontQ = this.sql
@@ -2177,24 +2284,15 @@ export class OfficeHub extends DurableObject<Env> {
             )
             .toArray()[0];
           if (matchedGTask) {
+            const push = matchedGTask.source === "google" && Boolean(this.getGoogleTasksConfig().bridgeUrl);
             this.sql.exec(
-              "UPDATE google_tasks SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?",
+              "UPDATE google_tasks SET status = 'completed', completed_at = ?, updated_at = ?, sync_pending = ? WHERE id = ?",
               now,
               now,
+              push ? 1 : 0,
               matchedGTask.id
             );
-            if (matchedGTask.source === "google") {
-              this.ctx.waitUntil(
-                this.callGoogleTasksBridge("update", {
-                  listId: matchedGTask.list_id,
-                  taskId: matchedGTask.id,
-                  title: matchedGTask.title,
-                  notes: matchedGTask.notes,
-                  due: matchedGTask.due,
-                  status: "completed",
-                }).catch(() => {})
-              );
-            }
+            if (push) this.ctx.waitUntil(this.pushPendingTask(matchedGTask.id).catch(() => false));
           }
         }
       }
@@ -2712,7 +2810,10 @@ export class OfficeHub extends DurableObject<Env> {
         checkin_token?: string;
         agent_kind?: string;
         dispatch_url?: string;
-      }>("SELECT * FROM bots ORDER BY desk_index ASC, name ASC")
+        reports_to?: string | null;
+        org_title?: string;
+        placeholder?: number;
+      }>("SELECT * FROM bots WHERE archived = 0 ORDER BY desk_index ASC, name ASC")
       .toArray()
       .map((b, idx) => {
         const rs = runStatsByBot.get(b.id);
@@ -2743,6 +2844,9 @@ export class OfficeHub extends DurableObject<Env> {
           agentKind: normalizeAgentKind(b.agent_kind),
           dispatchConfigured: Boolean(b.dispatch_url),
           dispatchHost: maskDispatchUrl(b.dispatch_url ?? ""),
+          reportsTo: b.reports_to ?? null,
+          orgTitle: b.org_title ?? "",
+          placeholder: b.placeholder === 1,
           link: connectionLink(
             b.last_seen_at,
             b.expected_interval_min ?? 0,
@@ -2972,6 +3076,22 @@ export class OfficeHub extends DurableObject<Env> {
       tasks: this.listGoogleTasks(bots),
       googleTasksSync,
       calendar: this.getCalendarSnapshot(),
+      usageTodayByBot: Object.fromEntries(
+        this.sql
+          .exec<{ bot_id: string; tokens: number; cost: number; reqs: number }>(
+            `SELECT bot_id, COALESCE(SUM(tokens_in + tokens_out), 0) as tokens, COALESCE(SUM(cost_usd), 0) as cost, COUNT(*) as reqs
+             FROM usage_events WHERE created_at >= ? GROUP BY bot_id`,
+            `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`
+          )
+          .toArray()
+          .map((r) => [r.bot_id, { tokens: r.tokens, costUsd: Number(r.cost.toFixed(4)), requests: r.reqs }])
+      ),
+      archivedBots: this.sql
+        .exec<{ id: string; name: string; role: string; avatar_color: string; last_seen_at: string }>(
+          "SELECT id, name, role, avatar_color, last_seen_at FROM bots WHERE archived = 1 ORDER BY name ASC"
+        )
+        .toArray()
+        .map((b) => ({ id: b.id, name: b.name, role: b.role, avatarColor: b.avatar_color, lastSeenAt: b.last_seen_at })),
       dailyRollups: this.listDailyRollups(30),
       settings: redactAlertWebhook(settings),
       usageSummary: {
@@ -3180,19 +3300,221 @@ export class OfficeHub extends DurableObject<Env> {
     }
   }
 
+  /**
+   * One-time org chart requested by the owner (Nov 2026):
+   *   Jared (CEO)
+   *   ├─ Bruce (Business Manager) → Randy, Sammy (placeholder)
+   *   └─ Bernard (Executive Assistant, personal) → Wyatt, Andy, Chad, Cornelius
+   * Every other bot is archived (hidden, restorable), never deleted.
+   */
+  private applyOrgChartV1(): void {
+    const done = this.sql
+      .exec<{ value: string }>("SELECT value FROM office_settings WHERE key = 'org_chart_v1'")
+      .toArray()[0];
+    if (done) return;
+    const bots = this.sql.exec<{ id: string; name: string }>("SELECT id, name FROM bots").toArray();
+    const firstWord = (n: string) => n.trim().toLowerCase().split(/[\s_-]+/)[0] ?? "";
+    const plan: Record<string, { title: string; boss: string | null }> = {
+      jared: { title: "CEO", boss: null },
+      bruce: { title: "Business Manager", boss: "jared" },
+      randy: { title: "", boss: "bruce" },
+      sammy: { title: "", boss: "bruce" },
+      bernard: { title: "Executive Assistant", boss: "jared" },
+      wyatt: { title: "", boss: "bernard" },
+      andy: { title: "", boss: "bernard" },
+      chad: { title: "", boss: "bernard" },
+      cornelius: { title: "", boss: "bernard" },
+    };
+    const idByKey = new Map<string, string>();
+    for (const b of bots) {
+      const k = firstWord(b.name) in plan ? firstWord(b.name) : firstWord(b.id) in plan ? firstWord(b.id) : "";
+      if (k && !idByKey.has(k)) idByKey.set(k, b.id);
+    }
+    // Only reshape the office when it actually contains this team.
+    if (idByKey.size >= 3) {
+      const now = new Date().toISOString();
+      if (!idByKey.has("sammy")) {
+        const deskRow = this.sql.exec<{ mx: number | null }>("SELECT MAX(desk_index) as mx FROM bots").one();
+        let sammyId = "sammy";
+        if (this.sql.exec<{ id: string }>("SELECT id FROM bots WHERE id = ?", sammyId).toArray()[0]) sammyId = `sammy-${crypto.randomUUID().slice(0, 4)}`;
+        this.sql.exec(
+          `INSERT INTO bots (id, name, role, department, avatar_color, avatar_shape, desk_index, status, task, model, last_seen_at, checkin_token, placeholder)
+           VALUES (?, 'Sammy', 'Business Ops (placeholder)', 'Business', '#f0b429', 'squircle', ?, 'no_report', 'Not connected yet', 'grok-4', ?, ?, 1)`,
+          sammyId,
+          (deskRow?.mx ?? 0) + 1,
+          now,
+          crypto.randomUUID()
+        );
+        idByKey.set("sammy", sammyId);
+      }
+      const keep = new Set(idByKey.values());
+      for (const [k, id] of idByKey) {
+        const p = plan[k];
+        const bossId = p.boss ? idByKey.get(p.boss) ?? null : null;
+        this.sql.exec(
+          "UPDATE bots SET reports_to = ?, org_title = CASE WHEN ? != '' THEN ? ELSE org_title END, archived = 0 WHERE id = ?",
+          bossId,
+          p.title,
+          p.title,
+          id
+        );
+      }
+      for (const b of bots) {
+        if (!keep.has(b.id)) this.sql.exec("UPDATE bots SET archived = 1 WHERE id = ?", b.id);
+      }
+      this.sql.exec("DELETE FROM task_queue WHERE status = 'queued' AND bot_id IN (SELECT id FROM bots WHERE archived = 1)");
+      this.sql.exec(
+        `UPDATE pending_needs SET status = 'resolved', resolution_note = 'Agent archived', resolved_at = ?
+         WHERE status = 'open' AND bot_id IN (SELECT id FROM bots WHERE archived = 1)`,
+        now
+      );
+      this.saveSettingKey("org_chart_v1", "applied");
+    } else if (bots.length > 0) {
+      // A different team: nothing to do, and do not try again.
+      this.saveSettingKey("org_chart_v1", "skipped");
+    }
+  }
+
+  private async pushPendingTask(taskId: string): Promise<boolean> {
+    const t = this.sql
+      .exec<{ id: string; list_id: string; title: string; notes: string; due: string | null; status: string }>(
+        "SELECT id, list_id, title, notes, due, status FROM google_tasks WHERE id = ? AND sync_pending = 1",
+        taskId
+      )
+      .toArray()[0];
+    if (!t) return true;
+    const res = await this.callGoogleTasksBridge("update", {
+      listId: t.list_id,
+      taskId: t.id,
+      title: t.title,
+      notes: t.notes,
+      due: t.due,
+      status: t.status,
+    });
+    if (res.ok) {
+      // Only clear if nothing changed again while we were pushing.
+      this.sql.exec(
+        "UPDATE google_tasks SET sync_pending = 0 WHERE id = ? AND status = ? AND title = ?",
+        t.id,
+        t.status,
+        t.title
+      );
+      this.saveSettingKey("google_tasks_error", "");
+    } else {
+      this.saveSettingKey("google_tasks_error", `Saved here, not yet in Google: ${res.error || "push failed"}. Retrying.`);
+      await this.ensureAlarmScheduled();
+    }
+    this.broadcastSnapshot();
+    return res.ok;
+  }
+
+  private async retryPendingTaskPushes(): Promise<void> {
+    const pending = this.sql
+      .exec<{ id: string }>("SELECT id FROM google_tasks WHERE sync_pending = 1 ORDER BY updated_at ASC LIMIT 10")
+      .toArray();
+    for (const p of pending) {
+      if (!(await this.pushPendingTask(p.id))) break;
+    }
+  }
+
+  private getCalendarFeeds(): Array<{ id: string; url: string; name: string; color: string }> {
+    const row = this.sql
+      .exec<{ value: string }>("SELECT value FROM office_settings WHERE key = 'calendar_feeds'")
+      .toArray()[0];
+    if (!row?.value) return [];
+    try {
+      const parsed = JSON.parse(row.value) as Array<{ id: string; url: string; name: string; color: string }>;
+      return Array.isArray(parsed) ? parsed.filter((f) => f && f.id && f.url) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private saveCalendarFeeds(feeds: Array<{ id: string; url: string; name: string; color: string }>): void {
+    this.saveSettingKey("calendar_feeds", JSON.stringify(feeds.slice(0, 12)));
+  }
+
+  private async fetchFeed(url: string): Promise<{ ok: boolean; text?: string; error?: string }> {
+    if (!isSafeCallbackUrl(url)) return { ok: false, error: "Calendar link must be a public https:// address" };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    try {
+      const res = await fetch(url, {
+        headers: { accept: "text/calendar, text/plain;q=0.8, */*;q=0.5", "user-agent": "GrokBotHQ-Calendar/1.0" },
+        redirect: "follow",
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        return {
+          ok: false,
+          error: res.status === 404 ? "Calendar link not found (was the secret address reset?)" : `Calendar returned HTTP ${res.status}`,
+        };
+      }
+      const text = await res.text();
+      if (text.length > 6_000_000) return { ok: false, error: "Calendar feed is too large" };
+      if (!text.includes("BEGIN:VCALENDAR")) return { ok: false, error: "That link is not an iCal (.ics) calendar feed" };
+      return { ok: true, text };
+    } catch (err) {
+      return { ok: false, error: clampText(err instanceof Error ? err.message : "Network error", 160) };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async syncCalendar(): Promise<{ ok: boolean; count: number; error?: string }> {
     const now = new Date();
-    const from = new Date(now.getTime() - 2 * 24 * 60 * 60_000).toISOString();
-    const to = new Date(now.getTime() + 30 * 24 * 60 * 60_000).toISOString();
-    const res = await this.callCalendarBridge("list", { from, to });
-    if (!res.ok) {
-      this.saveSettingKey("calendar_error", res.error || "Sync failed");
-      return { ok: false, count: 0, error: res.error };
+    const fromMs = now.getTime() - 3 * 24 * 60 * 60_000;
+    const toMs = now.getTime() + 45 * 24 * 60 * 60_000;
+    const cfg = this.getCalendarConfig();
+    const feeds = this.getCalendarFeeds();
+    const events: CalendarEvent[] = [];
+    const errors: string[] = [];
+    let anyOk = false;
+
+    if (cfg.bridgeUrl) {
+      const res = await this.callCalendarBridge("list", {
+        from: new Date(fromMs).toISOString(),
+        to: new Date(toMs).toISOString(),
+      });
+      if (res.ok) {
+        anyOk = true;
+        const rawEvents = Array.isArray(res.data?.events) ? (res.data?.events as unknown[]) : [];
+        for (const e of rawEvents.slice(0, 1000).map(normalizeBridgeEvent)) if (e) events.push(e);
+      } else {
+        errors.push(`Bridge: ${res.error || "sync failed"}`);
+      }
     }
-    const rawEvents = Array.isArray(res.data?.events) ? (res.data?.events as unknown[]) : [];
-    const events = rawEvents.slice(0, 1000).map(normalizeBridgeEvent).filter((e): e is CalendarEvent => e !== null);
+
+    for (const feed of feeds) {
+      const res = await this.fetchFeed(feed.url);
+      if (!res.ok || !res.text) {
+        errors.push(`${feed.name}: ${res.error || "sync failed"}`);
+        continue;
+      }
+      anyOk = true;
+      try {
+        events.push(...parseIcs(res.text, fromMs, toMs, { calendarName: feed.name, color: feed.color, feedId: feed.id, maxEvents: 800 }));
+      } catch (err) {
+        errors.push(`${feed.name}: could not read feed`);
+      }
+    }
+
+    if (!anyOk) {
+      this.saveSettingKey("calendar_error", clampText(errors.join(" · ") || "Sync failed", 300));
+      return { ok: false, count: 0, error: errors[0] };
+    }
+
+    // When the bridge and a feed cover the same calendar, keep one copy.
+    const seen = new Set<string>();
+    const deduped = events.filter((e) => {
+      const key = `${e.title}|${e.start}|${e.end}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
     this.sql.exec("DELETE FROM calendar_events");
-    for (const e of events) {
+    for (const e of deduped.slice(0, 2000)) {
       this.sql.exec(
         `INSERT OR REPLACE INTO calendar_events (id, calendar_id, calendar_name, title, start_at, end_at, all_day, location, html_link, color)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -3209,8 +3531,8 @@ export class OfficeHub extends DurableObject<Env> {
       );
     }
     this.saveSettingKey("calendar_last_sync", now.toISOString());
-    this.saveSettingKey("calendar_error", "");
-    return { ok: true, count: events.length };
+    this.saveSettingKey("calendar_error", clampText(errors.join(" · "), 300));
+    return { ok: true, count: deduped.length, error: errors[0] };
   }
 
   private getCalendarSnapshot(): { sync: CalendarSyncState; events: CalendarEvent[] } {
@@ -3244,7 +3566,10 @@ export class OfficeHub extends DurableObject<Env> {
       }));
     return {
       sync: {
-        connected: Boolean(cfg.bridgeUrl),
+        connected: Boolean(cfg.bridgeUrl) || this.getCalendarFeeds().length > 0,
+        canCreate: Boolean(cfg.bridgeUrl),
+        bridgeConnected: Boolean(cfg.bridgeUrl),
+        feeds: this.getCalendarFeeds().map((f) => ({ id: f.id, name: f.name, color: f.color, host: feedLabel(f.url) })),
         lastSyncAt: cfg.lastSyncAt,
         error: cfg.error,
         eventCount: events.length,
@@ -3455,13 +3780,20 @@ export class OfficeHub extends DurableObject<Env> {
       }
     }
 
-    const seenTaskIds = new Set<string>();
+    const pendingIds = new Set(
+      this.sql
+        .exec<{ id: string }>("SELECT id FROM google_tasks WHERE sync_pending = 1")
+        .toArray()
+        .map((r) => r.id)
+    );
+    const seenTaskIds = new Set<string>(pendingIds);
     for (const t of tasks) {
       const id = clampText(t.id, 160);
       const listId = clampText(t.listId, 120);
       const title = clampText(t.title, 200);
       if (!id || !listId || !title) continue;
       seenTaskIds.add(id);
+      if (pendingIds.has(id)) continue;
       const status: GoogleTaskStatus = t.status === "completed" ? "completed" : "needsAction";
       const due = t.due ? clampText(t.due, 40) : null;
       const notes = clampText(t.notes, 1000);
@@ -3534,6 +3866,7 @@ export class OfficeHub extends DurableObject<Env> {
         completed_at: string | null;
         position: string;
         assigned_bot_id: string | null;
+        sync_pending?: number;
         source: "google" | "local";
         updated_at: string;
       }>(
@@ -3558,6 +3891,7 @@ export class OfficeHub extends DurableObject<Env> {
         assignedBotName: r.assigned_bot_id ? botNames.get(r.assigned_bot_id) ?? r.assigned_bot_id : null,
         source: r.source === "google" ? "google" : "local",
         updatedAt: r.updated_at,
+        syncPending: r.sync_pending === 1,
       }));
   }
 

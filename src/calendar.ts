@@ -18,6 +18,9 @@ export interface CalendarEvent {
 
 export interface CalendarSyncState {
   connected: boolean;
+  canCreate?: boolean;
+  bridgeConnected?: boolean;
+  feeds?: Array<{ id: string; name: string; color: string; host: string }>;
   lastSyncAt: string | null;
   error: string | null;
   eventCount: number;
