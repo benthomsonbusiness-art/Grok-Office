@@ -901,9 +901,13 @@ export class OfficeHub extends DurableObject<Env> {
       }
       const needTitle = clampText(url.searchParams.get("need"), 140);
       if (needTitle) {
+        const sevRaw = url.searchParams.get("sev");
         payload.need = {
           title: needTitle,
-          severity: (url.searchParams.get("sev") as NeedSeverity) || "approval",
+          severity: sevRaw === "input" || sevRaw === "error" || sevRaw === "budget" ? sevRaw : "approval",
+          description:
+            clampText(url.searchParams.get("detail") ?? url.searchParams.get("why") ?? url.searchParams.get("context"), 800) ||
+            undefined,
         };
         if (!payload.status) payload.status = "waiting";
       }
@@ -2712,7 +2716,7 @@ export class OfficeHub extends DurableObject<Env> {
         rawCallback && isSafeCallbackUrl(rawCallback) ? rawCallback : null;
       const sev = payload.need.severity ?? (status === "error" ? "error" : "approval");
       const needTitle = clampText(payload.need.title, 140);
-      const needDesc = clampText(payload.need.description, 400);
+      const needDesc = clampText(payload.need.description, 800);
 
       this.sql.exec(
         `INSERT INTO pending_needs (
@@ -4095,7 +4099,7 @@ export class OfficeHub extends DurableObject<Env> {
     const how: Record<string, string> = {
       dailyCheckIn: `${base}/api/ping?b=${b}&daily=1&token=${t}`,
       reportDone: `${base}/api/ping?b=${b}&done=1&req=TASK_ID&t=TASK&out=HTTPS_LINK&result=ONE_LINE&tok=TOKENS_USED&token=${t}`,
-      needOwner: `${base}/api/ping?b=${b}&s=wait&need=ONE_LINE_QUESTION&token=${t}`,
+      needOwner: `${base}/api/ping?b=${b}&s=wait&need=SHORT_TITLE&detail=WHAT_HAPPENED_WHY_AND_THE_OPTIONS&sev=approval|input|error&token=${t}`,
       answerAsk: `${base}/api/ping?b=${b}&ask=ASK_ID&answer=YOUR_ANSWER&token=${t}`,
       proposeRoutine: `${base}/api/ping?b=${b}&routine=AGENT_ID|SCHEDULE|TASK&token=${t}`,
       scheduleFormat: "daily 07:00 · weekdays 07:00 · mon,thu 09:30 · weekly fri 16:00 · monthly 1 08:00 · monthly last 17:00",

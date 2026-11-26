@@ -31,7 +31,7 @@ The dashboard now holds your calendar and tasks. Add a Zero Trust Access applica
 - **Zero-Token xAI Proxy (`/proxy/:botId/v1/*`)**: Point custom Grok / OpenAI SDK clients here to automatically track tokens, spend, latency, and API errors with zero extra prompts or tool calls.
 - **1-Line Ping Webhook (`GET /api/ping`)**: Ultra-compact status reporting (`?b=atlas&s=w&t=Task`) for hosted xAI Grok Bots.
 - **Auto-Idle Durable Object Alarms**: Inactive bots automatically walk to the Coffee Lounge after the configured timeout (`autoIdleMinutes`), so Grok doesn't waste tokens reporting idle transitions.
-- **Animated Virtual Office (`public/office.js`)**: High-DPI floor plan with Engineering & Operations pods, server rack LEDs, glass boardroom with holo-table, espresso bar steam particles, corridor waypoint pathfinding, idle lounge roaming, and collaboration energy beams.
+- **Pixel Office (`src/client/office2d.js`)**: top-down 2D pixel-art office (original procedural art, ~21 KB). Agents walk between Work Floor, Approvals, Repair Bay, War Room, Lounge and Standby based on status, with speech bubbles, day/dusk/night lighting and click-to-inspect.
 - **Goals, Objectives & Budget Guardrails**: Track team OKRs, daily task targets, token caps, and spend caps—with automatic budget alert cards when thresholds are crossed.
 - **Pending Needs & Approvals Queue**: Approve/reject/note single or batch requests, plus a tiny `GET /api/bot/:botId/status` poll endpoint.
 - **Security Hardened**: HMAC-SHA256 signed `HttpOnly` session cookies, SHA-256 constant-time secret verification, strict CSP/security headers, `run_worker_first: true` asset protection, and SSRF validation on webhook callbacks.

@@ -28,7 +28,8 @@ export function buildGrokAppPrompt(
     ...(hasTeam ? [`- orders.team: your reports and their status. Delegate with orders.howTo.delegate.`] : []),
     `- orders.howTo: the exact links for reporting back. Use them.`,
     `AFTER EACH TASK: GET ${base}/api/ping?b=${b}&done=1&req=TASK_ID&t=TASK&out=HTTPS_LINK&result=ONE_LINE&tok=TOKENS_USED&token=${t}`,
-    `NEED THE OWNER: GET ${base}/api/ping?b=${b}&s=wait&need=ONE_LINE_QUESTION&token=${t}`,
+    `NEED THE OWNER: GET ${base}/api/ping?b=${b}&s=wait&need=SHORT_TITLE&detail=WHAT_HAPPENED_WHY_AND_THE_OPTIONS&sev=approval_or_input_or_error&token=${t}`,
+    `Always fill detail: what you were doing, what went wrong or what you need, and the choices the owner has.`,
     `Replace CAPITAL words with real values (URL-encoded). Stop if orders.budgetBlocked is true.`,
     `If a link returns Unauthorized, tell the user the HQ link was rejected.`,
   ];

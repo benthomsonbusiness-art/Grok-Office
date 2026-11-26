@@ -3,15 +3,12 @@
   "version": "2.0.0",
   "private": true,
   "scripts": {
-    "build:client": "esbuild src/client/office3d.js --bundle --minify --format=iife --outfile=public/office3d.bundle.js && esbuild src/grokPrompt.ts --bundle --format=iife --global-name=GrokPrompt --outfile=public/grokPrompt.js && esbuild src/quickCapture.ts --bundle --format=iife --global-name=QuickCapture --outfile=public/quickCapture.js",
+    "build:client": "esbuild src/client/office2d.js --bundle --minify --format=iife --outfile=public/office2d.bundle.js && esbuild src/grokPrompt.ts --bundle --format=iife --global-name=GrokPrompt --outfile=public/grokPrompt.js && esbuild src/quickCapture.ts --bundle --format=iife --global-name=QuickCapture --outfile=public/quickCapture.js",
     "dev": "npm run build:client && wrangler dev",
     "deploy": "npm run build:client && wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "deploy:embedded": "npm run build:client && node scripts/embed-assets.mjs && wrangler deploy -c wrangler.embedded.jsonc"
-  },
-  "dependencies": {
-    "three": "^0.172.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261121.1",

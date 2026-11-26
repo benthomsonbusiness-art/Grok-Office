@@ -117,7 +117,7 @@
     if (actFilter === "bot") renderActivity();
   }
 
-  // The 3D office (~600 KB with three.js) loads only when the Office tab is opened.
+  // The pixel office loads only when the Office tab is opened.
   const office3d = (() => {
     let real = null;
     let loading = null;
@@ -128,11 +128,11 @@
       stageEl?.classList.add("is-loading");
       loading = new Promise((resolve) => {
         const script = document.createElement("script");
-        script.src = "/office3d.bundle.js?v=10";
+        script.src = "/office2d.bundle.js?v=14";
         script.async = true;
         script.onload = () => {
           try {
-            real = new window.Office3D(stageEl, labelLayer, tooltipEl, onOfficeBotSelected);
+            real = new window.Office2D(stageEl, labelLayer, tooltipEl, onOfficeBotSelected);
             real.showAllLabels = pending.labels;
             if (pending.lighting) real.setLighting(pending.lighting);
             if (pending.cam) real.setCameraMode(pending.cam);
@@ -144,7 +144,7 @@
               pending.select = null;
             }
           } catch (err) {
-            showToast("The 3D office could not start on this device", "error");
+            showToast("The office could not start on this device", "error");
           }
           stageEl?.classList.remove("is-loading");
           resolve(real);
@@ -152,7 +152,7 @@
         script.onerror = () => {
           loading = null;
           stageEl?.classList.remove("is-loading");
-          showToast("Could not load the 3D office. Check your connection and try again.", "error");
+          showToast("Could not load the office. Check your connection and try again.", "error");
           resolve(null);
         };
         document.head.appendChild(script);
@@ -1400,35 +1400,102 @@
       return;
     }
 
-    grid.innerHTML = visible
-      .map((n) => {
-        const isOpen = n.status === "open";
-        const bot = bots.find((b) => b.id === n.botId);
-        return `
-        <div class="need-card severity-${esc(n.severity)} ${isOpen ? "" : "resolved"}">
-          <div class="need-head">
-            <div class="need-bot-row">
-              ${miniGrokIcon(bot?.avatarColor || "#38bdf8", false)}
-              <div style="min-width:0">
-                <div class="need-title">${esc(n.botName)} — ${esc(n.title)}</div>
-                ${n.createdAt ? `<div class="need-age"><span data-live-ts="${esc(n.createdAt)}">${esc(timeAgo(n.createdAt))}</span></div>` : ""}
-              </div>
+    grid.innerHTML = visible.map((n) => needCardHtml(n, bots)).join("");
+  }
+
+  // Plain-English meaning of each kind of inbox item, so nothing shows up without context.
+  function explainNeed(n) {
+    const id = String(n.id || "");
+    if (id.startsWith("sla-") || /^Missed scheduled check-in/.test(n.title)) {
+      return {
+        kind: "Missed check-in",
+        meaning: "This agent is set to check in on a schedule and hasn't. It may be paused in Grok, out of credits, or its schedule may have stopped.",
+        options: "Open the agent in Grok and say \"check in with HQ\". If it's meant to be on-demand, set its schedule to On-demand in Agents → Edit and this clears itself.",
+      };
+    }
+    if (id.startsWith("loop-") || /loop detected/i.test(n.title)) {
+      return {
+        kind: "Possible loop",
+        meaning: "The agent reported the same step over and over in a short time. It might be stuck retrying something.",
+        options: "Reject to tell it to stop, or reply with a different approach. Asking for details gets its own explanation on the next check-in.",
+      };
+    }
+    if (n.severity === "budget") {
+      return {
+        kind: "Budget limit",
+        meaning: "Today's spend or token cap was reached, so agents using the proxy are paused until tomorrow or until you raise the cap.",
+        options: "Approve to acknowledge, or raise the cap in Guardrails (sliders icon, top right).",
+      };
+    }
+    if (n.severity === "error") {
+      return {
+        kind: "Something went wrong",
+        meaning: "The agent hit a problem it couldn't solve on its own and stopped to tell you.",
+        options: "Read its explanation below. Reply with how to proceed, ask for more detail, or reject to have it drop the task.",
+      };
+    }
+    if (n.severity === "input") {
+      return {
+        kind: "Needs information",
+        meaning: "The agent can't continue without something only you know.",
+        options: "Type the answer in the reply box and press Approve. It gets your reply on its next check-in.",
+      };
+    }
+    return {
+      kind: "Wants your OK",
+      meaning: "The agent wants permission before it goes ahead.",
+      options: "Approve or reject. Anything you type in the reply box goes along with your decision.",
+    };
+  }
+
+  function needCardHtml(n, bots) {
+    const isOpen = n.status === "open";
+    const bot = bots.find((b) => b.id === n.botId);
+    const info = explainNeed(n);
+    const logs = (snapshot.activityLogs || []).filter((l) => l.botId === n.botId).slice(0, 4);
+    const queued = (bot?.queuedTasks || []).slice(0, 3);
+    const urgent = n.severity === "error" || n.severity === "budget";
+    const noDetail = !n.description;
+    return `
+      <div class="need-card severity-${esc(n.severity)} ${isOpen ? "" : "resolved"}">
+        <div class="need-head">
+          <div class="need-bot-row">
+            ${miniGrokIcon(bot?.avatarColor || "#ffb547", false)}
+            <div style="min-width:0">
+              <div class="need-title">${esc(n.title)}</div>
+              <div class="need-age">${esc(n.botName)}${bot?.orgTitle || bot?.role ? ` · ${esc(bot.orgTitle || bot.role)}` : ""} · <span data-live-ts="${esc(n.createdAt)}">${esc(timeAgo(n.createdAt))}</span></div>
             </div>
-            <span class="st-pill ${isOpen ? (n.severity === "error" || n.severity === "budget" ? "st-error" : "st-waiting") : "st-working"}">${esc(isOpen ? n.severity : n.status)}</span>
           </div>
-          ${n.description ? `<div class="need-desc">${esc(n.description)}</div>` : ""}
-          ${
-            isOpen
-              ? `<div class="need-actions">
-                  <input class="need-note" type="text" placeholder="Optional instruction or note…" data-note-for="${esc(n.id)}" />
-                  <button class="btn btn-approve" data-resolve="${esc(n.id)}" data-action="approve">Approve</button>
-                  <button class="btn btn-reject" data-resolve="${esc(n.id)}" data-action="reject">Reject</button>
-                </div>`
-              : `<div class="need-desc">Resolved${n.resolutionNote ? ` — "${esc(n.resolutionNote)}"` : ""}</div>`
-          }
-        </div>`;
-      })
-      .join("");
+          <span class="st-pill ${isOpen ? (urgent ? "st-error" : "st-waiting") : "st-working"}">${esc(isOpen ? info.kind : n.status)}</span>
+        </div>
+        <div class="need-explain">
+          <div><strong>What this means:</strong> ${esc(info.meaning)}</div>
+          ${n.description ? `<div class="need-agent-says"><strong>${esc(n.botName)} says:</strong> ${esc(n.description)}</div>` : `<div class="need-agent-says muted">${esc(n.botName)} didn't include details. Use “Ask for details” and the explanation arrives on its next check-in.</div>`}
+          ${isOpen ? `<div><strong>Your options:</strong> ${esc(info.options)}</div>` : ""}
+        </div>
+        <details class="need-context">
+          <summary>What ${esc(n.botName)} was doing</summary>
+          <div class="need-context-body">
+            <div><span class="muted">Current task:</span> ${esc(bot?.task || "—")}</div>
+            <div><span class="muted">Last check-in:</span> ${bot ? esc(timeAgo(bot.lastSeenAt)) : "—"}</div>
+            ${queued.length ? `<div><span class="muted">Queued:</span> ${queued.map((q) => esc(q.task)).join(" · ")}</div>` : ""}
+            ${logs.length ? `<ul class="need-logs">${logs.map((l) => `<li><span class="muted mono">${esc(timeAgo(l.createdAt))}</span> ${esc(l.message)}</li>`).join("")}</ul>` : ""}
+          </div>
+        </details>
+        ${
+          isOpen
+            ? `<div class="need-actions">
+                <input class="need-note" type="text" placeholder="Reply or instructions (optional)…" data-note-for="${esc(n.id)}" />
+                <button class="btn btn-approve" data-resolve="${esc(n.id)}" data-action="approve">Approve</button>
+                <button class="btn btn-reject" data-resolve="${esc(n.id)}" data-action="reject">Reject</button>
+              </div>
+              <div class="need-secondary">
+                <button class="link-btn" data-ask-detail="${esc(n.id)}">${noDetail ? "Ask for details" : "Ask a follow-up"}</button>
+                <button class="link-btn muted-link" data-resolve="${esc(n.id)}" data-action="resolve">Dismiss (no decision needed)</button>
+              </div>`
+            : `<div class="need-desc">Resolved${n.resolutionNote ? ` — "${esc(n.resolutionNote)}"` : ""}</div>`
+        }
+      </div>`;
   }
 
   function renderInspector() {
@@ -1692,7 +1759,7 @@
 
     [
       { title: "Go to Today", subtitle: "Your day, inbox and agents at a glance", icon: ICONS.sun, view: "today" },
-      { title: "Go to 3D Office", subtitle: "Live 3D office", icon: ICONS.box, view: "office" },
+      { title: "Go to Office", subtitle: "Live pixel office", icon: ICONS.box, view: "office" },
       { title: "Go to Agents", subtitle: "Check-ins, queued orders, add agents", icon: ICONS.cpu, view: "fleet" },
       { title: "Go to Tasks", subtitle: "Google Tasks sync & agent hand-off", icon: ICONS.check, view: "tasks" },
       { title: "Go to Calendar", subtitle: "Google Calendar week view", icon: ICONS.target, view: "calendar" },
@@ -2729,7 +2796,10 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       );
       if (res.ok) {
         needsRenderDeferred = false;
-        showToast(action === "approve" ? "Request approved" : "Request rejected", action === "approve" ? "success" : "warn");
+        showToast(
+          action === "approve" ? "Request approved" : action === "resolve" ? "Dismissed" : "Request rejected",
+          action === "approve" ? "success" : action === "resolve" ? "info" : "warn"
+        );
       }
       return;
     }
@@ -4350,6 +4420,9 @@ function out(obj) {
     if (r.status === "dispatched") return 1;
     return 0;
   }
+  const seenRequestStage = new Map();
+  const leavingRequests = new Map();
+  let requestFadeTimer = null;
   function renderTodayRequests() {
     const el = document.getElementById("today-requests");
     if (!el || !snapshot) return;
@@ -4359,10 +4432,24 @@ function out(obj) {
     const nameEl = document.getElementById("jared-bar-name");
     if (nameEl) nameEl.textContent = ceo?.name || "Jared";
     if (todayCaptureInput) todayCaptureInput.placeholder = ceo ? `Tell ${ceo.name} what you need…` : "Set a CEO agent on the Agents page to use this bar";
-    const reqs = (snapshot.requests || []).slice(0, 5);
+    const now = Date.now();
+    (snapshot.requests || []).forEach((r) => {
+      const stage = requestStage(r);
+      const prev = seenRequestStage.get(r.id);
+      if (prev === 0 && stage > 0 && !leavingRequests.has(r.id)) leavingRequests.set(r.id, now);
+      seenRequestStage.set(r.id, stage);
+    });
+    // Waiting for Jared, or just picked up (shown for a few seconds so you see it land, then removed).
+    const reqs = (snapshot.requests || [])
+      .filter((r) => requestStage(r) === 0 || (leavingRequests.has(r.id) && now - leavingRequests.get(r.id) < 4500))
+      .slice(0, 5);
     if (!reqs.length) {
       el.innerHTML = "";
       return;
+    }
+    if ([...leavingRequests.values()].some((t) => now - t < 4500)) {
+      clearTimeout(requestFadeTimer);
+      requestFadeTimer = setTimeout(renderTodayRequests, 4600);
     }
     el.innerHTML = reqs
       .map((r) => {
@@ -4382,7 +4469,7 @@ function out(obj) {
             return `<div class="req-kid"><span class="req-kid-dot st-${esc(k.status)}"></span><strong>${esc(k.botName)}</strong> ${esc(k.task)}${k.result ? ` <span class="muted">· ${esc(k.result)}</span>` : ""}${kl ? ` <a href="${esc(kl)}" target="_blank" rel="noopener noreferrer">open ↗</a>` : ""}</div>`;
           })
           .join("");
-        return `<article class="req-card ${stage === 3 ? "is-done" : ""}">
+        return `<article class="req-card ${stage === 3 ? "is-done" : ""} ${leavingRequests.has(r.id) ? "is-leaving" : ""}">
           <div class="req-top">
             <div class="req-text">${esc(r.text)}</div>
             <span class="req-time mono" data-live-ts="${esc(r.createdAt)}">${esc(timeAgo(r.createdAt))}</span>
@@ -5124,6 +5211,16 @@ function out(obj) {
   window.addEventListener("hashchange", () => {
     const v = viewFromHash();
     if (v) switchView(v);
+  });
+
+  document.addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-ask-detail]");
+    if (!b) return;
+    const n = (snapshot?.pendingNeeds || []).find((x) => x.id === b.dataset.askDetail);
+    if (!n) return;
+    const question = `About your request "${n.title}": what happened, why, and what are my options? Reply with answerAsk.`;
+    const res = await apiFetch("/api/asks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ botId: n.botId, question }) }, "Could not send question");
+    if (res.ok) showToast(`Asked ${n.botName}. The answer lands in Inbox → Review work.`, "success");
   });
 
   applyAgentsView();
