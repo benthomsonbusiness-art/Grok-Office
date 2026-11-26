@@ -2,7 +2,16 @@
   let snapshot = null;
   let selectedBotId = null;
   let inspectorTab = "overview";
-  let activeView = "office";
+  const VIEWS = ["today", "office", "fleet", "tasks", "calendar", "needs", "metrics"];
+  let activeView = (() => {
+    try {
+      const v = localStorage.getItem("grok_hq_view");
+      return VIEWS.includes(v) ? v : "today";
+    } catch {
+      return "today";
+    }
+  })();
+  let calWeekOffset = 0;
   let teamFilter = "all";
   let actFilter = "all";
   let actSearch = "";
@@ -29,15 +38,19 @@
   let completingTaskIds = new Set();
   let exitingTaskIds = new Set();
   let justAddedTaskId = null;
-  let gtasksDraftSecret =
-    localStorage.getItem("grok_hq_gtasks_secret") ||
-    (() => {
-      const bytes = new Uint8Array(18);
-      crypto.getRandomValues(bytes);
-      const val = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-      localStorage.setItem("grok_hq_gtasks_secret", val);
-      return val;
-    })();
+  // Bridge secrets live only in the office database. Drafts are generated in memory per session.
+  function randomSecret() {
+    const bytes = new Uint8Array(18);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  try {
+    localStorage.removeItem("grok_hq_gtasks_secret");
+  } catch {
+    // Storage blocked
+  }
+  let gtasksDraftSecret = randomSecret();
+  let calDraftSecret = randomSecret();
   let cmdSelectedIndex = 0;
   let cmdItems = [];
 
@@ -92,14 +105,78 @@
   const labelLayer = document.getElementById("label-layer");
   const tooltipEl = document.getElementById("bot-tooltip");
 
-  const office3d = new window.Office3D(stageEl, labelLayer, tooltipEl, (botId) => {
+  function onOfficeBotSelected(botId) {
     const changedBot = selectedBotId !== botId;
     selectedBotId = botId;
     if (changedBot) inspectorTab = "overview";
     renderInspector();
     renderTeamList();
     if (actFilter === "bot") renderActivity();
-  });
+  }
+
+  // The 3D office (~600 KB with three.js) loads only when the Office tab is opened.
+  const office3d = (() => {
+    let real = null;
+    let loading = null;
+    const pending = { bots: null, usage: null, select: null, lighting: null, cam: null, labels: true };
+    function load() {
+      if (real) return Promise.resolve(real);
+      if (loading) return loading;
+      stageEl?.classList.add("is-loading");
+      loading = new Promise((resolve) => {
+        const script = document.createElement("script");
+        script.src = "/office3d.bundle.js?v=10";
+        script.async = true;
+        script.onload = () => {
+          try {
+            real = new window.Office3D(stageEl, labelLayer, tooltipEl, onOfficeBotSelected);
+            real.showAllLabels = pending.labels;
+            if (pending.lighting) real.setLighting(pending.lighting);
+            if (pending.cam) real.setCameraMode(pending.cam);
+            if (pending.bots) real.updateBots(pending.bots, pending.usage);
+            real.setPaused(activeView !== "office");
+            real.handleResize();
+            if (pending.select) {
+              real.selectBot(pending.select);
+              pending.select = null;
+            }
+          } catch (err) {
+            showToast("The 3D office could not start on this device", "error");
+          }
+          stageEl?.classList.remove("is-loading");
+          resolve(real);
+        };
+        script.onerror = () => {
+          loading = null;
+          stageEl?.classList.remove("is-loading");
+          showToast("Could not load the 3D office. Check your connection and try again.", "error");
+          resolve(null);
+        };
+        document.head.appendChild(script);
+      });
+      return loading;
+    }
+    return {
+      load,
+      updateBots(bots, usage) {
+        pending.bots = bots;
+        pending.usage = usage;
+        real?.updateBots(bots, usage);
+      },
+      setPaused(p) { real?.setPaused(p); },
+      handleResize() { real?.handleResize(); },
+      focusRoom(room) { real?.focusRoom(room); },
+      resetView() { real?.resetView(); },
+      selectBot(id) {
+        if (real) real.selectBot(id);
+        else { pending.select = id; load(); }
+      },
+      setLighting(mode) { pending.lighting = mode; real?.setLighting(mode); },
+      setCameraMode(mode) { pending.cam = mode; real?.setCameraMode(mode); },
+      get showAllLabels() { return real ? real.showAllLabels : pending.labels; },
+      set showAllLabels(v) { pending.labels = v; if (real) real.showAllLabels = v; },
+    };
+  })();
 
   function esc(str) {
     return String(str ?? "")
@@ -421,8 +498,7 @@
     firstSnapshotLoaded = true;
     if (newUrgent) playAlertChime(newIsError);
 
-    document.title =
-      openNeeds.length > 0 ? `(${openNeeds.length}) Grok Bot HQ — Mission Control` : "Grok Bot HQ — Mission Control";
+    document.title = openNeeds.length > 0 ? `(${openNeeds.length}) Grok Bot HQ` : "Grok Bot HQ";
 
     office3d.updateBots(data.bots || [], data.usageSummary);
     renderAll();
@@ -431,7 +507,16 @@
   function renderAll(force = false) {
     if (!snapshot) return;
     renderRoomCounts();
-    if (activeView === "office") {
+    renderStatusStrip();
+    if (activeView === "today") {
+      const todayEl = document.getElementById("view-today");
+      if (!force && isEditingInside(todayEl)) return;
+      renderTodayPage();
+    } else if (activeView === "calendar") {
+      const calEl = document.getElementById("view-calendar");
+      if (!force && isEditingInside(calEl)) return;
+      renderCalendarPage();
+    } else if (activeView === "office") {
       renderTeamList();
       renderActivity();
       if (selectedBotId) {
@@ -1217,8 +1302,21 @@
     if (openCntEl) openCntEl.textContent = String(openNeeds.length);
     if (histCntEl) histCntEl.textContent = String(historyNeeds.length);
 
-    const visible = needsTab === "history" ? historyNeeds : openNeeds;
+    const reviewRuns = runsToReview();
+    const reviewCntEl = document.getElementById("needs-review-count");
+    if (reviewCntEl) reviewCntEl.textContent = String(reviewRuns.length);
     const grid = document.getElementById("needs-grid");
+    if (needsTab === "review") {
+      grid.innerHTML = reviewRuns.length
+        ? reviewRuns.map((r) => reviewCardHtml(r, bots)).join("")
+        : emptyStateHtml({
+            icon: ICONS.check,
+            title: "Nothing to review",
+            subtitle: "Finished agent work from the last 7 days shows up here so you can open the deliverable and rate it.",
+          });
+      return;
+    }
+    const visible = needsTab === "history" ? historyNeeds : openNeeds;
     if (visible.length === 0) {
       grid.innerHTML = emptyStateHtml({
         icon: ICONS.check,
@@ -1434,10 +1532,21 @@
   }
 
   function switchView(viewName) {
+    if (!VIEWS.includes(viewName)) viewName = "today";
     activeView = viewName;
-    document.querySelectorAll("[data-view]").forEach((b) =>
-      b.classList.toggle("active", b.dataset.view === viewName)
-    );
+    try {
+      localStorage.setItem("grok_hq_view", viewName);
+    } catch {
+      // Storage blocked
+    }
+    if (viewName === "office") office3d.load();
+    document.getElementById("app-root")?.setAttribute("data-active-view", viewName);
+    document.querySelectorAll(".nav-tab[data-view]").forEach((b) => {
+      const on = b.dataset.view === viewName;
+      b.classList.toggle("active", on);
+      if (on) b.setAttribute("aria-current", "page");
+      else b.removeAttribute("aria-current");
+    });
     document.querySelectorAll(".view-panel").forEach((p) =>
       p.classList.toggle("active", p.id === `view-${viewName}`)
     );
@@ -1459,8 +1568,12 @@
     }
   }
 
-  document.querySelectorAll("[data-view]").forEach((btn) => {
-    btn.addEventListener("click", () => switchView(btn.dataset.view));
+  document.addEventListener("click", (e) => {
+    const viewBtn = e.target.closest("[data-view]");
+    if (!viewBtn) return;
+    e.preventDefault();
+    switchView(viewBtn.dataset.view);
+    if (viewBtn.closest(".page-view, .status-strip")) window.scrollTo({ top: 0 });
   });
 
   document.querySelectorAll("[data-room]").forEach((btn) => {
@@ -1507,11 +1620,13 @@
     });
 
     [
-      { title: "Go to 3D Office", subtitle: "Live 3D command stage", icon: ICONS.box, view: "office" },
-      { title: "Go to Fleet", subtitle: "Check-in freshness & queued orders", icon: ICONS.cpu, view: "fleet" },
-      { title: "Go to Tasks", subtitle: "Google Tasks two-way sync & bot dispatch", icon: ICONS.check, view: "tasks" },
-      { title: "Go to Goals & Metrics", subtitle: "Throughput, runs, spend & objectives", icon: ICONS.chart, view: "metrics" },
-      { title: "Go to Pending Needs", subtitle: "Open approvals & escalations", icon: ICONS.bell, view: "needs" },
+      { title: "Go to Today", subtitle: "Your day, inbox and agents at a glance", icon: ICONS.sun, view: "today" },
+      { title: "Go to 3D Office", subtitle: "Live 3D office", icon: ICONS.box, view: "office" },
+      { title: "Go to Agents", subtitle: "Check-ins, queued orders, add agents", icon: ICONS.cpu, view: "fleet" },
+      { title: "Go to Tasks", subtitle: "Google Tasks sync & agent hand-off", icon: ICONS.check, view: "tasks" },
+      { title: "Go to Calendar", subtitle: "Google Calendar week view", icon: ICONS.target, view: "calendar" },
+      { title: "Go to Inbox", subtitle: "Approvals, alerts and work to review", icon: ICONS.bell, view: "needs" },
+      { title: "Go to Insights", subtitle: "Throughput, runs, spend & goals", icon: ICONS.chart, view: "metrics" },
     ].forEach((n) => {
       items.push({
         group: "Navigation",
@@ -1525,7 +1640,8 @@
 
     items.push(
       { group: "Actions", title: "Connect Google Tasks", subtitle: "Two-way auto-sync via private Apps Script bridge", iconHtml: `<span class="kpi-ico">${ICONS.check}</span>`, keywords: "google tasks sync connect import calendar", run: () => openGTasksModal() },
-      { group: "Actions", title: "Add New Grok Bot", subtitle: "Create bot & copy check-in prompt", iconHtml: `<span class="kpi-ico">${ICONS.plus}</span>`, keywords: "add new create bot grok", run: () => openAddBotModal() },
+      { group: "Actions", title: "Add an agent", subtitle: "Grok, n8n, webhook or script", iconHtml: `<span class="kpi-ico">${ICONS.plus}</span>`, keywords: "add new create bot grok agent n8n webhook", run: () => openAddBotModal() },
+      { group: "Actions", title: "Connect Google Calendar", subtitle: "Private Apps Script bridge", iconHtml: `<span class="kpi-ico">${ICONS.target}</span>`, keywords: "google calendar connect events", run: () => openCalModal() },
       { group: "Actions", title: "Connect Guide", subtitle: "View Grok App prompt & SDK proxy snippets", iconHtml: `<span class="kpi-ico">${ICONS.link}</span>`, keywords: "connect prompt instructions proxy sdk", run: () => openConnectModal() },
       { group: "Actions", title: "Guardrails & Alerts", subtitle: "Budget caps, circuit-breaker, Discord/Slack webhook", iconHtml: `<span class="kpi-ico">${ICONS.sliders}</span>`, keywords: "guardrails settings budget cap webhook alerts", run: () => openGuardrailsModal() },
       { group: "Actions", title: soundEnabled ? "Mute Alert Chime" : "Enable Alert Chime", subtitle: "Toggle audio notification for approvals & errors", iconHtml: `<span class="kpi-ico">${soundEnabled ? ICONS.volOff : ICONS.volOn}</span>`, keywords: "sound chime audio mute alert", run: () => soundBtn?.click() },
@@ -1567,11 +1683,56 @@
     return items;
   }
 
+  function captureCmdItems(raw) {
+    const text = raw.trim();
+    if (!text || !window.QuickCapture) return [];
+    const explicit = QuickCapture.parseQuickCapture(text);
+    const c = explicit || QuickCapture.parseAsTask(text);
+    if (!c) return [];
+    const when = QuickCapture.describeCapture(c);
+    const meta = when ? ` · ${when}` : "";
+    let item;
+    if (c.kind === "bot") {
+      const bot = findBotByHandle(c.botHandle);
+      item = {
+        group: "Capture",
+        title: bot ? `Send to ${bot.name}: ${c.title}` : `No agent called @${c.botHandle}`,
+        subtitle: bot ? "Queues the order (n8n/webhook agents get it instantly)" : "Type @ and the agent's name or id",
+        iconHtml: `<span class="kpi-ico">${ICONS.cpu}</span>`,
+        keywords: "",
+        run: () => bot && runCapture(c),
+      };
+    } else if (c.kind === "event") {
+      item = {
+        group: "Capture",
+        title: `Add event: ${c.title}`,
+        subtitle: `Google Calendar${meta}`,
+        iconHtml: `<span class="kpi-ico">${ICONS.target}</span>`,
+        keywords: "",
+        run: () => runCapture(c),
+      };
+    } else {
+      item = {
+        group: "Capture",
+        title: `Add task: ${c.title}`,
+        subtitle: `Tasks${meta}${explicit ? "" : " · tip: start with task:, event: or @agent"}`,
+        iconHtml: `<span class="kpi-ico">${ICONS.check}</span>`,
+        keywords: "",
+        run: () => runCapture(c),
+      };
+    }
+    return [{ ...item, explicit: Boolean(explicit) }];
+  }
+
   function renderCmdList() {
     if (!cmdList || !cmdInput) return;
-    const q = cmdInput.value.trim().toLowerCase();
+    const raw = cmdInput.value;
+    const q = raw.trim().toLowerCase();
     const all = buildCmdCatalog();
-    cmdItems = q ? all.filter((item) => item.title.toLowerCase().includes(q) || item.keywords.includes(q)) : all;
+    const matches = q ? all.filter((item) => item.title.toLowerCase().includes(q) || item.keywords.includes(q)) : all;
+    const capture = captureCmdItems(raw);
+    // Explicit capture commands go first; plain text offers "Add task" after any matches.
+    cmdItems = capture[0]?.explicit ? [...capture, ...matches] : [...matches, ...capture];
     if (cmdSelectedIndex >= cmdItems.length) cmdSelectedIndex = 0;
 
     if (cmdItems.length === 0) {
@@ -1934,6 +2095,7 @@
                 </div>
               </div>
               <div class="fleet-badges">
+                <span class="kind-pill kind-${esc(bot.agentKind || "grok")}">${esc(KIND_LABELS[bot.agentKind] || "Grok")}</span>
                 <span class="link-pill link-${esc(lnk)}">${linkLabel(lnk)}</span>
               </div>
             </div>
@@ -1949,7 +2111,7 @@
               <button type="submit" class="chip-btn active">Send</button>
             </form>
             <div class="fleet-card-actions">
-              <button class="btn btn-secondary" data-copy-grok-prompt="${esc(bot.id)}">Copy Grok prompt</button>
+              <button class="btn btn-secondary" data-copy-grok-prompt="${esc(bot.id)}">Copy setup</button>
               <button class="btn btn-secondary" data-jump-bot="${esc(bot.id)}">Open in 3D</button>
             </div>
           </article>`;
@@ -1984,6 +2146,8 @@
     const proxy = document.getElementById("proxy-snippet");
     const report = document.getElementById("report-snippet");
     if (ping) ping.textContent = buildGrokAppPrompt(id, name, role, bot?.checkinToken || "");
+    const n8n = document.getElementById("n8n-snippet");
+    if (n8n) n8n.textContent = agentSetupSnippet("n8n", id, bot?.checkinToken || "");
     if (proxy) {
       proxy.textContent = `import OpenAI from "openai";
 
@@ -2020,11 +2184,46 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
   const addBotSwatches = document.getElementById("add-bot-colors");
   const addBotPreview = document.getElementById("add-bot-prompt-preview");
 
+  const addBotKindInput = document.getElementById("add-bot-kind");
+  const addBotDispatchWrap = document.getElementById("add-bot-dispatch-wrap");
+  const addBotDispatchInput = document.getElementById("add-bot-dispatch");
+  const addBotPreviewLabel = document.getElementById("add-bot-preview-label");
+
+  function setupTextForKind(kind, botId, name, role, token) {
+    if (kind === "grok") return buildGrokAppPrompt(botId, name, role, token);
+    return agentSetupSnippet(kind, botId, token);
+  }
+
   function refreshAddBotPreview() {
     const nm = addBotNameInput.value.trim() || "Atlas";
     const rl = addBotRoleInput.value.trim() || "Market Research";
-    addBotPreview.textContent = buildGrokAppPrompt(makeSlug(nm), nm, rl);
+    const kind = addBotKindInput?.value || "grok";
+    addBotPreview.textContent = setupTextForKind(kind, makeSlug(nm), nm, rl, "");
+    if (addBotPreviewLabel) {
+      addBotPreviewLabel.textContent =
+        kind === "grok"
+          ? "Paste into your Grok bot's instructions:"
+          : kind === "script"
+          ? "Call these from your script:"
+          : "Your flow receives this, then calls doneUrl:";
+    }
   }
+
+  document.getElementById("add-bot-kind-group")?.addEventListener("click", (e) => {
+    const opt = e.target.closest("[data-kind]");
+    if (!opt) return;
+    const kind = opt.dataset.kind;
+    addBotKindInput.value = kind;
+    document.querySelectorAll("#add-bot-kind-group [data-kind]").forEach((b) => {
+      const on = b === opt;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-checked", on ? "true" : "false");
+    });
+    addBotDispatchWrap?.classList.toggle("hidden", !(kind === "n8n" || kind === "webhook"));
+    const modelSel = document.getElementById("add-bot-model");
+    if (modelSel && kind !== "grok" && modelSel.value.startsWith("grok")) modelSel.value = "claude-sonnet-5.5";
+    refreshAddBotPreview();
+  });
   function openAddBotModal() {
     refreshAddBotPreview();
     addBotModal.classList.remove("hidden");
@@ -2057,20 +2256,31 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
     const status = document.getElementById("add-bot-status").value;
     const model = document.getElementById("add-bot-model").value;
     const expectedIntervalMinutes = Number(document.getElementById("add-bot-sla").value || 0);
+    const agentKind = addBotKindInput?.value || "grok";
+    const dispatchUrl = addBotDispatchInput?.value.trim() || "";
     if (!name) return;
+    if ((agentKind === "n8n" || agentKind === "webhook") && !dispatchUrl) {
+      showToast("Add the webhook URL so tasks can be pushed to this agent", "error");
+      addBotDispatchInput?.focus();
+      return;
+    }
 
     const botId = makeSlug(name);
-    const resp = await fetch("/api/bots", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ botId, name, role, avatarColor, status, model, expectedIntervalMinutes }),
-    });
+    const resp = await apiFetch(
+      "/api/bots",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ botId, name, role, avatarColor, status, model, expectedIntervalMinutes, agentKind, dispatchUrl }),
+      },
+      "Could not add agent"
+    );
     if (resp.ok) {
       const created = await resp.json().catch(() => ({}));
       let copied = false;
       try {
         await navigator.clipboard.writeText(
-          buildGrokAppPrompt(created.botId || botId, name, role, created.checkinToken || "")
+          setupTextForKind(agentKind, created.botId || botId, name, role, created.checkinToken || "")
         );
         copied = true;
       } catch {
@@ -2079,13 +2289,14 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       addBotModal.classList.add("hidden");
       document.getElementById("add-bot-form").reset();
       addBotColorInput.value = GROK_PALETTE[0];
+      document.querySelector('#add-bot-kind-group [data-kind="grok"]')?.click();
       selectedBotId = created.botId || botId;
       inspectorTab = "overview";
       showToast(
-        copied ? `Added ${name} & copied Grok prompt` : `${name} was added. Copy the prompt from Connect.`,
+        copied ? `Added ${name} and copied its setup` : `${name} was added. Copy its setup from the Agents page.`,
         "success"
       );
-      setTimeout(() => office3d.selectBot(botId), 80);
+      if (activeView === "office") setTimeout(() => office3d.selectBot(botId), 80);
     }
   });
 
@@ -2122,7 +2333,7 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
     settingsModal.classList.remove("hidden");
   }
 
-  document.getElementById("btn-connect").addEventListener("click", openConnectModal);
+  document.getElementById("btn-connect").addEventListener("click", () => openAddBotModal());
   document.getElementById("connect-bot-select").addEventListener("change", (e) => fillConnectSnippets(e.target.value));
   document.getElementById("btn-fleet-add").addEventListener("click", openAddBotModal);
   document.getElementById("btn-fleet-connect").addEventListener("click", openConnectModal);
@@ -2197,7 +2408,9 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       input.value = "";
       input.blur();
       fleetRenderDeferred = false;
-      showToast("Command queued for next check-in", "success");
+      const qb = (snapshot?.bots || []).find((b) => b.id === botId);
+      const instant = qb?.dispatchConfigured && (qb.agentKind === "n8n" || qb.agentKind === "webhook");
+      showToast(instant ? "Sent to the agent now" : "Queued for the next check-in", "success");
     }
   });
 
@@ -2304,8 +2517,8 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
       const bot = snapshot?.bots?.find((b) => b.id === copyPromptBtn.dataset.copyGrokPrompt);
       if (bot) {
         try {
-          await navigator.clipboard.writeText(buildGrokAppPrompt(bot.id, bot.name, bot.role, bot.checkinToken || ""));
-          showToast(`Copied Grok prompt for ${bot.name}`, "success");
+          await navigator.clipboard.writeText(setupTextForKind(bot.agentKind || "grok", bot.id, bot.name, bot.role, bot.checkinToken || ""));
+          showToast(`Copied setup for ${bot.name}`, "success");
           const orig = copyPromptBtn.textContent;
           copyPromptBtn.textContent = "Copied!";
           setTimeout(() => (copyPromptBtn.textContent = orig), 1500);
@@ -2352,7 +2565,9 @@ orders: { "nextTask": null, "decision": null, "goal": null, "goalId": null, "bud
           taskInput.value = "";
           taskInput.blur();
           inspectorRenderDeferred = false;
-          showToast("Command queued for next check-in", "success");
+          const qb = (snapshot?.bots || []).find((b) => b.id === botId);
+      const instant = qb?.dispatchConfigured && (qb.agentKind === "n8n" || qb.agentKind === "webhook");
+      showToast(instant ? "Sent to the agent now" : "Queued for the next check-in", "success");
         }
       }
       return;
@@ -2569,10 +2784,7 @@ function out(obj) {
 
   gtasksSecretInput?.addEventListener("input", () => {
     const val = gtasksSecretInput.value.trim();
-    if (val) {
-      gtasksDraftSecret = val;
-      localStorage.setItem("grok_hq_gtasks_secret", val);
-    }
+    if (val) gtasksDraftSecret = val;
     refreshGTasksScriptPreview();
   });
 
@@ -2603,9 +2815,12 @@ function out(obj) {
     const submitBtn = document.getElementById("btn-gtasks-submit");
     const bridgeUrl = gtasksUrlInput ? gtasksUrlInput.value.trim() : "";
     const secret = gtasksSecretInput ? gtasksSecretInput.value.trim() : "";
-    if (!bridgeUrl || !secret) return;
-    gtasksDraftSecret = secret;
-    localStorage.setItem("grok_hq_gtasks_secret", secret);
+    if (!bridgeUrl) return;
+    if (!secret && !snapshot?.googleTasksSync?.connected) {
+      showToast("Paste the shared secret from the script", "error");
+      return;
+    }
+    if (secret) gtasksDraftSecret = secret;
     const orig = submitBtn.textContent;
     submitBtn.disabled = true;
     submitBtn.textContent = "Connecting & syncing…";
@@ -2745,7 +2960,7 @@ function out(obj) {
     if (botSel) {
       const prev = botSel.value;
       botSel.innerHTML =
-        `<option value="">No bot (personal)</option>` +
+        `<option value="">No agent (personal)</option>` +
         bots.map((b) => `<option value="${esc(b.id)}">Dispatch → ${esc(b.name)}</option>`).join("");
       if (bots.some((b) => b.id === prev)) botSel.value = prev;
     }
@@ -2796,7 +3011,7 @@ function out(obj) {
     }
 
     const botOptionsHtml = (selectedId) =>
-      `<option value="">Assign bot…</option>` +
+      `<option value="">Assign agent…</option>` +
       bots
         .map((b) => `<option value="${esc(b.id)}" ${b.id === selectedId ? "selected" : ""}>${esc(b.name)}</option>`)
         .join("");
@@ -3031,6 +3246,8 @@ function out(obj) {
       task.status = nextStatus;
       task.completedAt = isCompleting ? new Date().toISOString() : null;
     }
+    if (activeView === "today") renderTodayPage();
+    else if (activeView === "calendar") renderCalendarPage();
 
     if (isCompleting) {
       playCompleteChime();
@@ -3162,6 +3379,839 @@ function out(obj) {
       gtasksModal.classList.add("hidden");
     }
   });
+
+  // =========================================================================
+  // AGENT KINDS (Grok, n8n, webhook, script)
+  // =========================================================================
+  const KIND_LABELS = { grok: "Grok", n8n: "n8n", webhook: "Webhook", script: "Script" };
+
+  function agentSetupSnippet(kind, botId, token) {
+    const base = location.origin;
+    const b = encodeURIComponent(botId || "my-agent");
+    const t = encodeURIComponent(token || "<CHECKIN_TOKEN>");
+    if (kind === "script") {
+      return `# Report progress (any language, plain HTTPS GET)
+GET ${base}/api/ping?b=${b}&s=w&t=Writing%20report&token=${t}
+
+# Finished, with a deliverable link and one-line result
+GET ${base}/api/ping?b=${b}&done=1&out=https://link&result=Done&token=${t}
+
+# Ask a human
+GET ${base}/api/ping?b=${b}&s=wait&need=Approve%20send&token=${t}
+
+Every response includes orders.nextTask: run it next.`;
+    }
+    return `1. Add a Webhook trigger node (POST) and paste its production URL into this agent.
+2. Each new task arrives as JSON:
+{
+  "event": "task.dispatched",
+  "botId": "${botId || "my-agent"}",
+  "task": "Research 5 competitors",
+  "reportUrl": "${base}/api/ping?b=${b}&s=w&t=…&token=${t}",
+  "doneUrl": "${base}/api/ping?b=${b}&done=1&t=…&token=${t}"
+}
+3. At the end of the flow, add an HTTP Request node (GET) to:
+   {{$json.doneUrl}}&out=https://link-to-result&result=One%20line
+   The matching task checks itself off and lands in your Inbox for review.`;
+  }
+
+  function findBotByHandle(handle) {
+    const h = String(handle || "").toLowerCase();
+    if (!h) return null;
+    const bots = snapshot?.bots || [];
+    return (
+      bots.find((b) => b.id.toLowerCase() === h) ||
+      bots.find((b) => b.name.toLowerCase() === h) ||
+      bots.find((b) => makeSlug(b.name) === h) ||
+      bots.find((b) => b.name.toLowerCase().startsWith(h)) ||
+      null
+    );
+  }
+
+  // =========================================================================
+  // INBOX: finished work to review
+  // =========================================================================
+  function runsToReview() {
+    const cutoff = Date.now() - 7 * 24 * 60 * 60_000;
+    return (snapshot?.recentRuns || []).filter(
+      (r) => r.status === "completed" && r.qualityRating === 0 && Date.parse(r.finishedAt || r.startedAt) >= cutoff
+    );
+  }
+
+  function reviewCardHtml(r, bots) {
+    const bot = bots.find((b) => b.id === r.botId);
+    const link = r.outputUrl ? safeHttpsUrl(r.outputUrl) : null;
+    return `<div class="need-card review-card">
+      <div class="need-head">
+        <div class="need-bot-row">
+          ${miniGrokIcon(bot?.avatarColor || "#ffb547", false)}
+          <div style="min-width:0">
+            <div class="need-title">${esc(r.botName)} finished: ${esc(r.task)}</div>
+            <div class="need-age"><span data-live-ts="${esc(r.finishedAt || r.startedAt)}">${esc(timeAgo(r.finishedAt || r.startedAt))}</span> · ${esc(formatDuration(r.durationSec))}</div>
+          </div>
+        </div>
+        <span class="st-pill st-working">done</span>
+      </div>
+      ${r.resultSummary ? `<div class="need-desc">${esc(r.resultSummary)}</div>` : ""}
+      <div class="need-actions review-actions">
+        ${link ? `<a class="btn btn-secondary" href="${esc(link)}" target="_blank" rel="noopener noreferrer">Open deliverable ↗</a>` : `<span class="muted" style="font-size:0.8rem">No deliverable link</span>`}
+        <span class="spacer"></span>
+        <button class="btn btn-approve" data-rate-run="${esc(r.id)}" data-rating="1">👍 Good</button>
+        <button class="btn btn-reject" data-rate-run="${esc(r.id)}" data-rating="-1">👎 Redo</button>
+      </div>
+    </div>`;
+  }
+
+  // =========================================================================
+  // STATUS STRIP (topbar)
+  // =========================================================================
+  function renderStatusStrip() {
+    const bots = snapshot.bots || [];
+    const healthy = bots.filter((b) => ["fresh", "standby"].includes(effectiveLink(b))).length;
+    const openNeeds = (snapshot.pendingNeeds || []).filter((n) => n.status === "open").length;
+    const review = runsToReview().length;
+    const budget = Math.round(snapshot.usageSummary?.usageRemainingPct ?? 100);
+    const set = (id, v) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = v;
+    };
+    set("ss-agents", bots.length ? `${healthy}/${bots.length}` : "0");
+    set("ss-budget", `${budget}%`);
+    set("ss-inbox", String(openNeeds + review));
+    document.getElementById("ss-inbox")?.closest(".status-chip")?.classList.toggle("hot", openNeeds > 0);
+    document.getElementById("ss-budget")?.closest(".status-chip")?.classList.toggle("hot", budget <= 15);
+    const badge = document.getElementById("nav-needs-badge");
+    if (badge) {
+      badge.textContent = String(openNeeds + review);
+      badge.classList.toggle("hidden", openNeeds + review === 0);
+    }
+  }
+
+  // =========================================================================
+  // DATE HELPERS
+  // =========================================================================
+  function localDateKey(d) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  function fmtClock(dateOrIso) {
+    const d = dateOrIso instanceof Date ? dateOrIso : new Date(dateOrIso);
+    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).replace(":00", "").replace(" ", "").toLowerCase();
+  }
+  function minutesOfDay(d) {
+    return d.getHours() * 60 + d.getMinutes();
+  }
+  function eventDayKeys(ev) {
+    // All-day end dates from Google are exclusive.
+    const start = new Date(ev.start);
+    const end = new Date(Math.max(Date.parse(ev.end) - (ev.allDay ? 1 : 0), Date.parse(ev.start)));
+    const keys = [];
+    const cur = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+    while (cur <= end && keys.length < 15) {
+      keys.push(localDateKey(cur));
+      cur.setDate(cur.getDate() + 1);
+    }
+    return keys;
+  }
+  function eventsOnDay(key) {
+    return (snapshot?.calendar?.events || []).filter((ev) => eventDayKeys(ev).includes(key));
+  }
+  function dueKey(t) {
+    return t.due ? String(t.due).slice(0, 10) : null;
+  }
+
+  // =========================================================================
+  // TODAY
+  // =========================================================================
+  function renderTodayPage() {
+    if (!snapshot) return;
+    const now = new Date();
+    const todayKey = localDateKey(now);
+    const bots = snapshot.bots || [];
+    const tasks = snapshot.tasks || [];
+    const openNeeds = (snapshot.pendingNeeds || []).filter((n) => n.status === "open");
+    const review = runsToReview();
+    const hour = now.getHours();
+    const greet = hour < 5 ? "Working late" : hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+
+    document.getElementById("today-date").textContent = now.toLocaleDateString(undefined, {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+    });
+    document.getElementById("today-greeting").textContent = `${greet}.`;
+
+    const openTasks = tasks.filter((t) => t.status !== "completed");
+    const dueToday = openTasks.filter((t) => dueKey(t) && dueKey(t) <= todayKey);
+    const eventsToday = eventsOnDay(todayKey);
+    const nextEvent = eventsToday.find((ev) => !ev.allDay && Date.parse(ev.start) > now.getTime());
+    const working = bots.filter((b) => b.status === "working" || b.status === "meeting");
+
+    const bits = [];
+    bits.push(
+      openNeeds.length
+        ? `<strong>${openNeeds.length}</strong> thing${openNeeds.length === 1 ? "" : "s"} waiting on you`
+        : "Nothing is blocked on you"
+    );
+    bits.push(`<strong>${dueToday.length}</strong> task${dueToday.length === 1 ? "" : "s"} due`);
+    if (snapshot.calendar?.sync?.connected) {
+      bits.push(
+        nextEvent
+          ? `next up <strong>${esc(nextEvent.title)}</strong> at ${esc(fmtClock(nextEvent.start))}`
+          : `${eventsToday.length ? "no more events today" : "a clear calendar"}`
+      );
+    }
+    bits.push(`<strong>${working.length}</strong> agent${working.length === 1 ? "" : "s"} working`);
+    document.getElementById("today-summary").innerHTML = bits.join(" · ") + ".";
+
+    renderDayRail(now, eventsToday, dueToday);
+
+    // Inbox preview
+    const inboxEl = document.getElementById("today-inbox");
+    document.getElementById("t-inbox-count").textContent = String(openNeeds.length + review.length);
+    const inboxRows = [
+      ...openNeeds.slice(0, 4).map((n) => {
+        const bot = bots.find((b) => b.id === n.botId);
+        const urgent = n.severity === "error" || n.severity === "budget";
+        return `<div class="t-row ${urgent ? "t-urgent" : ""}">
+          ${miniGrokIcon(bot?.avatarColor || "#ffb547", false)}
+          <div class="t-main"><div class="t-title">${esc(n.title)}</div><div class="t-sub">${esc(n.botName)} · ${esc(n.severity)} · <span data-live-ts="${esc(n.createdAt)}">${esc(timeAgo(n.createdAt))}</span></div></div>
+          <div class="t-actions">
+            <button class="mini-btn ok" data-resolve="${esc(n.id)}" data-action="approve" title="Approve">Approve</button>
+            <button class="mini-btn no" data-resolve="${esc(n.id)}" data-action="reject" title="Reject">Reject</button>
+          </div>
+        </div>`;
+      }),
+      ...review.slice(0, Math.max(0, 4 - Math.min(4, openNeeds.length))).map((r) => {
+        const link = r.outputUrl ? safeHttpsUrl(r.outputUrl) : null;
+        return `<div class="t-row">
+          <span class="t-glyph done">✓</span>
+          <div class="t-main"><div class="t-title">${esc(r.task)}</div><div class="t-sub">${esc(r.botName)} finished · ${link ? `<a href="${esc(link)}" target="_blank" rel="noopener noreferrer">open ↗</a>` : "no link"}</div></div>
+          <div class="t-actions">
+            <button class="mini-btn ok" data-rate-run="${esc(r.id)}" data-rating="1" title="Good work">👍</button>
+            <button class="mini-btn no" data-rate-run="${esc(r.id)}" data-rating="-1" title="Needs a redo">👎</button>
+          </div>
+        </div>`;
+      }),
+    ];
+    inboxEl.innerHTML = inboxRows.length
+      ? inboxRows.join("")
+      : `<div class="t-empty">You're clear. Approvals and finished work land here.</div>`;
+
+    // My day
+    const tasksEl = document.getElementById("today-tasks");
+    const myDay = [...dueToday].sort((a, b) => (dueKey(a) || "").localeCompare(dueKey(b) || ""));
+    document.getElementById("t-tasks-count").textContent = String(myDay.length);
+    const upcoming = openTasks.filter((t) => !dueKey(t) || dueKey(t) > todayKey).slice(0, Math.max(0, 5 - myDay.length));
+    const checkSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>`;
+    const taskRow = (t, faded) => {
+      const k = dueKey(t);
+      const overdue = k && k < todayKey;
+      return `<div class="t-row ${faded ? "t-faded" : ""}">
+        <button class="task-check-btn sm" data-toggle-task="${esc(t.id)}" data-next-status="completed" title="Mark complete">${checkSvg}</button>
+        <div class="t-main"><div class="t-title">${esc(t.title)}</div>
+          <div class="t-sub">${overdue ? `<span class="t-overdue">overdue · ${esc(k)}</span>` : k === todayKey ? "today" : k ? esc(k) : "no date"}${t.assignedBotName ? ` · with ${esc(t.assignedBotName)}` : ""}</div></div>
+      </div>`;
+    };
+    tasksEl.innerHTML =
+      myDay.length || upcoming.length
+        ? myDay.map((t) => taskRow(t, false)).join("") +
+          (upcoming.length ? `<div class="t-divider mono">coming up</div>` + upcoming.map((t) => taskRow(t, true)).join("") : "")
+        : `<div class="t-empty">No tasks due. Capture one above.</div>`;
+
+    // Agents at work
+    const agentsEl = document.getElementById("today-agents");
+    const order = { error: 0, waiting: 1, working: 2, meeting: 3, idle: 4, no_report: 5 };
+    const shown = [...bots]
+      .sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt))
+      .slice(0, 5);
+    agentsEl.innerHTML = shown.length
+      ? shown
+          .map((b) => {
+            const q = (b.queuedTasks || []).length;
+            return `<div class="t-row t-click" data-jump-bot="${esc(b.id)}">
+            ${miniGrokIcon(b.avatarColor, false, b.status)}
+            <div class="t-main"><div class="t-title">${esc(b.name)} <span class="kind-pill kind-${esc(b.agentKind || "grok")}">${esc(KIND_LABELS[b.agentKind] || "Grok")}</span></div>
+              <div class="t-sub">${esc(b.task || "No task reported")}${q ? ` · ${q} queued` : ""}</div></div>
+            <span class="room-tag st-${esc(b.status)}">${esc(statusLabel(b.status))}</span>
+          </div>`;
+          })
+          .join("")
+      : `<div class="t-empty">No agents yet. <button class="link-btn" data-open-modal="add-bot">Add your first agent</button></div>`;
+
+    // Up next
+    const agendaEl = document.getElementById("today-agenda");
+    if (!snapshot.calendar?.sync?.connected) {
+      agendaEl.innerHTML = `<div class="t-empty">Connect Google Calendar to see your day here. <button class="link-btn" data-open-cal-modal>Connect</button></div>`;
+    } else {
+      const upcomingEvents = (snapshot.calendar.events || [])
+        .filter((ev) => Date.parse(ev.end) > now.getTime())
+        .slice(0, 6);
+      agendaEl.innerHTML = upcomingEvents.length
+        ? upcomingEvents
+            .map((ev) => {
+              const s = new Date(ev.start);
+              const sameDay = localDateKey(s) === todayKey;
+              const live = !ev.allDay && Date.parse(ev.start) <= now.getTime();
+              const when = ev.allDay
+                ? sameDay ? "all day" : s.toLocaleDateString(undefined, { weekday: "short" }) + " · all day"
+                : (sameDay ? "" : s.toLocaleDateString(undefined, { weekday: "short" }) + " ") + fmtClock(s) + "–" + fmtClock(ev.end);
+              return `<div class="t-row ${live ? "t-live" : ""}">
+              <span class="t-cal-bar" style="background:${esc(ev.color || "var(--cal)")}"></span>
+              <div class="t-main"><div class="t-title">${esc(ev.title)}</div><div class="t-sub">${live ? "<strong>now</strong> · " : ""}${esc(when)}${ev.location ? ` · ${esc(ev.location)}` : ""}</div></div>
+            </div>`;
+            })
+            .join("")
+        : `<div class="t-empty">Nothing on the calendar for the next 30 days.</div>`;
+    }
+
+    // Since yesterday digest
+    const dayAgo = now.getTime() - 24 * 60 * 60_000;
+    const runs = snapshot.recentRuns || [];
+    const doneRuns = runs.filter((r) => r.status === "completed" && Date.parse(r.finishedAt || r.startedAt) >= dayAgo);
+    const failedRuns = runs.filter((r) => r.status === "failed" && Date.parse(r.finishedAt || r.startedAt) >= dayAgo);
+    const tasksDone = tasks.filter((t) => t.status === "completed" && t.completedAt && Date.parse(t.completedAt) >= dayAgo);
+    const us = snapshot.usageSummary || {};
+    const tile = (label, value, tone = "") => `<div class="dg-tile ${tone}"><span>${label}</span><strong class="mono">${value}</strong></div>`;
+    const topRuns = doneRuns.slice(0, 3);
+    document.getElementById("today-digest").innerHTML = `
+      <div class="dg-tiles">
+        ${tile("Agent runs finished", doneRuns.length)}
+        ${tile("Runs failed", failedRuns.length, failedRuns.length ? "bad" : "")}
+        ${tile("Tasks checked off", tasksDone.length)}
+        ${tile("Spent today", `$${(us.todayCostUsd ?? 0).toFixed(2)}`)}
+        ${tile("Approvals handled", us.approvalsResolvedToday ?? 0)}
+      </div>
+      <div class="dg-list">
+        ${
+          topRuns.length
+            ? topRuns
+                .map((r) => {
+                  const link = r.outputUrl ? safeHttpsUrl(r.outputUrl) : null;
+                  return `<div class="dg-item"><strong>${esc(r.botName)}</strong> ${esc(r.task)}${r.resultSummary ? ` <span class="muted">— ${esc(r.resultSummary)}</span>` : ""}${link ? ` <a href="${esc(link)}" target="_blank" rel="noopener noreferrer">open ↗</a>` : ""}</div>`;
+                })
+                .join("")
+            : `<div class="dg-item muted">No finished agent work in the last 24 hours yet.</div>`
+        }
+      </div>`;
+  }
+
+  function renderDayRail(now, eventsToday, dueToday) {
+    const rail = document.getElementById("day-rail");
+    if (!rail) return;
+    const todayKey = localDateKey(now);
+    const timed = eventsToday.filter((ev) => !ev.allDay);
+    const allDay = eventsToday.filter((ev) => ev.allDay);
+    const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const runs = (snapshot.recentRuns || []).filter((r) => Date.parse(r.startedAt) >= dayStart);
+
+    // Window: 7am-10pm by default, stretched to fit what actually happens today.
+    let startH = 7;
+    let endH = 22;
+    const clampMin = (ms) => (ms - dayStart) / 60000;
+    timed.forEach((ev) => {
+      startH = Math.min(startH, Math.floor(Math.max(0, clampMin(Date.parse(ev.start))) / 60));
+      endH = Math.max(endH, Math.ceil(Math.min(1440, clampMin(Date.parse(ev.end))) / 60));
+    });
+    runs.forEach((r) => {
+      startH = Math.min(startH, Math.floor(clampMin(Date.parse(r.startedAt)) / 60));
+    });
+    const nowMin = minutesOfDay(now);
+    startH = Math.max(0, Math.min(startH, Math.floor(nowMin / 60) - 1));
+    endH = Math.min(24, Math.max(endH, Math.ceil(nowMin / 60) + 1));
+    const span = (endH - startH) * 60;
+    const pct = (min) => Math.max(0, Math.min(100, ((min - startH * 60) / span) * 100));
+
+    const hours = [];
+    for (let h = startH; h <= endH; h += 1) {
+      const label = h === 0 || h === 24 ? "12a" : h === 12 ? "12p" : h < 12 ? `${h}a` : `${h - 12}p`;
+      hours.push(`<span class="rail-hour ${h % 3 === 0 ? "major" : ""}" style="left:${pct(h * 60)}%"><i></i><b>${label}</b></span>`);
+    }
+
+    // Greedy lane packing for overlapping events (max 3 lanes)
+    const lanes = [];
+    const placed = timed
+      .slice()
+      .sort((a, b) => Date.parse(a.start) - Date.parse(b.start))
+      .map((ev) => {
+        const s = clampMin(Date.parse(ev.start));
+        const e = Math.max(s + 15, clampMin(Date.parse(ev.end)));
+        let lane = lanes.findIndex((end) => end <= s);
+        if (lane === -1) {
+          lane = lanes.length < 3 ? lanes.length : lanes.indexOf(Math.min(...lanes));
+          if (lane >= lanes.length) lanes.push(0);
+        }
+        lanes[lane] = e;
+        return { ev, s, e, lane };
+      });
+    const laneCount = Math.max(1, lanes.length);
+
+    const eventBlocks = placed
+      .map(({ ev, s, e, lane }) => {
+        const left = pct(s);
+        const width = Math.max(1.2, pct(e) - left);
+        const past = e < nowMin;
+        const live = s <= nowMin && e > nowMin;
+        return `<div class="rail-ev ${past ? "past" : ""} ${live ? "live" : ""}" style="left:${left}%;width:${width}%;top:calc(${(lane / laneCount) * 100}% + 2px);height:calc(${100 / laneCount}% - 4px);${ev.color ? `--ev:${esc(ev.color)}` : ""}" title="${esc(ev.title)} · ${esc(fmtClock(ev.start))}–${esc(fmtClock(ev.end))}">
+          <span>${esc(ev.title)}</span><em>${esc(fmtClock(ev.start))}</em>
+        </div>`;
+      })
+      .join("");
+
+    const runMarks = runs
+      .map((r) => {
+        const s = clampMin(Date.parse(r.startedAt));
+        const e = r.finishedAt ? clampMin(Date.parse(r.finishedAt)) : r.status === "running" ? nowMin : s + 2;
+        const left = pct(s);
+        const width = Math.max(0.6, pct(Math.max(e, s + 2)) - left);
+        const bot = (snapshot.bots || []).find((b) => b.id === r.botId);
+        return `<div class="rail-run st-${esc(r.status)}" style="left:${left}%;width:${width}%;--bot:${esc(bot?.avatarColor || "#4fd1b5")}" title="${esc(r.botName)}: ${esc(r.task)} (${esc(r.status)})"></div>`;
+      })
+      .join("");
+
+    const allDayChips = allDay
+      .map((ev) => `<span class="rail-chip" style="${ev.color ? `--ev:${esc(ev.color)}` : ""}">${esc(ev.title)}</span>`)
+      .join("");
+    const dueChip = dueToday.length
+      ? `<button class="rail-chip task" data-view="tasks">${dueToday.length} task${dueToday.length === 1 ? "" : "s"} due</button>`
+      : "";
+    const calConnected = snapshot.calendar?.sync?.connected;
+
+    rail.innerHTML = `
+      <div class="rail-chips">${allDayChips}${dueChip}${
+        !calConnected ? `<button class="rail-chip ghost" data-open-cal-modal>+ Connect Google Calendar</button>` : ""
+      }${calConnected && !timed.length && !allDay.length ? `<span class="rail-chip ghost">No events today</span>` : ""}</div>
+      <div class="rail-track">
+        <div class="rail-hours">${hours.join("")}</div>
+        <div class="rail-lane rail-lane-cal">${eventBlocks}</div>
+        <div class="rail-lane rail-lane-run">${runMarks || `<span class="rail-lane-empty">agent runs appear here as they happen</span>`}</div>
+        <div class="rail-now" style="left:${pct(nowMin)}%"><b class="mono">${esc(fmtClock(now))}</b></div>
+      </div>`;
+    rail.setAttribute(
+      "aria-label",
+      `Today ${todayKey}: ${timed.length} timed events, ${allDay.length} all-day, ${runs.length} agent runs, ${dueToday.length} tasks due`
+    );
+  }
+
+  // =========================================================================
+  // CALENDAR
+  // =========================================================================
+  function startOfWeek(d) {
+    const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const dow = (x.getDay() + 6) % 7; // Monday = 0
+    x.setDate(x.getDate() - dow);
+    return x;
+  }
+
+  function renderCalendarPage() {
+    if (!snapshot) return;
+    const cal = snapshot.calendar || { sync: { connected: false }, events: [] };
+    const sync = cal.sync || {};
+    const pill = document.getElementById("cal-sync-pill");
+    const syncBtn = document.getElementById("btn-cal-sync");
+    const openBtn = document.getElementById("btn-open-cal-modal");
+    const errBanner = document.getElementById("cal-error-banner");
+    if (pill) {
+      pill.className = `sync-pill ${sync.error ? "error" : sync.connected ? "connected" : ""}`;
+      pill.textContent = sync.error
+        ? "Sync error"
+        : sync.connected
+        ? sync.lastSyncAt
+          ? `Synced ${timeAgo(sync.lastSyncAt)}`
+          : "Connected"
+        : "Not connected";
+    }
+    syncBtn?.classList.toggle("hidden", !sync.connected);
+    if (openBtn) {
+      openBtn.textContent = sync.connected ? "Calendar settings" : "Connect Google Calendar";
+      openBtn.className = sync.connected ? "btn btn-secondary" : "btn btn-primary";
+    }
+    if (errBanner) {
+      errBanner.classList.toggle("hidden", !sync.error);
+      errBanner.textContent = sync.error ? `Google Calendar: ${sync.error}` : "";
+    }
+
+    const today = new Date();
+    const todayKey = localDateKey(today);
+    const weekStart = startOfWeek(today);
+    weekStart.setDate(weekStart.getDate() + calWeekOffset * 7);
+    const days = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(weekStart);
+      d.setDate(d.getDate() + i);
+      return d;
+    });
+    const label = document.getElementById("cal-range-label");
+    if (label) {
+      const fmt = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+      label.textContent = `${fmt(days[0])} – ${fmt(days[6])}`;
+    }
+
+    const tasks = (snapshot.tasks || []).filter((t) => t.status !== "completed");
+    const week = document.getElementById("cal-week");
+    week.innerHTML = days
+      .map((d) => {
+        const key = localDateKey(d);
+        const evs = eventsOnDay(key).sort((a, b) => Number(b.allDay) - Number(a.allDay) || Date.parse(a.start) - Date.parse(b.start));
+        const dayTasks = tasks.filter((t) => dueKey(t) === key);
+        const isToday = key === todayKey;
+        const isPast = key < todayKey;
+        const items =
+          evs
+            .map((ev) => {
+              const link = ev.htmlLink ? safeHttpsUrl(ev.htmlLink) : null;
+              return `<div class="cal-ev ${ev.allDay ? "allday" : ""}" style="${ev.color ? `--ev:${esc(ev.color)}` : ""}">
+                <div class="cal-ev-time mono">${ev.allDay ? "all day" : `${esc(fmtClock(ev.start))}–${esc(fmtClock(ev.end))}`}</div>
+                <div class="cal-ev-title">${link ? `<a href="${esc(link)}" target="_blank" rel="noopener noreferrer">${esc(ev.title)}</a>` : esc(ev.title)}</div>
+                ${ev.location ? `<div class="cal-ev-loc">${esc(ev.location)}</div>` : ""}
+                <button class="cal-ev-del" data-del-event="${esc(ev.id)}" title="Delete event" aria-label="Delete ${esc(ev.title)}">×</button>
+              </div>`;
+            })
+            .join("") +
+          dayTasks
+            .map(
+              (t) => `<div class="cal-task"><button class="task-check-btn sm" data-toggle-task="${esc(t.id)}" data-next-status="completed" title="Mark complete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg></button><span>${esc(t.title)}</span></div>`
+            )
+            .join("");
+        return `<div class="cal-day ${isToday ? "today" : ""} ${isPast ? "past" : ""}">
+          <button class="cal-day-head" data-cal-pick-day="${key}" title="Add an event on this day">
+            <span class="mono">${esc(d.toLocaleDateString(undefined, { weekday: "short" }))}</span>
+            <strong>${d.getDate()}</strong>
+          </button>
+          <div class="cal-day-body">${items || `<div class="cal-empty">—</div>`}</div>
+        </div>`;
+      })
+      .join("");
+
+    const dateIn = document.getElementById("cal-new-date");
+    if (dateIn && !dateIn.value) dateIn.value = todayKey;
+  }
+
+  function buildCalendarAppsScript(secret) {
+    const safeSec = String(secret || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    return `const SECRET = "${safeSec}";
+
+function doPost(e) {
+  try {
+    const body = JSON.parse(e.postData.contents || "{}");
+    if (!SECRET || body.secret !== SECRET) return out({ ok: false, error: "Unauthorized" });
+    const act = body.action || "list";
+
+    if (act === "list") {
+      const from = new Date(body.from || Date.now());
+      const to = new Date(body.to || Date.now() + 30 * 864e5);
+      const events = [];
+      CalendarApp.getAllCalendars().forEach(cal => {
+        if (cal.isHidden() || !cal.isSelected()) return;
+        cal.getEvents(from, to).forEach(ev => {
+          events.push({
+            id: ev.getId() + "::" + ev.getStartTime().getTime(),
+            calendarId: cal.getId(),
+            calendarName: cal.getName(),
+            title: ev.getTitle(),
+            start: ev.getStartTime().toISOString(),
+            end: ev.getEndTime().toISOString(),
+            allDay: ev.isAllDayEvent(),
+            location: ev.getLocation() || "",
+            color: cal.getColor()
+          });
+        });
+      });
+      return out({ ok: true, events: events.slice(0, 1000) });
+    }
+
+    if (act === "create") {
+      const cal = CalendarApp.getDefaultCalendar();
+      const start = new Date(body.start);
+      const end = new Date(body.end);
+      const opts = body.description ? { description: body.description } : {};
+      const ev = body.allDay
+        ? cal.createAllDayEvent(body.title, start, end, opts)
+        : cal.createEvent(body.title, start, end, opts);
+      return out({ ok: true, event: {
+        id: ev.getId() + "::" + ev.getStartTime().getTime(),
+        calendarId: cal.getId(), calendarName: cal.getName(), title: ev.getTitle(),
+        start: ev.getStartTime().toISOString(), end: ev.getEndTime().toISOString(),
+        allDay: ev.isAllDayEvent(), location: "", color: cal.getColor()
+      }});
+    }
+
+    if (act === "delete") {
+      const parts = String(body.eventId || "").split("::");
+      const cal = CalendarApp.getCalendarById(body.calendarId) || CalendarApp.getDefaultCalendar();
+      const at = new Date(Number(parts[1]));
+      const match = cal.getEvents(new Date(at.getTime() - 6e4), new Date(at.getTime() + 6e4))
+        .find(ev => ev.getId() === parts[0]);
+      if (!match) return out({ ok: false, error: "Event not found" });
+      match.deleteEvent();
+      return out({ ok: true });
+    }
+    return out({ ok: false, error: "Unknown action" });
+  } catch (err) {
+    return out({ ok: false, error: String(err && err.message || err) });
+  }
+}
+
+function out(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}`;
+  }
+
+  const calModal = document.getElementById("cal-modal");
+  const calSecretInput = document.getElementById("cal-secret-input");
+  const calUrlInput = document.getElementById("cal-url-input");
+  function refreshCalScript() {
+    const el = document.getElementById("cal-script-code");
+    if (el) el.textContent = buildCalendarAppsScript((calSecretInput?.value || calDraftSecret).trim());
+  }
+  function openCalModal() {
+    if (!calModal) return;
+    const connected = Boolean(snapshot?.calendar?.sync?.connected);
+    if (calSecretInput) {
+      calSecretInput.value = connected ? "" : calDraftSecret;
+      calSecretInput.placeholder = connected ? "Saved. Leave blank to keep it, or paste a new one." : "";
+    }
+    refreshCalScript();
+    document.getElementById("btn-cal-disconnect")?.classList.toggle("hidden", !connected);
+    calModal.classList.remove("hidden");
+  }
+  calSecretInput?.addEventListener("input", () => {
+    const v = calSecretInput.value.trim();
+    if (v) calDraftSecret = v;
+    refreshCalScript();
+  });
+  document.getElementById("btn-open-cal-modal")?.addEventListener("click", openCalModal);
+  document.getElementById("btn-close-cal")?.addEventListener("click", () => calModal?.classList.add("hidden"));
+  calModal?.querySelector(".modal-backdrop")?.addEventListener("click", () => calModal.classList.add("hidden"));
+  document.addEventListener("click", (e) => {
+    if (e.target.closest("[data-open-cal-modal]")) {
+      e.preventDefault();
+      openCalModal();
+    }
+  });
+
+  document.getElementById("cal-config-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById("btn-cal-submit");
+    const bridgeUrl = calUrlInput?.value.trim() || "";
+    const secret = calSecretInput?.value.trim() || "";
+    if (!bridgeUrl) return;
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Connecting…";
+    const res = await apiFetch(
+      "/api/calendar/config",
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ bridgeUrl, secret }) },
+      "Could not connect Google Calendar"
+    );
+    btn.disabled = false;
+    btn.textContent = orig;
+    if (res.ok) {
+      const d = await res.json().catch(() => ({}));
+      calModal.classList.add("hidden");
+      calDraftSecret = randomSecret();
+      showToast(`Google Calendar connected: ${d.syncedCount ?? 0} events`, "success");
+    }
+  });
+
+  document.getElementById("btn-cal-disconnect")?.addEventListener("click", async () => {
+    const ok = await askConfirm({
+      title: "Disconnect Google Calendar?",
+      message: "This removes the bridge from Grok Bot HQ. Nothing changes in your Google account.",
+      confirmLabel: "Disconnect",
+      danger: true,
+    });
+    if (!ok) return;
+    const res = await apiFetch(
+      "/api/calendar/config",
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ disconnect: true }) },
+      "Could not disconnect"
+    );
+    if (res.ok) {
+      calModal.classList.add("hidden");
+      showToast("Google Calendar disconnected", "info");
+    }
+  });
+
+  document.getElementById("btn-cal-sync")?.addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    const res = await apiFetch("/api/calendar/sync", { method: "POST" }, "Calendar sync failed");
+    btn.disabled = false;
+    if (res.ok) showToast("Calendar synced", "success");
+  });
+  document.getElementById("btn-cal-prev")?.addEventListener("click", () => { calWeekOffset -= 1; renderCalendarPage(); });
+  document.getElementById("btn-cal-next")?.addEventListener("click", () => { calWeekOffset += 1; renderCalendarPage(); });
+  document.getElementById("btn-cal-today")?.addEventListener("click", () => { calWeekOffset = 0; renderCalendarPage(); });
+
+  document.getElementById("cal-new-allday")?.addEventListener("change", (e) => {
+    const off = e.target.checked;
+    document.getElementById("cal-new-start").disabled = off;
+    document.getElementById("cal-new-end").disabled = off;
+  });
+
+  document.addEventListener("click", async (e) => {
+    const pick = e.target.closest("[data-cal-pick-day]");
+    if (pick) {
+      const dateIn = document.getElementById("cal-new-date");
+      if (dateIn) dateIn.value = pick.dataset.calPickDay;
+      document.getElementById("cal-new-title")?.focus();
+      return;
+    }
+    const del = e.target.closest("[data-del-event]");
+    if (del) {
+      const ev = (snapshot?.calendar?.events || []).find((x) => x.id === del.dataset.delEvent);
+      const ok = await askConfirm({
+        title: "Delete event?",
+        message: `“${ev?.title || "This event"}” will be deleted from Google Calendar.`,
+        confirmLabel: "Delete",
+        danger: true,
+      });
+      if (!ok) return;
+      const res = await apiFetch(`/api/calendar/events/${encodeURIComponent(del.dataset.delEvent)}`, { method: "DELETE" }, "Could not delete event");
+      if (res.ok) showToast("Event deleted", "info");
+    }
+  });
+
+  function localToIso(dateKey, minutes) {
+    const [y, m, d] = dateKey.split("-").map(Number);
+    return new Date(y, m - 1, d, Math.floor(minutes / 60), minutes % 60).toISOString();
+  }
+
+  async function createCalendarEvent({ title, date, startMin, durationMin, allDay }) {
+    if (!snapshot?.calendar?.sync?.connected) {
+      showToast("Connect Google Calendar first", "info");
+      openCalModal();
+      return false;
+    }
+    let start;
+    let end;
+    if (allDay || startMin === null) {
+      start = localToIso(date, 0);
+      const [y, m, d] = date.split("-").map(Number);
+      end = new Date(y, m - 1, d + 1).toISOString();
+      allDay = true;
+    } else {
+      start = localToIso(date, startMin);
+      end = new Date(Date.parse(start) + Math.max(15, durationMin || 60) * 60000).toISOString();
+    }
+    const res = await apiFetch(
+      "/api/calendar/events",
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, start, end, allDay }) },
+      "Could not add event"
+    );
+    if (res.ok) showToast(`Added “${title}” to Google Calendar`, "success");
+    return res.ok;
+  }
+
+  document.getElementById("cal-create-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const title = document.getElementById("cal-new-title").value.trim();
+    const date = document.getElementById("cal-new-date").value;
+    const allDay = document.getElementById("cal-new-allday").checked;
+    const st = document.getElementById("cal-new-start").value;
+    const en = document.getElementById("cal-new-end").value;
+    if (!title || !date) return;
+    const toMin = (v) => (v ? Number(v.slice(0, 2)) * 60 + Number(v.slice(3, 5)) : null);
+    const startMin = allDay ? null : toMin(st) ?? 9 * 60;
+    const endMin = toMin(en);
+    const durationMin = startMin !== null && endMin !== null && endMin > startMin ? endMin - startMin : 60;
+    const ok = await createCalendarEvent({ title, date, startMin, durationMin, allDay: allDay || !st });
+    if (ok) document.getElementById("cal-new-title").value = "";
+  });
+
+  // =========================================================================
+  // QUICK CAPTURE (Today bar + command palette)
+  // =========================================================================
+  async function runCapture(c) {
+    if (!c) return false;
+    if (c.kind === "event") {
+      return createCalendarEvent({ title: c.title, date: c.date, startMin: c.startMin, durationMin: c.durationMin, allDay: c.startMin === null });
+    }
+    if (c.kind === "bot") {
+      const bot = findBotByHandle(c.botHandle);
+      if (!bot) {
+        showToast(`No agent called @${c.botHandle}`, "error");
+        return false;
+      }
+      const res = await apiFetch(
+        `/api/bots/${encodeURIComponent(bot.id)}/command`,
+        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: c.title, enqueue: true }) },
+        "Could not send order"
+      );
+      if (res.ok) {
+        const instant = bot.dispatchConfigured && (bot.agentKind === "n8n" || bot.agentKind === "webhook");
+        showToast(instant ? `Sent to ${bot.name} now` : `Queued for ${bot.name}'s next check-in`, "success");
+      }
+      return res.ok;
+    }
+    const res = await apiFetch(
+      "/api/tasks",
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: c.title, due: c.date || null }) },
+      "Could not add task"
+    );
+    if (res.ok) showToast(`Task added${c.date ? ` · ${QuickCapture.describeCapture(c)}` : ""}`, "success");
+    return res.ok;
+  }
+
+  const todayCaptureInput = document.getElementById("today-capture-input");
+  const todayCaptureHint = document.getElementById("today-capture-hint");
+  function currentTodayCapture() {
+    const raw = todayCaptureInput?.value || "";
+    if (!raw.trim() || !window.QuickCapture) return null;
+    return QuickCapture.parseQuickCapture(raw) || QuickCapture.parseAsTask(raw);
+  }
+  todayCaptureInput?.addEventListener("input", () => {
+    const c = currentTodayCapture();
+    if (!todayCaptureHint) return;
+    if (!c) {
+      todayCaptureHint.textContent = "";
+      return;
+    }
+    const kindLabel = c.kind === "bot" ? `→ @${c.botHandle}` : c.kind === "event" ? "event" : "task";
+    const when = QuickCapture.describeCapture(c);
+    todayCaptureHint.textContent = when ? `${kindLabel} · ${when}` : kindLabel;
+  });
+  document.getElementById("today-capture")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const c = currentTodayCapture();
+    if (!c) return;
+    const ok = await runCapture(c);
+    if (ok && todayCaptureInput) {
+      todayCaptureInput.value = "";
+      if (todayCaptureHint) todayCaptureHint.textContent = "";
+    }
+  });
+
+  // Keep "today" accurate across midnight and refresh the now-line.
+  setInterval(() => {
+    if (activeView === "today" && snapshot && !isEditingInside(document.getElementById("view-today"))) renderDayRail(new Date(), eventsOnDay(localDateKey(new Date())), (snapshot.tasks || []).filter((t) => t.status !== "completed" && dueKey(t) && dueKey(t) <= localDateKey(new Date())));
+  }, 60_000);
+
+  // "g" then a letter jumps between views
+  let gPressedAt = 0;
+  document.addEventListener("keydown", (e) => {
+    const tag = document.activeElement?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (document.querySelector(".modal:not(.hidden)")) return;
+    if (e.key === "g") {
+      gPressedAt = Date.now();
+      return;
+    }
+    if (Date.now() - gPressedAt < 900) {
+      const map = { t: "today", o: "office", a: "fleet", k: "tasks", c: "calendar", i: "needs", m: "metrics" };
+      if (map[e.key]) {
+        e.preventDefault();
+        switchView(map[e.key]);
+      }
+      gPressedAt = 0;
+      return;
+    }
+    if (e.key === "n" && activeView === "today") {
+      e.preventDefault();
+      todayCaptureInput?.focus();
+    }
+  });
+
+  switchView(activeView);
 
   fetchSnapshotFallback();
   connectWS();

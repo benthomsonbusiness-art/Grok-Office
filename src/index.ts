@@ -19,6 +19,20 @@ import {
 import { renderOfficePasswordPage } from "./passwordGate";
 import { runProxyGuard } from "./proxyGuard";
 import { redactAlertWebhook } from "./settingsRedact";
+import {
+  type CalendarEvent,
+  type CalendarSyncState,
+  isValidAppsScriptUrl,
+  normalizeBridgeEvent,
+  parseNewEvent,
+} from "./calendar";
+import {
+  type AgentKind,
+  buildDispatchPayload,
+  maskDispatchUrl,
+  normalizeAgentKind,
+  supportsPush,
+} from "./agentKinds";
 import type {
   ActivityLog,
   BotOrders,
@@ -184,6 +198,7 @@ export class OfficeHub extends DurableObject<Env> {
   private lastBroadcastAt = 0;
   private broadcastPending = false;
   private broadcastTimer: ReturnType<typeof setTimeout> | null = null;
+  private publicOrigin = "";
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -315,6 +330,31 @@ export class OfficeHub extends DurableObject<Env> {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS calendar_events (
+        id TEXT PRIMARY KEY,
+        calendar_id TEXT NOT NULL,
+        calendar_name TEXT NOT NULL DEFAULT 'Calendar',
+        title TEXT NOT NULL,
+        start_at TEXT NOT NULL,
+        end_at TEXT NOT NULL,
+        all_day INTEGER NOT NULL DEFAULT 0,
+        location TEXT NOT NULL DEFAULT '',
+        html_link TEXT,
+        color TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS daily_rollups (
+        day TEXT PRIMARY KEY,
+        tokens INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL NOT NULL DEFAULT 0,
+        requests INTEGER NOT NULL DEFAULT 0,
+        runs_completed INTEGER NOT NULL DEFAULT 0,
+        runs_failed INTEGER NOT NULL DEFAULT 0,
+        tasks_done INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_cal_start ON calendar_events(start_at);
       CREATE INDEX IF NOT EXISTS idx_needs_status ON pending_needs(status, created_at);
       CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at);
       CREATE INDEX IF NOT EXISTS idx_logs_created ON activity_logs(created_at);
@@ -348,6 +388,14 @@ export class OfficeHub extends DurableObject<Env> {
     if (!botCols.includes("checkin_token")) {
       this.sql.exec("ALTER TABLE bots ADD COLUMN checkin_token TEXT NOT NULL DEFAULT ''");
     }
+    if (!botCols.includes("agent_kind")) {
+      this.sql.exec("ALTER TABLE bots ADD COLUMN agent_kind TEXT NOT NULL DEFAULT 'grok'");
+    }
+    if (!botCols.includes("dispatch_url")) {
+      this.sql.exec("ALTER TABLE bots ADD COLUMN dispatch_url TEXT NOT NULL DEFAULT ''");
+    }
+    // Pushes cannot be in flight after a restart; return them to the queue.
+    this.sql.exec("UPDATE task_queue SET status = 'queued' WHERE status = 'pushing'");
     const missingTokens = this.sql
       .exec<{ id: string }>("SELECT id FROM bots WHERE checkin_token IS NULL OR trim(checkin_token) = ''")
       .toArray();
@@ -590,6 +638,19 @@ export class OfficeHub extends DurableObject<Env> {
       }
     }
 
+    // Google Calendar background refresh (every 5 minutes when connected)
+    const calCfg = this.getCalendarConfig();
+    if (calCfg.bridgeUrl) {
+      needNextAlarm = true;
+      const lastCalMs = calCfg.lastSyncAt ? Date.parse(calCfg.lastSyncAt) : 0;
+      if (!Number.isFinite(lastCalMs) || nowMs - lastCalMs >= 300_000) {
+        const calSynced = await this.syncCalendar();
+        if (calSynced.ok) changed = true;
+      }
+    }
+
+    this.updateDailyRollup();
+
     if (changed) {
       this.broadcastSnapshot();
     }
@@ -638,6 +699,9 @@ export class OfficeHub extends DurableObject<Env> {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (url.hostname !== "internal" && (url.protocol === "https:" || url.hostname === "localhost" || url.hostname === "127.0.0.1")) {
+      this.publicOrigin = url.origin;
+    }
 
     if (url.pathname === "/ws") {
       if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
@@ -763,11 +827,17 @@ export class OfficeHub extends DurableObject<Env> {
         task?: string;
         model?: string;
         expectedIntervalMinutes?: number;
+        agentKind?: string;
+        dispatchUrl?: string;
       } = {};
       try {
         body = (await request.json()) as typeof body;
       } catch {
         return jsonResponse({ error: "Invalid JSON" }, 400);
+      }
+      const dispatchUrlIn = clampText(body.dispatchUrl, 500);
+      if (dispatchUrlIn && !isSafeCallbackUrl(dispatchUrlIn)) {
+        return jsonResponse({ error: "Webhook URL must be a public https:// URL" }, 400);
       }
       const name = clampText(body.name, 40);
       if (!name) {
@@ -792,6 +862,12 @@ export class OfficeHub extends DurableObject<Env> {
         expectedIntervalMinutes: body.expectedIntervalMinutes,
         message: `Added ${name} (${clampText(body.role, 48) || "Grok Agent"}) to HQ`,
       });
+      this.sql.exec(
+        "UPDATE bots SET agent_kind = ?, dispatch_url = ? WHERE id = ?",
+        normalizeAgentKind(body.agentKind),
+        dispatchUrlIn,
+        result.botId
+      );
       this.broadcastSnapshot();
       const checkinToken = this.getBotCheckinToken(result.botId) ?? "";
       return jsonResponse({ ok: true, ...result, checkinToken });
@@ -928,6 +1004,7 @@ export class OfficeHub extends DurableObject<Env> {
         task,
         new Date().toISOString()
       );
+      this.pushPendingDispatch(botId);
       this.broadcastSnapshot();
       return jsonResponse({ ok: true, id });
     }
@@ -983,11 +1060,23 @@ export class OfficeHub extends DurableObject<Env> {
         department?: string;
         expectedIntervalMinutes?: number;
         collaboratingWith?: string | null;
+        agentKind?: string;
+        dispatchUrl?: string;
       } = {};
       try {
         body = (await request.json()) as typeof body;
       } catch {
         return jsonResponse({ error: "Invalid JSON" }, 400);
+      }
+      if (body.agentKind !== undefined) {
+        this.sql.exec("UPDATE bots SET agent_kind = ? WHERE id = ?", normalizeAgentKind(body.agentKind), botId);
+      }
+      if (body.dispatchUrl !== undefined) {
+        const du = clampText(body.dispatchUrl, 500);
+        if (du && !isSafeCallbackUrl(du)) {
+          return jsonResponse({ error: "Webhook URL must be a public https:// URL" }, 400);
+        }
+        this.sql.exec("UPDATE bots SET dispatch_url = ? WHERE id = ?", du, botId);
       }
       let nextStatus = body.status;
       let nextTask = body.task;
@@ -1050,6 +1139,7 @@ export class OfficeHub extends DurableObject<Env> {
           );
         }
       }
+      if (queuedTask) this.pushPendingDispatch(botId);
       this.broadcastSnapshot();
       return jsonResponse({ ok: true, ...result, queued: Boolean(queuedTask) });
     }
@@ -1218,6 +1308,95 @@ export class OfficeHub extends DurableObject<Env> {
       }
       this.broadcastSnapshot();
       return jsonResponse({ ok: true, settings: redactAlertWebhook(next) });
+    }
+
+    if (url.pathname === "/api/calendar/config" && request.method === "POST") {
+      let body: { bridgeUrl?: string; secret?: string; disconnect?: boolean };
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        return jsonResponse({ error: "Invalid JSON" }, 400);
+      }
+      if (body.disconnect) {
+        for (const k of ["calendar_url", "calendar_secret", "calendar_error", "calendar_last_sync"]) this.saveSettingKey(k, "");
+        this.sql.exec("DELETE FROM calendar_events");
+        this.broadcastSnapshot();
+        return jsonResponse({ ok: true, connected: false });
+      }
+      const bridgeUrl = clampText(body.bridgeUrl, 400);
+      if (!bridgeUrl || !isValidAppsScriptUrl(bridgeUrl)) {
+        return jsonResponse({ error: "Bridge URL must be a https://script.google.com/macros/s/.../exec URL" }, 400);
+      }
+      const secret = clampText(body.secret, 160) || this.getCalendarConfig().secret;
+      if (!secret) return jsonResponse({ error: "A shared secret is required" }, 400);
+      // Verify before saving, so a bad URL never replaces a working one.
+      const probe = await this.callCalendarBridge("list", {
+        from: new Date().toISOString(),
+        to: new Date(Date.now() + 60_000).toISOString(),
+      }, { bridgeUrl, secret });
+      if (!probe.ok) {
+        return jsonResponse({ ok: false, error: probe.error || "Could not reach the Calendar bridge" }, 502);
+      }
+      this.saveSettingKey("calendar_url", bridgeUrl);
+      this.saveSettingKey("calendar_secret", secret);
+      const synced = await this.syncCalendar();
+      await this.ensureAlarmScheduled();
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: synced.ok, connected: true, syncedCount: synced.count, error: synced.error });
+    }
+
+    if (url.pathname === "/api/calendar/sync" && request.method === "POST") {
+      if (!this.getCalendarConfig().bridgeUrl) {
+        return jsonResponse({ error: "Google Calendar is not connected yet" }, 400);
+      }
+      const synced = await this.syncCalendar();
+      await this.ensureAlarmScheduled();
+      this.broadcastSnapshot();
+      if (!synced.ok) return jsonResponse({ ok: false, error: synced.error || "Sync failed" }, 502);
+      return jsonResponse({ ok: true, syncedCount: synced.count });
+    }
+
+    if (url.pathname === "/api/calendar/events" && request.method === "POST") {
+      const parsed = parseNewEvent(await request.json().catch(() => null));
+      if ("error" in parsed) return jsonResponse({ error: parsed.error }, 400);
+      if (!this.getCalendarConfig().bridgeUrl) {
+        return jsonResponse({ error: "Connect Google Calendar first" }, 400);
+      }
+      const res = await this.callCalendarBridge("create", { ...parsed });
+      if (!res.ok) return jsonResponse({ error: res.error || "Could not create event" }, 502);
+      const created = normalizeBridgeEvent(res.data?.event);
+      if (created) {
+        this.sql.exec(
+          `INSERT OR REPLACE INTO calendar_events (id, calendar_id, calendar_name, title, start_at, end_at, all_day, location, html_link, color)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          created.id,
+          created.calendarId,
+          created.calendarName,
+          created.title,
+          created.start,
+          created.end,
+          created.allDay ? 1 : 0,
+          created.location,
+          created.htmlLink,
+          created.color
+        );
+      }
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true, event: created });
+    }
+
+    const calEventMatch = url.pathname.match(/^\/api\/calendar\/events\/([^/]+)$/);
+    if (calEventMatch && request.method === "DELETE") {
+      const eventId = decodeURIComponent(calEventMatch[1]);
+      const row = this.sql
+        .exec<{ id: string; calendar_id: string }>("SELECT id, calendar_id FROM calendar_events WHERE id = ?", eventId)
+        .toArray()[0];
+      if (!row) return jsonResponse({ error: "Event not found" }, 404);
+      const res = await this.callCalendarBridge("delete", { eventId: row.id, calendarId: row.calendar_id });
+      if (!res.ok) return jsonResponse({ error: res.error || "Could not delete event" }, 502);
+      this.sql.exec("DELETE FROM calendar_events WHERE id = ?", eventId);
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true });
     }
 
     if (url.pathname === "/api/tasks/config" && request.method === "POST") {
@@ -2531,6 +2710,8 @@ export class OfficeHub extends DurableObject<Env> {
         last_seen_at: string;
         collaborating_with: string | null;
         checkin_token?: string;
+        agent_kind?: string;
+        dispatch_url?: string;
       }>("SELECT * FROM bots ORDER BY desk_index ASC, name ASC")
       .toArray()
       .map((b, idx) => {
@@ -2559,6 +2740,9 @@ export class OfficeHub extends DurableObject<Env> {
           lastSeenAt: b.last_seen_at,
           collaboratingWith: b.collaborating_with,
           checkinToken: b.checkin_token?.trim() || "",
+          agentKind: normalizeAgentKind(b.agent_kind),
+          dispatchConfigured: Boolean(b.dispatch_url),
+          dispatchHost: maskDispatchUrl(b.dispatch_url ?? ""),
           link: connectionLink(
             b.last_seen_at,
             b.expected_interval_min ?? 0,
@@ -2787,6 +2971,8 @@ export class OfficeHub extends DurableObject<Env> {
       taskLists: this.listGoogleTaskLists(),
       tasks: this.listGoogleTasks(bots),
       googleTasksSync,
+      calendar: this.getCalendarSnapshot(),
+      dailyRollups: this.listDailyRollups(30),
       settings: redactAlertWebhook(settings),
       usageSummary: {
         totalTokens: (totals?.tokens_in ?? 0) + (totals?.tokens_out ?? 0),
@@ -2868,6 +3054,285 @@ export class OfficeHub extends DurableObject<Env> {
         new Date().toISOString()
       );
     }
+    this.pushPendingDispatch(botId);
+  }
+
+  /**
+   * Webhook-style agents (n8n, custom) get queued orders pushed immediately instead of
+   * waiting for their next check-in. Grok bots keep the pull model.
+   */
+  private pushPendingDispatch(botId: string): void {
+    const bot = this.sql
+      .exec<{ name: string; avatar_color: string; status: BotStatus; agent_kind: string; dispatch_url: string; checkin_token: string }>(
+        "SELECT name, avatar_color, status, agent_kind, dispatch_url, checkin_token FROM bots WHERE id = ?",
+        botId
+      )
+      .toArray()[0];
+    if (!bot) return;
+    const kind: AgentKind = normalizeAgentKind(bot.agent_kind);
+    const target = bot.dispatch_url?.trim() ?? "";
+    if (!supportsPush(kind) || !target || !isSafeCallbackUrl(target)) return;
+    const origin = this.publicOrigin;
+    if (!origin) return;
+    const queued = this.sql
+      .exec<{ id: string; task: string }>(
+        "SELECT id, task FROM task_queue WHERE bot_id = ? AND status = 'queued' ORDER BY created_at ASC LIMIT 5",
+        botId
+      )
+      .toArray();
+    for (const q of queued) {
+      this.sql.exec("UPDATE task_queue SET status = 'pushing' WHERE id = ?", q.id);
+      const payload = buildDispatchPayload(origin, botId, bot.checkin_token, q.task, q.id, new Date().toISOString());
+      this.ctx.waitUntil(
+        (async () => {
+          let ok = false;
+          let detail = "";
+          try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 10_000);
+            const res = await fetch(target, {
+              method: "POST",
+              headers: { "content-type": "application/json", "user-agent": "GrokBotHQ-Dispatch/1.0" },
+              body: JSON.stringify(payload),
+              signal: controller.signal,
+            });
+            clearTimeout(timer);
+            ok = res.ok;
+            detail = ok ? "" : `HTTP ${res.status}`;
+          } catch (err) {
+            detail = err instanceof Error ? err.message : "network error";
+          }
+          if (ok) {
+            this.sql.exec("UPDATE task_queue SET status = 'dispatched' WHERE id = ?", q.id);
+            this.sql.exec("UPDATE bots SET task = ?, status = 'working' WHERE id = ?", q.task, botId);
+            this.insertLog(botId, bot.name, bot.avatar_color, "working", "info", `Pushed order to ${kind}: "${clampText(q.task, 100)}"`);
+          } else {
+            this.sql.exec("UPDATE task_queue SET status = 'queued' WHERE id = ?", q.id);
+            this.insertLog(
+              botId,
+              bot.name,
+              bot.avatar_color,
+              bot.status,
+              "warn",
+              `Push to ${kind} failed (${clampText(detail, 60)}). Order stays queued for next check-in.`
+            );
+          }
+          this.broadcastSnapshot();
+        })()
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Google Calendar bridge
+  // ---------------------------------------------------------------------------
+  private getCalendarConfig(): { bridgeUrl: string; secret: string; lastSyncAt: string | null; error: string | null } {
+    const rows = this.sql
+      .exec<{ key: string; value: string }>(
+        "SELECT key, value FROM office_settings WHERE key IN ('calendar_url', 'calendar_secret', 'calendar_last_sync', 'calendar_error')"
+      )
+      .toArray();
+    const map = new Map(rows.map((r) => [r.key, r.value]));
+    const bridgeUrl = clampText(map.get("calendar_url"), 400);
+    return {
+      bridgeUrl: bridgeUrl && isValidAppsScriptUrl(bridgeUrl) ? bridgeUrl : "",
+      secret: clampText(map.get("calendar_secret"), 160),
+      lastSyncAt: map.get("calendar_last_sync") || null,
+      error: map.get("calendar_error") || null,
+    };
+  }
+
+  private async callCalendarBridge(
+    action: "list" | "create" | "delete",
+    payload: Record<string, unknown>,
+    override?: { bridgeUrl: string; secret: string }
+  ): Promise<{ ok: boolean; error?: string; data?: Record<string, unknown> }> {
+    const cfg = override ?? this.getCalendarConfig();
+    if (!cfg.bridgeUrl || !isValidAppsScriptUrl(cfg.bridgeUrl)) {
+      return { ok: false, error: "Google Calendar bridge URL is not configured" };
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    try {
+      const resp = await fetch(cfg.bridgeUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        redirect: "follow",
+        signal: controller.signal,
+        body: JSON.stringify({ secret: cfg.secret, action, ...payload }),
+      });
+      const text = await resp.text();
+      if (!resp.ok) return { ok: false, error: `Bridge returned HTTP ${resp.status}` };
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        return { ok: false, error: "Bridge returned HTML instead of JSON. Set the web app access to 'Anyone'." };
+      }
+      if (parsed.ok === false || parsed.error) {
+        return { ok: false, error: clampText(parsed.error, 200) || "Bridge rejected request" };
+      }
+      return { ok: true, data: parsed };
+    } catch (err) {
+      return { ok: false, error: clampText(err instanceof Error ? err.message : "Network error", 180) };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async syncCalendar(): Promise<{ ok: boolean; count: number; error?: string }> {
+    const now = new Date();
+    const from = new Date(now.getTime() - 2 * 24 * 60 * 60_000).toISOString();
+    const to = new Date(now.getTime() + 30 * 24 * 60 * 60_000).toISOString();
+    const res = await this.callCalendarBridge("list", { from, to });
+    if (!res.ok) {
+      this.saveSettingKey("calendar_error", res.error || "Sync failed");
+      return { ok: false, count: 0, error: res.error };
+    }
+    const rawEvents = Array.isArray(res.data?.events) ? (res.data?.events as unknown[]) : [];
+    const events = rawEvents.slice(0, 1000).map(normalizeBridgeEvent).filter((e): e is CalendarEvent => e !== null);
+    this.sql.exec("DELETE FROM calendar_events");
+    for (const e of events) {
+      this.sql.exec(
+        `INSERT OR REPLACE INTO calendar_events (id, calendar_id, calendar_name, title, start_at, end_at, all_day, location, html_link, color)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        e.id,
+        e.calendarId,
+        e.calendarName,
+        e.title,
+        e.start,
+        e.end,
+        e.allDay ? 1 : 0,
+        e.location,
+        e.htmlLink,
+        e.color
+      );
+    }
+    this.saveSettingKey("calendar_last_sync", now.toISOString());
+    this.saveSettingKey("calendar_error", "");
+    return { ok: true, count: events.length };
+  }
+
+  private getCalendarSnapshot(): { sync: CalendarSyncState; events: CalendarEvent[] } {
+    const cfg = this.getCalendarConfig();
+    const from = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
+    const events = this.sql
+      .exec<{
+        id: string;
+        calendar_id: string;
+        calendar_name: string;
+        title: string;
+        start_at: string;
+        end_at: string;
+        all_day: number;
+        location: string;
+        html_link: string | null;
+        color: string | null;
+      }>("SELECT * FROM calendar_events WHERE end_at >= ? ORDER BY start_at ASC LIMIT 400", from)
+      .toArray()
+      .map((r) => ({
+        id: r.id,
+        calendarId: r.calendar_id,
+        calendarName: r.calendar_name,
+        title: r.title,
+        start: r.start_at,
+        end: r.end_at,
+        allDay: r.all_day === 1,
+        location: r.location,
+        htmlLink: r.html_link,
+        color: r.color,
+      }));
+    return {
+      sync: {
+        connected: Boolean(cfg.bridgeUrl),
+        lastSyncAt: cfg.lastSyncAt,
+        error: cfg.error,
+        eventCount: events.length,
+      },
+      events,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Daily rollups: compact per-day history that survives row-count trimming
+  // ---------------------------------------------------------------------------
+  private updateDailyRollup(): void {
+    const day = new Date().toISOString().slice(0, 10);
+    const start = `${day}T00:00:00.000Z`;
+    const usage = this.sql
+      .exec<{ tokens: number; cost: number; reqs: number }>(
+        `SELECT COALESCE(SUM(tokens_in + tokens_out), 0) as tokens, COALESCE(SUM(cost_usd), 0) as cost, COUNT(*) as reqs
+         FROM usage_events WHERE created_at >= ?`,
+        start
+      )
+      .one();
+    const runs = this.sql
+      .exec<{ done: number; failed: number }>(
+        `SELECT COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) as done,
+                COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed
+         FROM task_runs WHERE started_at >= ?`,
+        start
+      )
+      .one();
+    const tasks = this.sql
+      .exec<{ cnt: number }>(
+        "SELECT COUNT(*) as cnt FROM google_tasks WHERE status = 'completed' AND completed_at >= ?",
+        start
+      )
+      .one();
+    this.sql.exec(
+      `INSERT INTO daily_rollups (day, tokens, cost_usd, requests, runs_completed, runs_failed, tasks_done, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(day) DO UPDATE SET
+         tokens = MAX(daily_rollups.tokens, excluded.tokens),
+         cost_usd = MAX(daily_rollups.cost_usd, excluded.cost_usd),
+         requests = MAX(daily_rollups.requests, excluded.requests),
+         runs_completed = MAX(daily_rollups.runs_completed, excluded.runs_completed),
+         runs_failed = MAX(daily_rollups.runs_failed, excluded.runs_failed),
+         tasks_done = MAX(daily_rollups.tasks_done, excluded.tasks_done),
+         updated_at = excluded.updated_at`,
+      day,
+      usage?.tokens ?? 0,
+      Number((usage?.cost ?? 0).toFixed(4)),
+      usage?.reqs ?? 0,
+      runs?.done ?? 0,
+      runs?.failed ?? 0,
+      tasks?.cnt ?? 0,
+      new Date().toISOString()
+    );
+    this.sql.exec("DELETE FROM daily_rollups WHERE day NOT IN (SELECT day FROM daily_rollups ORDER BY day DESC LIMIT 400)");
+  }
+
+  private listDailyRollups(days: number): Array<{
+    day: string;
+    tokens: number;
+    costUsd: number;
+    requests: number;
+    runsCompleted: number;
+    runsFailed: number;
+    tasksDone: number;
+  }> {
+    return this.sql
+      .exec<{
+        day: string;
+        tokens: number;
+        cost_usd: number;
+        requests: number;
+        runs_completed: number;
+        runs_failed: number;
+        tasks_done: number;
+      }>("SELECT * FROM daily_rollups ORDER BY day DESC LIMIT ?", days)
+      .toArray()
+      .reverse()
+      .map((r) => ({
+        day: r.day,
+        tokens: r.tokens,
+        costUsd: r.cost_usd,
+        requests: r.requests,
+        runsCompleted: r.runs_completed,
+        runsFailed: r.runs_failed,
+        tasksDone: r.tasks_done,
+      }));
   }
 
   private async callGoogleTasksBridge(
@@ -3106,6 +3571,7 @@ export class OfficeHub extends DurableObject<Env> {
     this.sql.exec("DELETE FROM objectives");
     this.sql.exec("DELETE FROM google_tasks");
     this.sql.exec("DELETE FROM google_task_lists");
+    this.sql.exec("DELETE FROM daily_rollups");
   }
 }
 

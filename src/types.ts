@@ -78,6 +78,9 @@ export interface BotRecord {
   collaboratingWith: string | null;
   link: ConnectionLink;
   checkinToken: string;
+  agentKind: import("./agentKinds").AgentKind;
+  dispatchConfigured: boolean;
+  dispatchHost: string;
 }
 
 export interface PendingNeed {
@@ -182,6 +185,19 @@ export interface OfficeSnapshot {
   taskLists: GoogleTaskList[];
   tasks: GoogleTaskItem[];
   googleTasksSync: GoogleTasksSyncState;
+  calendar: {
+    sync: import("./calendar").CalendarSyncState;
+    events: import("./calendar").CalendarEvent[];
+  };
+  dailyRollups: Array<{
+    day: string;
+    tokens: number;
+    costUsd: number;
+    requests: number;
+    runsCompleted: number;
+    runsFailed: number;
+    tasksDone: number;
+  }>;
   settings: OfficeSettings;
   usageSummary: {
     totalTokens: number;

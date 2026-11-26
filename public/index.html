@@ -3,13 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Grok Bot HQ — Command Deck</title>
-  <meta name="description" content="Real-time 3D virtual office and fleet command deck for Grok AI agents." />
+  <title>Grok Bot HQ</title>
+  <meta name="description" content="One hub for your AI agents, tasks and calendar, with a live 3D office." />
+  <meta name="theme-color" content="#0a0b0f" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&family=Space+Grotesk:wght@600;700&display=swap" />
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2307090e'/%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='6.5' fill='none' stroke='%23ffffff' stroke-opacity='0.22'/%3E%3Cpath d='M18.2 6.8L10.2 17.4h5.3l-1.3 7.8 8-10.6h-5.3l1.3-7.8z' fill='%2338bdf8'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="/styles.css?v=9" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,650;12..96,750&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2307090e'/%3E%3Crect x='1.5' y='1.5' width='29' height='29' rx='6.5' fill='none' stroke='%23ffffff' stroke-opacity='0.22'/%3E%3Cpath d='M18.2 6.8L10.2 17.4h5.3l-1.3 7.8 8-10.6h-5.3l1.3-7.8z' fill='%23ffb547'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/styles.css?v=10" />
 </head>
 <body>
   <div id="app-root" class="app-root">
@@ -30,13 +31,17 @@
         </div>
 
         <nav class="main-nav" id="main-nav" aria-label="Main navigation">
-          <button class="nav-tab active" data-view="office" title="3D Office">
-            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
-            <span>3D Office</span>
+          <button class="nav-tab active" data-view="today" title="Today (g t)">
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+            <span>Today</span>
           </button>
-          <button class="nav-tab" data-view="fleet" title="Fleet">
+          <button class="nav-tab" data-view="office" title="3D Office">
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+            <span>Office</span>
+          </button>
+          <button class="nav-tab" data-view="fleet" title="Agents">
             <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
-            <span>Fleet</span>
+            <span>Agents</span>
             <span id="nav-fleet-badge" class="nav-badge hidden">0</span>
           </button>
           <button class="nav-tab" data-view="tasks" title="Tasks">
@@ -44,22 +49,31 @@
             <span>Tasks</span>
             <span id="nav-tasks-badge" class="nav-badge hidden">0</span>
           </button>
-          <button class="nav-tab" data-view="metrics" title="Goals &amp; Metrics">
-            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-            <span>Goals &amp; Metrics</span>
+          <button class="nav-tab" data-view="calendar" title="Calendar">
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            <span>Calendar</span>
           </button>
-          <button class="nav-tab" data-view="needs" title="Pending Needs">
-            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-            <span>Pending Needs</span>
+          <button class="nav-tab" data-view="needs" title="Inbox">
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+            <span>Inbox</span>
             <span id="nav-needs-badge" class="nav-badge hidden">0</span>
+          </button>
+          <button class="nav-tab nav-tab-secondary" data-view="metrics" title="Insights">
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+            <span>Insights</span>
           </button>
         </nav>
       </div>
 
       <div class="topbar-right">
+        <div class="status-strip" id="status-strip" aria-label="Office status">
+          <button class="status-chip" data-view="fleet" title="Agents checked in and healthy"><i class="sdot live"></i><strong id="ss-agents" class="mono">0</strong><span>agents</span></button>
+          <button class="status-chip" data-view="metrics" title="Daily budget left"><i class="sdot lamp"></i><strong id="ss-budget" class="mono">100%</strong><span>budget</span></button>
+          <button class="status-chip" data-view="needs" title="Items waiting on you"><i class="sdot alert"></i><strong id="ss-inbox" class="mono">0</strong><span>inbox</span></button>
+        </div>
         <button id="btn-cmd-palette" class="cmd-trigger" title="Open Command Palette (Ctrl+K / ⌘K)">
           <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <span class="cmd-trigger-label">Search bots or actions…</span>
+          <span class="cmd-trigger-label">Capture or search…</span>
           <kbd>⌘K</kbd>
         </button>
         <button id="btn-sound-toggle" class="icon-btn active" title="Alert chime: On (click to mute)" aria-label="Toggle alert chime"></button>
@@ -71,13 +85,124 @@
         </button>
         <button id="btn-connect" class="btn btn-primary">
           <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          <span>Connect</span>
+          <span>Add agent</span>
         </button>
       </div>
     </header>
 
+    <!-- VIEW: TODAY — the default home screen -->
+    <section id="view-today" class="view-panel page-view active">
+      <div class="page-container today-wrap">
+        <header class="today-head">
+          <div class="today-title">
+            <p class="eyebrow mono" id="today-date">Today</p>
+            <h1 id="today-greeting">Good evening.</h1>
+            <p class="page-lead" id="today-summary">Loading your day…</p>
+          </div>
+          <form id="today-capture" class="capture-bar" autocomplete="off">
+            <span class="capture-glyph" aria-hidden="true">+</span>
+            <input id="today-capture-input" type="text" maxlength="240" aria-label="Quick capture"
+              placeholder="task: call Mike tomorrow · event: dentist fri 2pm · @atlas research X" />
+            <span id="today-capture-hint" class="capture-hint mono"></span>
+            <button type="submit" class="btn btn-primary">Add</button>
+          </form>
+        </header>
+
+        <section class="rail-card" aria-labelledby="rail-title">
+          <div class="rail-head">
+            <h2 id="rail-title">Your day</h2>
+            <div class="rail-legend">
+              <span><i class="lg lg-cal"></i>Calendar</span>
+              <span><i class="lg lg-run"></i>Agent runs</span>
+              <span><i class="lg lg-task"></i>Tasks due</span>
+            </div>
+          </div>
+          <div id="day-rail" class="day-rail" role="img" aria-label="Timeline of today"></div>
+        </section>
+
+        <div class="today-grid">
+          <section class="card-panel today-card" aria-labelledby="t-inbox-title">
+            <div class="card-panel-head">
+              <h3 id="t-inbox-title">Needs you <span id="t-inbox-count" class="count-pill mono">0</span></h3>
+              <button class="link-btn" data-view="needs">Open inbox →</button>
+            </div>
+            <div id="today-inbox" class="today-list"></div>
+          </section>
+
+          <section class="card-panel today-card" aria-labelledby="t-tasks-title">
+            <div class="card-panel-head">
+              <h3 id="t-tasks-title">My day <span id="t-tasks-count" class="count-pill mono">0</span></h3>
+              <button class="link-btn" data-view="tasks">All tasks →</button>
+            </div>
+            <div id="today-tasks" class="today-list"></div>
+          </section>
+
+          <section class="card-panel today-card" aria-labelledby="t-agents-title">
+            <div class="card-panel-head">
+              <h3 id="t-agents-title">Agents at work</h3>
+              <button class="link-btn" data-view="office">See the office →</button>
+            </div>
+            <div id="today-agents" class="today-list"></div>
+          </section>
+
+          <section class="card-panel today-card" aria-labelledby="t-agenda-title">
+            <div class="card-panel-head">
+              <h3 id="t-agenda-title">Up next</h3>
+              <button class="link-btn" data-view="calendar">Calendar →</button>
+            </div>
+            <div id="today-agenda" class="today-list"></div>
+          </section>
+        </div>
+
+        <section class="card-panel digest-card" aria-labelledby="t-digest-title">
+          <div class="card-panel-head">
+            <h3 id="t-digest-title">Since yesterday</h3>
+            <span class="muted mono" id="today-digest-range">last 24h</span>
+          </div>
+          <div id="today-digest" class="digest-grid"></div>
+        </section>
+      </div>
+    </section>
+
+    <!-- VIEW: CALENDAR — Google Calendar via private Apps Script bridge -->
+    <section id="view-calendar" class="view-panel page-view">
+      <div class="page-container">
+        <div class="page-header">
+          <div>
+            <h1>Calendar</h1>
+            <p class="page-lead">Your Google Calendar next to your agents' work. Add events here and they land in Google.</p>
+          </div>
+          <div class="page-actions" style="align-items:center">
+            <span id="cal-sync-pill" class="sync-pill">Not connected</span>
+            <button id="btn-cal-sync" class="btn btn-secondary hidden">Sync now</button>
+            <button id="btn-open-cal-modal" class="btn btn-primary">Connect Google Calendar</button>
+          </div>
+        </div>
+        <div id="cal-error-banner" class="gtasks-error-banner hidden"></div>
+
+        <form id="cal-create-form" class="card-panel cal-composer" autocomplete="off">
+          <input id="cal-new-title" type="text" placeholder="New event title" maxlength="200" required aria-label="Event title" />
+          <input id="cal-new-date" type="date" required aria-label="Date" />
+          <input id="cal-new-start" type="time" aria-label="Start time" />
+          <input id="cal-new-end" type="time" aria-label="End time" />
+          <label class="inline-check"><input id="cal-new-allday" type="checkbox" /> All day</label>
+          <button type="submit" class="btn btn-primary">Add event</button>
+        </form>
+
+        <div class="cal-toolbar">
+          <div class="segmented">
+            <button class="seg-btn" id="btn-cal-prev" aria-label="Previous week">←</button>
+            <button class="seg-btn" id="btn-cal-today">This week</button>
+            <button class="seg-btn" id="btn-cal-next" aria-label="Next week">→</button>
+          </div>
+          <span id="cal-range-label" class="mono muted"></span>
+        </div>
+        <div id="cal-week" class="cal-week"></div>
+      </div>
+    </section>
+
     <!-- VIEW 1: 3D OFFICE + FULL-HEIGHT TABBED SIDEBAR + DOCKED INSPECTOR -->
-    <section id="view-office" class="view-panel active office-layout">
+    <section id="view-office" class="view-panel office-layout">
       <div class="stage-wrap">
         <div id="office-3d-stage" class="office-3d-stage"></div>
         <div id="label-layer" class="label-layer"></div>
@@ -197,12 +322,12 @@
       <div class="page-container">
         <div class="page-header">
           <div>
-            <h1>Fleet Command</h1>
-            <p class="page-lead">Live check-in freshness, active tasks, and queued orders delivered on each bot's next ping.</p>
+            <h1>Agents</h1>
+            <p class="page-lead">Grok bots, n8n flows and any webhook agent. Orders go out on the next check-in, or instantly for webhook agents.</p>
           </div>
           <div class="page-actions">
             <button id="btn-fleet-connect" class="btn btn-secondary">Connect Guide</button>
-            <button id="btn-fleet-add" class="btn btn-primary">+ Add Bot</button>
+            <button id="btn-fleet-add" class="btn btn-primary">+ Add agent</button>
           </div>
         </div>
 
@@ -275,7 +400,7 @@
       <div class="page-container">
         <div class="page-header">
           <div>
-            <h1>Goals &amp; Telemetry</h1>
+            <h1>Insights</h1>
             <p class="page-lead">Track fleet throughput, run quality, token spend, and shared objectives in real time.</p>
           </div>
           <div class="page-actions">
@@ -467,12 +592,13 @@
       <div class="page-container">
         <div class="page-header">
           <div>
-            <h1>Pending Needs &amp; Approvals</h1>
-            <p class="page-lead">Review human-in-the-loop approvals, escalation alerts, and bot blockers.</p>
+            <h1>Inbox</h1>
+            <p class="page-lead">Everything waiting on you: approvals, alerts, and finished work to review.</p>
           </div>
           <div class="page-actions" style="align-items:center">
             <div class="segmented" id="needs-tab-bar" role="tablist">
-              <button class="seg-btn active" data-needs-tab="open" role="tab">Open <strong id="needs-open-count" class="mono" style="margin-left:3px">0</strong></button>
+              <button class="seg-btn active" data-needs-tab="open" role="tab">Needs you <strong id="needs-open-count" class="mono" style="margin-left:3px">0</strong></button>
+              <button class="seg-btn" data-needs-tab="review" role="tab">Review work <strong id="needs-review-count" class="mono" style="margin-left:3px">0</strong></button>
               <button class="seg-btn" data-needs-tab="history" role="tab">History <strong id="needs-history-count" class="mono" style="margin-left:3px">0</strong></button>
             </div>
             <button id="btn-approve-all" class="btn btn-approve hidden">Approve All Safe</button>
@@ -489,8 +615,8 @@
       <div class="page-container">
         <div class="page-header">
           <div>
-            <h1>Tasks &amp; Google Sync</h1>
-            <p class="page-lead">Manage Google Tasks and local tasks in one place — add, edit, complete, or dispatch any task straight to a Grok bot.</p>
+            <h1>Tasks</h1>
+            <p class="page-lead">Google Tasks and local tasks in one list. Hand any task to an agent and it checks itself off when they finish.</p>
           </div>
           <div class="page-actions" style="align-items:center">
             <span id="gtasks-sync-pill" class="sync-pill">Local only</span>
@@ -500,6 +626,33 @@
         </div>
 
         <div id="gtasks-error-banner" class="gtasks-error-banner hidden"></div>
+
+        <!-- Smart Quick-Add Task Composer -->
+        <div class="card-panel task-composer-panel">
+          <form id="task-create-form" class="task-composer">
+            <div class="task-composer-main">
+              <span class="task-composer-plus" aria-hidden="true">+</span>
+              <input id="task-create-title" type="text" placeholder="Add a task… press Enter to save immediately" required maxlength="200" autocomplete="off" />
+              <button type="submit" class="btn btn-primary task-composer-submit">Add Task</button>
+            </div>
+            <div class="task-composer-meta">
+              <div class="task-composer-chips">
+                <button type="button" class="due-quick-chip" data-quick-due="today">Today</button>
+                <button type="button" class="due-quick-chip" data-quick-due="tomorrow">Tomorrow</button>
+                <button type="button" class="due-quick-chip active" data-quick-due="none">No Date</button>
+                <input id="task-create-due" class="task-due-input" type="date" aria-label="Custom due date" title="Pick a custom due date" />
+              </div>
+              <div class="task-composer-selects">
+                <select id="task-create-list" aria-label="Task list"></select>
+                <select id="task-create-bot" aria-label="Assign to Grok bot">
+                  <option value="">No agent (personal)</option>
+                </select>
+                <button type="button" id="btn-toggle-create-notes" class="chip-btn" title="Add notes">+ Notes</button>
+              </div>
+            </div>
+            <input id="task-create-notes" class="task-composer-notes hidden" type="text" placeholder="Optional notes / details (syncs to Google Tasks)…" maxlength="1000" />
+          </form>
+        </div>
 
         <!-- Tasks KPI Strip -->
         <div class="hero-kpis fleet-kpis">
@@ -523,33 +676,6 @@
             <div id="tasks-kpi-done" class="hero-value mono">0</div>
             <div class="hero-sub">Synced with Google Tasks</div>
           </div>
-        </div>
-
-        <!-- Smart Quick-Add Task Composer -->
-        <div class="card-panel task-composer-panel">
-          <form id="task-create-form" class="task-composer">
-            <div class="task-composer-main">
-              <span class="task-composer-plus" aria-hidden="true">+</span>
-              <input id="task-create-title" type="text" placeholder="Add a task… press Enter to save immediately" required maxlength="200" autocomplete="off" />
-              <button type="submit" class="btn btn-primary task-composer-submit">Add Task</button>
-            </div>
-            <div class="task-composer-meta">
-              <div class="task-composer-chips">
-                <button type="button" class="due-quick-chip" data-quick-due="today">Today</button>
-                <button type="button" class="due-quick-chip" data-quick-due="tomorrow">Tomorrow</button>
-                <button type="button" class="due-quick-chip active" data-quick-due="none">No Date</button>
-                <input id="task-create-due" class="task-due-input" type="date" aria-label="Custom due date" title="Pick a custom due date" />
-              </div>
-              <div class="task-composer-selects">
-                <select id="task-create-list" aria-label="Task list"></select>
-                <select id="task-create-bot" aria-label="Assign to Grok bot">
-                  <option value="">Personal (no bot)</option>
-                </select>
-                <button type="button" id="btn-toggle-create-notes" class="chip-btn" title="Add notes">+ Notes</button>
-              </div>
-            </div>
-            <input id="task-create-notes" class="task-composer-notes hidden" type="text" placeholder="Optional notes / details (syncs to Google Tasks)…" maxlength="1000" />
-          </form>
         </div>
 
         <!-- List & Status Filter Bar -->
@@ -580,7 +706,7 @@
     <div class="modal-card cmd-card">
       <div class="cmd-input-row">
         <svg class="ui-ico" style="color:var(--accent)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input id="cmd-input" class="cmd-input" type="text" placeholder="Jump to a bot, switch tabs, or run an action…" autocomplete="off" />
+        <input id="cmd-input" class="cmd-input" type="text" placeholder="Search, or capture: task: … · event: … · @agent …" autocomplete="off" />
         <kbd class="cmd-esc">Esc</kbd>
       </div>
       <div id="cmd-list" class="cmd-list"></div>
@@ -628,12 +754,23 @@
     <div class="modal-backdrop"></div>
     <div class="modal-card modal-sm">
       <div class="modal-header">
-        <h3 id="add-bot-title">Add Grok Bot to Office</h3>
+        <h3 id="add-bot-title">Add an agent</h3>
         <button id="btn-close-add-bot" class="btn-icon" aria-label="Close">✕</button>
       </div>
       <form id="add-bot-form" class="settings-form">
+        <div class="kind-picker" role="radiogroup" aria-label="Agent type" id="add-bot-kind-group">
+          <button type="button" class="kind-opt active" data-kind="grok" role="radio" aria-checked="true"><strong>Grok</strong><span>Pastes a check-in link into its instructions</span></button>
+          <button type="button" class="kind-opt" data-kind="n8n" role="radio" aria-checked="false"><strong>n8n</strong><span>Webhook trigger gets tasks instantly</span></button>
+          <button type="button" class="kind-opt" data-kind="webhook" role="radio" aria-checked="false"><strong>Webhook</strong><span>Make, Zapier, or your own service</span></button>
+          <button type="button" class="kind-opt" data-kind="script" role="radio" aria-checked="false"><strong>Script / API</strong><span>Python or Node calling the API</span></button>
+        </div>
+        <input id="add-bot-kind" type="hidden" value="grok" />
+        <label id="add-bot-dispatch-wrap" class="hidden">
+          <span>Webhook URL (we POST new tasks here)</span>
+          <input id="add-bot-dispatch" type="url" placeholder="https://your-n8n.example.com/webhook/…" maxlength="500" />
+        </label>
         <label>
-          <span>Bot Name</span>
+          <span>Agent name</span>
           <input id="add-bot-name" type="text" placeholder="e.g., Atlas" required maxlength="40" />
         </label>
         <label>
@@ -641,7 +778,7 @@
           <input id="add-bot-role" type="text" placeholder="e.g., Market Research" required maxlength="48" />
         </label>
         <label>
-          <span>Grok Bot Color</span>
+          <span>Color</span>
           <div id="add-bot-colors" class="color-swatch-row"></div>
           <input id="add-bot-color" type="hidden" value="#3b93f0" />
         </label>
@@ -682,12 +819,12 @@
         </label>
         <div class="prompt-preview-box">
           <div class="prompt-preview-head">
-            <span>Paste into your Grok Bot's Instructions:</span>
-            <button type="button" class="link-btn copy-btn" data-target="add-bot-prompt-preview">Copy Prompt</button>
+            <span id="add-bot-preview-label">Paste into your Grok bot's instructions:</span>
+            <button type="button" class="link-btn copy-btn" data-target="add-bot-prompt-preview">Copy</button>
           </div>
           <pre id="add-bot-prompt-preview" class="code-block" style="margin:6px 0 0;font-size:0.74rem"></pre>
         </div>
-        <button type="submit" class="btn btn-primary" style="width:100%;margin-top:4px">Add Bot &amp; Copy Grok App Prompt</button>
+        <button type="submit" class="btn btn-primary" style="width:100%;margin-top:4px">Add agent &amp; copy setup</button>
       </form>
     </div>
   </div>
@@ -697,7 +834,7 @@
     <div class="modal-backdrop"></div>
     <div class="modal-card">
       <div class="modal-header">
-        <h3 id="connect-title">Connect Your Grok Bots</h3>
+        <h3 id="connect-title">Connect your agents</h3>
         <button id="btn-close-connect" class="btn-icon" aria-label="Close">✕</button>
       </div>
       <div class="modal-body">
@@ -710,6 +847,13 @@
           <p class="muted">Paste this at the bottom of the bot's instructions. Each fetch updates the Fleet board. The JSON that comes back is the bot's next order: a task, a decision, a goal, or a budget stop.</p>
           <pre id="ping-snippet" class="code-block"></pre>
           <button class="btn btn-secondary copy-btn" data-target="ping-snippet">Copy Grok App Instructions</button>
+        </div>
+
+        <div class="connect-opt">
+          <h4>n8n, Make, Zapier or any webhook agent</h4>
+          <p class="muted">Give the agent a webhook URL in Agents → Add agent. New tasks are POSTed there right away as JSON with <code>task</code>, <code>reportUrl</code> and <code>doneUrl</code>. When the flow finishes, call <code>doneUrl</code> (add <code>&amp;out=LINK&amp;result=ONE_LINE</code>) and the linked task checks itself off.</p>
+          <pre id="n8n-snippet" class="code-block"></pre>
+          <button class="btn btn-secondary copy-btn" data-target="n8n-snippet">Copy example</button>
         </div>
 
         <div class="connect-opt">
@@ -788,7 +932,7 @@
             <li>In the left sidebar next to <strong>Services</strong>, click <strong>+</strong> → select <strong>Tasks API</strong> → click <strong>Add</strong>.</li>
             <li>Click <strong>Deploy → New deployment</strong> → gear icon → <strong>Web app</strong> → set <strong>Execute as: Me</strong> and <strong>Who has access: Anyone</strong> → click <strong>Deploy</strong>, authorize once, and copy the Web App URL.</li>
           </ol>
-          <p class="muted" style="margin:8px 0 0">The web app is public. The bridge secret is created in this page and kept in this browser (<code>grok_hq_gtasks_secret</code>) and in the office database. This is safe only while the Grok Bot HQ password is the only way in.</p>
+          <p class="muted" style="margin:8px 0 0">The web app is public, so the secret is what protects it. It is generated fresh here and stored only in your office database, never in this browser.</p>
         </div>
 
         <div class="connect-opt">
@@ -799,8 +943,8 @@
               <input id="gtasks-url-input" type="url" placeholder="https://script.google.com/macros/s/AKfycb.../exec" required />
             </label>
             <label>
-              <span>Shared Secret (auto-embedded in Step 1 script above)</span>
-              <input id="gtasks-secret-input" type="text" required autocomplete="off" />
+              <span>Shared secret (already in the script above; leave as-is)</span>
+              <input id="gtasks-secret-input" type="text" autocomplete="off" />
             </label>
             <div style="display:flex;gap:9px;margin-top:4px">
               <button id="btn-gtasks-submit" type="submit" class="btn btn-primary" style="flex:1">Connect &amp; Sync Google Tasks</button>
@@ -812,8 +956,51 @@
     </div>
   </div>
 
-  <script src="/office3d.bundle.js?v=9"></script>
-  <script src="/grokPrompt.js?v=9"></script>
-  <script src="/app.js?v=9"></script>
+  <!-- Connect Google Calendar Modal (Apps Script bridge, no OAuth app needed) -->
+  <div id="cal-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="Connect Google Calendar">
+    <div class="modal-backdrop"></div>
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h3>Connect Google Calendar</h3>
+        <button id="btn-close-cal" class="btn-icon" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="muted" style="margin-top:0">Same private bridge pattern as Google Tasks. Your calendar data goes from Google straight to your own office, refreshing every 5 minutes.</p>
+        <div class="connect-opt">
+          <div class="prompt-preview-head" style="margin-bottom:8px">
+            <h4 style="margin:0">Step 1: copy your bridge script</h4>
+            <div style="display:flex;gap:8px;align-items:center">
+              <a class="btn btn-secondary" href="https://script.google.com/home/start" target="_blank" rel="noopener noreferrer" style="padding:5px 10px;font-size:0.75rem;text-decoration:none">Open Apps Script ↗</a>
+              <button type="button" class="btn btn-primary copy-btn" data-target="cal-script-code" style="padding:5px 11px;font-size:0.75rem">Copy script</button>
+            </div>
+          </div>
+          <pre id="cal-script-code" class="code-block" style="max-height:175px;overflow:auto"></pre>
+        </div>
+        <div class="connect-opt">
+          <h4>Step 2: deploy it once</h4>
+          <ol class="gtasks-steps">
+            <li>At <code>script.google.com</code> click <strong>New project</strong> and paste the script over the default code.</li>
+            <li><strong>Deploy → New deployment → Web app</strong>. Set <strong>Execute as: Me</strong> and <strong>Who has access: Anyone</strong>. Authorize once and copy the Web App URL.</li>
+          </ol>
+          <p class="muted" style="margin:8px 0 0">The secret below is baked into the script and saved only in your office database, never in this browser.</p>
+        </div>
+        <div class="connect-opt">
+          <h4>Step 3: paste the URL and connect</h4>
+          <form id="cal-config-form" class="settings-form">
+            <label><span>Apps Script Web App URL</span><input id="cal-url-input" type="url" placeholder="https://script.google.com/macros/s/AKfycb.../exec" required /></label>
+            <label><span>Shared secret (already in the script above)</span><input id="cal-secret-input" type="text" autocomplete="off" /></label>
+            <div style="display:flex;gap:9px;margin-top:4px">
+              <button id="btn-cal-submit" type="submit" class="btn btn-primary" style="flex:1">Connect &amp; sync</button>
+              <button id="btn-cal-disconnect" type="button" class="btn btn-reject hidden">Disconnect</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/grokPrompt.js?v=10"></script>
+  <script src="/quickCapture.js?v=10"></script>
+  <script src="/app.js?v=10"></script>
 </body>
 </html>
