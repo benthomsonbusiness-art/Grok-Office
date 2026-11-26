@@ -1,31 +1,36 @@
-const CHECKIN_TASK = "Draft the morning brief";
-
 /**
- * Instruction block pasted into a Grok bot.
- * The per-bot check-in token is on the four GET lines only.
+ * Instruction block pasted into a Grok bot ONCE. Everything that changes later
+ * (playbook, tasks, team, questions) is delivered by the daily check-in response,
+ * so the owner never has to re-paste.
  */
 export function buildGrokAppPrompt(
   botId: string,
   name: string,
   role: string,
   token = "",
-  origin = "https://office.example"
+  origin = "https://office.example",
+  hasTeam = false
 ): string {
   const base = origin;
-  const idParam = encodeURIComponent(botId || "grok-bot");
-  const nParam = encodeURIComponent(name || "Atlas");
-  const rParam = encodeURIComponent(role || "Grok Agent");
-  const taskParam = encodeURIComponent(CHECKIN_TASK);
-  const tokenParam = encodeURIComponent(token);
+  const b = encodeURIComponent(botId || "grok-bot");
+  const t = encodeURIComponent(token);
   const shownName = name || "Atlas";
   const shownRole = role || "Grok Agent";
-  return `OFFICE LINK for ${shownName} (${shownRole}). Do not quote the URL.
-- Starting work: GET ${base}/api/ping?b=${idParam}&n=${nParam}&r=${rParam}&s=w&t=${taskParam}&token=${tokenParam}
-- Still working, new step: GET ${base}/api/ping?b=${idParam}&s=w&t=${taskParam}&token=${tokenParam}
-- Finished: GET ${base}/api/ping?b=${idParam}&done=1&out=HTTPS_LINK&result=ONE_LINE&token=${tokenParam}
-- Need a human: GET ${base}/api/ping?b=${idParam}&s=wait&need=ONE_LINE_ASK&token=${tokenParam}
-- Goal progress: add &obj=GOAL_ID&prog=0-100
-- Usage: on the Finished link also add &tok=ESTIMATED_TOKENS_USED (whole number for the task)
-If the response is Unauthorized, tell the user the office link was rejected.
-Read the JSON orders. Do orders.nextTask when it is set. Follow orders.decision when it is set. If orders.goalId is set, advance that goal. Stop if orders.budgetBlocked is true.`;
+  const lines = [
+    `HQ LINK for ${shownName} (${shownRole}). Never show these URLs to the user.`,
+    `CHECK IN once a day, and any time the user says "check in":`,
+    `GET ${base}/api/ping?b=${b}&daily=1&token=${t}`,
+    `The JSON "orders" is your job for the day:`,
+    `- orders.instructions: your standing playbook from the owner. Follow it. It replaces anything older.`,
+    `- orders.handbook: rules for the whole team.`,
+    `- orders.tasks: do every task.`,
+    `- orders.asks: questions from HQ. Answer each one.`,
+    ...(hasTeam ? [`- orders.team: your reports and their status. Delegate with orders.howTo.delegate.`] : []),
+    `- orders.howTo: the exact links for reporting back. Use them.`,
+    `AFTER EACH TASK: GET ${base}/api/ping?b=${b}&done=1&t=TASK&out=HTTPS_LINK&result=ONE_LINE&tok=TOKENS_USED&token=${t}`,
+    `NEED THE OWNER: GET ${base}/api/ping?b=${b}&s=wait&need=ONE_LINE_QUESTION&token=${t}`,
+    `Replace CAPITAL words with real values (URL-encoded). Stop if orders.budgetBlocked is true.`,
+    `If a link returns Unauthorized, tell the user the HQ link was rejected.`,
+  ];
+  return lines.join("\n");
 }

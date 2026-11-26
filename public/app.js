@@ -1358,12 +1358,21 @@
     if (histCntEl) histCntEl.textContent = String(historyNeeds.length);
 
     const reviewRuns = runsToReview();
+    const answers = unreadAnswers();
     const reviewCntEl = document.getElementById("needs-review-count");
-    if (reviewCntEl) reviewCntEl.textContent = String(reviewRuns.length);
+    if (reviewCntEl) reviewCntEl.textContent = String(reviewRuns.length + answers.length);
+    const proposalsEl = document.getElementById("inbox-proposals");
+    if (proposalsEl) {
+      const html = needsTab === "open" ? inboxProposalsHtml() : "";
+      proposalsEl.innerHTML = html;
+      proposalsEl.classList.toggle("hidden", !html);
+    }
+    const openCnt = document.getElementById("needs-open-count");
+    if (openCnt) openCnt.textContent = String(openNeeds.length + (snapshot.routines || []).filter((r) => r.status === "proposed").length);
     const grid = document.getElementById("needs-grid");
     if (needsTab === "review") {
-      grid.innerHTML = reviewRuns.length
-        ? reviewRuns.map((r) => reviewCardHtml(r, bots)).join("")
+      grid.innerHTML = reviewRuns.length || answers.length
+        ? answersHtml(bots) + reviewRuns.map((r) => reviewCardHtml(r, bots)).join("")
         : emptyStateHtml({
             icon: ICONS.check,
             title: "Nothing to review",
@@ -1372,6 +1381,10 @@
       return;
     }
     const visible = needsTab === "history" ? historyNeeds : openNeeds;
+    if (visible.length === 0 && needsTab === "open" && (snapshot.routines || []).some((r) => r.status === "proposed")) {
+      grid.innerHTML = "";
+      return;
+    }
     if (visible.length === 0) {
       grid.innerHTML = emptyStateHtml({
         icon: ICONS.check,
@@ -1696,7 +1709,8 @@
     items.push(
       { group: "Actions", title: "Connect Google Tasks", subtitle: "Two-way auto-sync via private Apps Script bridge", iconHtml: `<span class="kpi-ico">${ICONS.check}</span>`, keywords: "google tasks sync connect import calendar", run: () => openGTasksModal() },
       { group: "Actions", title: "Add an agent", subtitle: "Grok, n8n, webhook or script", iconHtml: `<span class="kpi-ico">${ICONS.plus}</span>`, keywords: "add new create bot grok agent n8n webhook", run: () => openAddBotModal() },
-      { group: "Actions", title: "Connect Google Calendar", subtitle: "Private Apps Script bridge", iconHtml: `<span class="kpi-ico">${ICONS.target}</span>`, keywords: "google calendar connect events", run: () => openCalModal() },
+      { group: "Actions", title: "Phone notifications", subtitle: "Approvals and your morning brief on your phone (ntfy)", iconHtml: `<span class="kpi-ico">${ICONS.bell}</span>`, keywords: "phone notifications push ntfy alerts brief", run: () => openPhoneModal() },
+      { group: "Actions", title: "Connect Google Calendar", subtitle: "Paste your calendar's secret link", iconHtml: `<span class="kpi-ico">${ICONS.target}</span>`, keywords: "google calendar connect events", run: () => openCalModal() },
       { group: "Actions", title: "Connect Guide", subtitle: "View Grok App prompt & SDK proxy snippets", iconHtml: `<span class="kpi-ico">${ICONS.link}</span>`, keywords: "connect prompt instructions proxy sdk", run: () => openConnectModal() },
       { group: "Actions", title: "Guardrails & Alerts", subtitle: "Budget caps, circuit-breaker, Discord/Slack webhook", iconHtml: `<span class="kpi-ico">${ICONS.sliders}</span>`, keywords: "guardrails settings budget cap webhook alerts", run: () => openGuardrailsModal() },
       { group: "Actions", title: soundEnabled ? "Mute Alert Chime" : "Enable Alert Chime", subtitle: "Toggle audio notification for approvals & errors", iconHtml: `<span class="kpi-ico">${soundEnabled ? ICONS.volOff : ICONS.volOn}</span>`, keywords: "sound chime audio mute alert", run: () => soundBtn?.click() },
@@ -2049,7 +2063,8 @@
   }
 
   function buildGrokAppPrompt(botId, name, role, token) {
-    return GrokPrompt.buildGrokAppPrompt(botId, name, role, token || "", location.origin);
+    const hasTeam = (snapshot?.bots || []).some((b) => b.reportsTo === botId);
+    return GrokPrompt.buildGrokAppPrompt(botId, name, role, token || "", location.origin, hasTeam);
   }
 
   function effectiveLink(bot) {
@@ -2076,6 +2091,12 @@
     if (!grid || !snapshot) return;
     renderOrgChart();
     renderArchived();
+    renderRoutines();
+    const hb = document.getElementById("handbook-text");
+    if (hb && document.activeElement !== hb && hb.dataset.loaded !== "1") {
+      hb.value = snapshot.handbook || "";
+      hb.dataset.loaded = "1";
+    }
     const bots = snapshot.bots || [];
     const needs = snapshot.pendingNeeds || [];
     const openNeeds = needs.filter((n) => n.status === "open");
@@ -3543,8 +3564,12 @@ Every response includes orders.nextTask: run it next.`;
     const bots = snapshot.bots || [];
     const healthy = bots.filter((b) => ["fresh", "standby"].includes(effectiveLink(b))).length;
     const openNeeds = (snapshot.pendingNeeds || []).filter((n) => n.status === "open").length;
-    const review = runsToReview().length;
+    const review =
+      runsToReview().length +
+      (snapshot.asks || []).filter((a) => a.status === "answered" && !a.acknowledged).length +
+      (snapshot.routines || []).filter((r) => r.status === "proposed").length;
     const budget = Math.round(snapshot.usageSummary?.usageRemainingPct ?? 100);
+    document.getElementById("phone-dot")?.classList.toggle("hidden", Boolean(snapshot.notify?.enabled));
     const set = (id, v) => {
       const el = document.getElementById(id);
       if (el) el.textContent = v;
@@ -4466,6 +4491,7 @@ function out(obj) {
   function setModalMode(mode) {
     const isEdit = mode === "edit";
     editExtra?.classList.toggle("hidden", !isEdit);
+    document.getElementById("edit-bot-playbook")?.classList.toggle("hidden", !isEdit);
     document.getElementById("add-bot-status-wrap")?.classList.toggle("hidden", isEdit);
     if (addBotSubmit) addBotSubmit.textContent = isEdit ? "Save changes" : "Add agent & copy setup";
   }
@@ -4511,6 +4537,11 @@ function out(obj) {
       addBotDispatchInput.placeholder = b.dispatchConfigured ? `Saved (${b.dispatchHost}). Leave blank to keep.` : "https://your-n8n.example.com/webhook/…";
     }
     addBotPreview.textContent = setupTextForKind(b.agentKind || "grok", b.id, b.name, b.role, b.checkinToken || "");
+    const instr = document.getElementById("edit-bot-instructions");
+    if (instr) instr.value = b.instructions || "";
+    const upd = document.getElementById("playbook-updated");
+    if (upd) upd.textContent = b.instructionsUpdatedAt ? `· updated ${timeAgo(b.instructionsUpdatedAt)}` : "";
+    renderEditAsks(botId);
     addBotModal.classList.remove("hidden");
     addBotNameInput.focus();
   }
@@ -4537,6 +4568,7 @@ function out(obj) {
         model: document.getElementById("add-bot-model").value,
         expectedIntervalMinutes: Number(document.getElementById("add-bot-sla").value || 0),
         agentKind: kind,
+        instructions: document.getElementById("edit-bot-instructions")?.value ?? undefined,
         enqueue: false,
       };
       if (typedUrl) body.dispatchUrl = typedUrl;
@@ -4696,6 +4728,291 @@ function out(obj) {
               .join("")}</div><div class="trend-axis mono"><span>${esc(days[0].day.slice(5))}</span><span>max ${esc(fmtV(max))}</span><span>today</span></div>`;
     }
   }
+
+  // =========================================================================
+  // ROUTINES
+  // =========================================================================
+  const routineFreq = document.getElementById("routine-freq");
+  const routineDays = document.getElementById("routine-days");
+  const routineMday = document.getElementById("routine-mday");
+  if (routineMday) {
+    routineMday.innerHTML =
+      Array.from({ length: 28 }, (_, i) => `<option value="${i + 1}">${i + 1}</option>`).join("") + `<option value="last">Last day</option>`;
+  }
+  routineFreq?.addEventListener("change", () => {
+    routineDays?.classList.toggle("hidden", routineFreq.value !== "weekly");
+    routineMday?.classList.toggle("hidden", routineFreq.value !== "monthly");
+  });
+
+  function routineScheduleText() {
+    const time = document.getElementById("routine-time").value || "07:00";
+    const f = routineFreq.value;
+    if (f === "weekly") {
+      const days = [...routineDays.querySelectorAll("input:checked")].map((i) => i.value);
+      return `${(days.length ? days : ["mon"]).join(",")} ${time}`;
+    }
+    if (f === "monthly") return `monthly ${routineMday.value} ${time}`;
+    return `${f} ${time}`;
+  }
+
+  function fillRoutineBotSelect() {
+    const sel = document.getElementById("routine-bot");
+    if (!sel || isEditingInside(document.getElementById("routine-form"))) return;
+    const cur = sel.value;
+    sel.innerHTML = (snapshot?.bots || [])
+      .filter((b) => !b.placeholder)
+      .map((b) => `<option value="${esc(b.id)}">${esc(b.name)}${b.orgTitle ? ` · ${esc(b.orgTitle)}` : ""}</option>`)
+      .join("");
+    if (cur) sel.value = cur;
+  }
+
+  function fmtWhen(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    const today = localDateKey(new Date());
+    const key = localDateKey(d);
+    const day = key === today ? "today" : key === localDateKey(new Date(Date.now() + 86400000)) ? "tomorrow" : d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+    return `${day} ${fmtClock(d)}`;
+  }
+
+  function renderRoutines() {
+    const list = document.getElementById("routines-list");
+    if (!list || !snapshot) return;
+    fillRoutineBotSelect();
+    const tzEl = document.getElementById("routines-tz");
+    if (tzEl) tzEl.textContent = (snapshot.timeZone || "America/New_York").replace("_", " ");
+    const all = (snapshot.routines || []).filter((r) => r.status !== "proposed");
+    const proposed = (snapshot.routines || []).filter((r) => r.status === "proposed");
+    document.getElementById("routines-count").textContent = String(all.length);
+    const rows = all
+      .map(
+        (r) => `<div class="routine-row ${r.status === "paused" ? "paused" : ""}">
+        <div class="routine-main">
+          <div class="t-title">${esc(r.title)}</div>
+          <div class="t-sub"><strong>${esc(r.botName)}</strong> · ${esc(r.scheduleLabel)}${r.status === "paused" ? " · paused" : ` · next ${esc(fmtWhen(r.nextRunAt))}`}${r.source === "agent" && r.proposedBy ? ` · suggested by ${esc(r.proposedBy)}` : ""}</div>
+        </div>
+        <div class="routine-actions">
+          <button class="mini-btn" data-routine-run="${esc(r.id)}" title="Queue it now">Run now</button>
+          <button class="mini-btn" data-routine-toggle="${esc(r.id)}" data-next="${r.status === "paused" ? "active" : "paused"}">${r.status === "paused" ? "Resume" : "Pause"}</button>
+          <button class="mini-btn no" data-routine-delete="${esc(r.id)}" title="Delete routine">Delete</button>
+        </div>
+      </div>`
+      )
+      .join("");
+    list.innerHTML =
+      (proposed.length
+        ? `<div class="routine-proposed-note">${proposed.length} suggested routine${proposed.length === 1 ? "" : "s"} waiting in your <button class="link-btn" data-view="needs">Inbox</button></div>`
+        : "") + (rows || `<div class="t-empty">No routines yet. Add one above, or ask Jared to suggest them.</div>`);
+  }
+
+  document.getElementById("routine-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const botId = document.getElementById("routine-bot").value;
+    const title = document.getElementById("routine-title").value.trim();
+    if (!botId || !title) return;
+    const res = await apiFetch("/api/routines", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ botId, title, schedule: routineScheduleText() }) }, "Could not add routine");
+    if (res.ok) {
+      const d = await res.json().catch(() => ({}));
+      document.getElementById("routine-title").value = "";
+      showToast(`Routine added: ${d.schedule || ""}`, "success");
+    }
+  });
+
+  async function patchRoutine(id, body, okMsg) {
+    const res = await apiFetch(`/api/routines/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }, "Could not update routine");
+    if (res.ok && okMsg) showToast(okMsg, "success");
+  }
+
+  document.addEventListener("click", async (e) => {
+    const run = e.target.closest("[data-routine-run]");
+    if (run) {
+      const res = await apiFetch(`/api/routines/${encodeURIComponent(run.dataset.routineRun)}/run`, { method: "POST" }, "Could not queue routine");
+      if (res.ok) showToast("Queued for the agent's next check-in", "success");
+      return;
+    }
+    const tog = e.target.closest("[data-routine-toggle]");
+    if (tog) return patchRoutine(tog.dataset.routineToggle, { status: tog.dataset.next }, tog.dataset.next === "paused" ? "Routine paused" : "Routine resumed");
+    const del = e.target.closest("[data-routine-delete]");
+    if (del) {
+      const ok = await askConfirm({ title: "Delete routine?", message: "It stops being scheduled. Tasks already queued stay queued.", confirmLabel: "Delete", danger: true });
+      if (!ok) return;
+      const res = await apiFetch(`/api/routines/${encodeURIComponent(del.dataset.routineDelete)}`, { method: "DELETE" }, "Could not delete routine");
+      if (res.ok) showToast("Routine deleted", "info");
+      return;
+    }
+    const approve = e.target.closest("[data-routine-approve]");
+    if (approve) return patchRoutine(approve.dataset.routineApprove, { status: "active" }, "Routine approved");
+    const reject = e.target.closest("[data-routine-reject]");
+    if (reject) return patchRoutine(reject.dataset.routineReject, { status: "rejected" }, "Suggestion dismissed");
+    if (e.target.closest("#btn-approve-routines")) {
+      const res = await apiFetch("/api/routines/approve-all", { method: "POST" }, "Could not approve routines");
+      if (res.ok) showToast("All suggested routines approved", "success");
+      return;
+    }
+    const ack = e.target.closest("[data-ack-ask]");
+    if (ack) {
+      await apiFetch(`/api/asks/${encodeURIComponent(ack.dataset.ackAsk)}/ack`, { method: "POST" }, "Could not update");
+      return;
+    }
+  });
+
+  function inboxProposalsHtml() {
+    const proposed = (snapshot?.routines || []).filter((r) => r.status === "proposed");
+    if (!proposed.length) return "";
+    return `<div class="card-panel proposals-card">
+      <div class="card-panel-head"><h3>Suggested routines <span class="count-pill mono">${proposed.length}</span></h3>${proposed.length > 1 ? `<button id="btn-approve-routines" class="btn btn-approve">Approve all</button>` : ""}</div>
+      ${proposed
+        .map(
+          (r) => `<div class="routine-row">
+          <div class="routine-main"><div class="t-title">${esc(r.title)}</div><div class="t-sub"><strong>${esc(r.botName)}</strong> · ${esc(r.scheduleLabel)}${r.proposedBy ? ` · from ${esc(r.proposedBy)}` : ""}</div></div>
+          <div class="routine-actions"><button class="mini-btn ok" data-routine-approve="${esc(r.id)}">Approve</button><button class="mini-btn no" data-routine-reject="${esc(r.id)}">Dismiss</button></div>
+        </div>`
+        )
+        .join("")}
+    </div>`;
+  }
+
+  function unreadAnswers() {
+    return (snapshot?.asks || []).filter((a) => a.status === "answered" && !a.acknowledged);
+  }
+
+  function answersHtml(bots) {
+    return unreadAnswers()
+      .map((a) => {
+        const b = bots.find((x) => x.id === a.botId);
+        return `<div class="need-card review-card answer-card">
+          <div class="need-head"><div class="need-bot-row">${miniGrokIcon(b?.avatarColor || "#9b8cff", false)}<div style="min-width:0"><div class="need-title">${esc(b?.name || a.botId)} answered</div><div class="need-age">You asked: ${esc(a.question)}</div></div></div><span class="st-pill st-meeting">answer</span></div>
+          <div class="need-desc answer-text">${esc(a.answer || "")}</div>
+          <div class="need-actions review-actions"><span class="spacer"></span><button class="btn btn-secondary" data-ack-ask="${esc(a.id)}">Got it</button></div>
+        </div>`;
+      })
+      .join("");
+  }
+
+  // =========================================================================
+  // PLAYBOOK + ASK (edit agent dialog) and TEAM HANDBOOK
+  // =========================================================================
+  function renderEditAsks(botId) {
+    const el = document.getElementById("edit-bot-asks");
+    if (!el) return;
+    const asks = (snapshot?.asks || []).filter((a) => a.botId === botId).slice(0, 5);
+    el.innerHTML = asks
+      .map(
+        (a) => `<div class="ask-item"><div class="ask-q">${esc(a.question)}</div><div class="ask-a ${a.status === "answered" ? "" : "pending"}">${
+          a.status === "answered" ? esc(a.answer || "") : a.deliveredAt ? "Delivered, waiting for an answer" : "Waiting for the next check-in"
+        }</div></div>`
+      )
+      .join("");
+  }
+
+  document.getElementById("btn-edit-ask")?.addEventListener("click", async () => {
+    const input = document.getElementById("edit-bot-ask");
+    const q = input.value.trim();
+    if (!q || !editingBotId) return;
+    const res = await apiFetch("/api/asks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ botId: editingBotId, question: q }) }, "Could not send question");
+    if (res.ok) {
+      input.value = "";
+      showToast("Question queued. It goes out on the agent's next check-in.", "success");
+    }
+  });
+
+  document.getElementById("btn-save-handbook")?.addEventListener("click", async () => {
+    const text = document.getElementById("handbook-text").value;
+    const res = await apiFetch("/api/handbook", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) }, "Could not save handbook");
+    if (res.ok) showToast("Handbook saved. Every agent gets it on its next check-in.", "success");
+  });
+
+  // =========================================================================
+  // PHONE NOTIFICATIONS (ntfy) + INSTALLABLE APP
+  // =========================================================================
+  const phoneModal = document.getElementById("phone-modal");
+  function fillPhoneModal() {
+    const n = snapshot?.notify || {};
+    document.getElementById("phone-enabled").checked = Boolean(n.enabled);
+    document.getElementById("phone-finished").checked = n.finished !== false;
+    document.getElementById("phone-brief").value = n.briefTime || "07:30";
+    document.getElementById("phone-server").value = n.server && n.server !== "https://ntfy.sh" ? n.server : "";
+    const topic = n.topic || "";
+    document.getElementById("phone-topic").textContent = topic || "Turn on notifications to create it";
+    const link = document.getElementById("phone-topic-link");
+    if (link) {
+      const server = n.server || "https://ntfy.sh";
+      link.textContent = topic ? `${server.replace(/^https:\/\//, "")}/${topic}` : "";
+      link.href = topic ? `${server}/${topic}` : "#";
+    }
+  }
+  function openPhoneModal() {
+    fillPhoneModal();
+    phoneModal?.classList.remove("hidden");
+  }
+  document.getElementById("btn-phone-setup")?.addEventListener("click", openPhoneModal);
+  document.getElementById("btn-close-phone")?.addEventListener("click", () => phoneModal.classList.add("hidden"));
+  phoneModal?.querySelector(".modal-backdrop")?.addEventListener("click", () => phoneModal.classList.add("hidden"));
+
+  async function savePhone(extra = {}) {
+    const body = {
+      enabled: document.getElementById("phone-enabled").checked,
+      finished: document.getElementById("phone-finished").checked,
+      briefTime: document.getElementById("phone-brief").value || "",
+      ...extra,
+    };
+    const server = document.getElementById("phone-server").value.trim();
+    if (server) body.server = server;
+    const res = await apiFetch("/api/notify/config", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }, "Could not save notification settings");
+    if (res.ok) {
+      const d = await res.json().catch(() => ({}));
+      if (snapshot && d.notify) snapshot.notify = d.notify;
+      fillPhoneModal();
+    }
+    return res.ok;
+  }
+  document.getElementById("phone-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (await savePhone()) showToast("Notification settings saved", "success");
+  });
+  document.getElementById("phone-enabled")?.addEventListener("change", () => savePhone());
+  document.getElementById("btn-phone-test")?.addEventListener("click", async () => {
+    if (!snapshot?.notify?.topic) {
+      document.getElementById("phone-enabled").checked = true;
+      await savePhone();
+    }
+    const res = await apiFetch("/api/notify/test", { method: "POST" }, "Test notification failed");
+    if (res.ok) showToast("Test sent. Check your phone.", "success");
+  });
+  document.getElementById("btn-phone-brief")?.addEventListener("click", async () => {
+    const res = await apiFetch("/api/notify/brief", { method: "POST" }, "Could not send brief");
+    if (res.ok) showToast("Morning brief sent", "success");
+  });
+  document.getElementById("btn-phone-newtopic")?.addEventListener("click", async () => {
+    const ok = await askConfirm({ title: "Make a new channel?", message: "Your phone stops getting alerts until you subscribe to the new channel name in ntfy.", confirmLabel: "Make new channel", danger: false });
+    if (ok && (await savePhone({ newTopic: true }))) showToast("New channel created. Subscribe to it in ntfy.", "info");
+  });
+  document.getElementById("btn-copy-topic")?.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(snapshot?.notify?.topic || "");
+      showToast("Channel name copied", "success");
+    } catch {
+      showToast("Clipboard permission blocked", "error");
+    }
+  });
+
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+  }
+
+  // Deep links from notifications: /#needs, /#today, ...
+  function viewFromHash() {
+    const h = (location.hash || "").replace("#", "");
+    const alias = { inbox: "needs", agents: "fleet", insights: "metrics" };
+    const v = alias[h] || h;
+    return VIEWS.includes(v) ? v : null;
+  }
+  const hashView = viewFromHash();
+  if (hashView) activeView = hashView;
+  window.addEventListener("hashchange", () => {
+    const v = viewFromHash();
+    if (v) switchView(v);
+  });
 
   applyAgentsView();
   switchView(activeView);

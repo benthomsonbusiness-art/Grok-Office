@@ -14,10 +14,11 @@ const embeddedAssets = {
     if (path === "/") path = "/index.html";
     const asset = EMBEDDED_ASSETS[path];
     if (!asset) return new Response("Not found", { status: 404, headers: { "content-type": "text/plain" } });
-    return new Response(req.method === "HEAD" ? null : asset.body, {
+    const body = asset.base64 ? Uint8Array.from(atob(asset.body), (c) => c.charCodeAt(0)) : asset.body;
+    return new Response(req.method === "HEAD" ? null : body, {
       headers: {
         "content-type": asset.type,
-        "cache-control": path === "/index.html" ? "no-cache" : "public, max-age=300",
+        "cache-control": path === "/index.html" || path === "/sw.js" ? "no-cache" : "public, max-age=300",
       },
     });
   },

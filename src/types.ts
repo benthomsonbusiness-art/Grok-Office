@@ -84,6 +84,8 @@ export interface BotRecord {
   reportsTo: string | null;
   orgTitle: string;
   placeholder: boolean;
+  instructions: string;
+  instructionsUpdatedAt: string | null;
 }
 
 export interface PendingNeed {
@@ -189,6 +191,11 @@ export interface OfficeSnapshot {
   taskLists: GoogleTaskList[];
   tasks: GoogleTaskItem[];
   googleTasksSync: GoogleTasksSyncState;
+  routines: Array<Record<string, unknown>>;
+  asks: Array<Record<string, unknown>>;
+  notify: Record<string, unknown>;
+  handbook: string;
+  timeZone: string;
   usageTodayByBot: Record<string, { tokens: number; costUsd: number; requests: number }>;
   archivedBots: Array<{ id: string; name: string; role: string; avatarColor: string; lastSeenAt: string }>;
   calendar: {

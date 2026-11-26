@@ -27,6 +27,8 @@ import {
   parseNewEvent,
 } from "./calendar";
 import { feedLabel, normalizeFeedUrl, parseIcs } from "./ics";
+import { describeSchedule, isValidTimeZone, nextRunAfter, parseSchedule, scheduleToText, localParts } from "./routines";
+import { actionUrl, clip, isValidTopic, normalizeServer, randomTopic, verifyAction, type NtfyMessage } from "./notify";
 import {
   type AgentKind,
   buildDispatchPayload,
@@ -355,7 +357,33 @@ export class OfficeHub extends DurableObject<Env> {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS routines (
+        id TEXT PRIMARY KEY,
+        bot_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        schedule TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        source TEXT NOT NULL DEFAULT 'owner',
+        proposed_by TEXT,
+        last_run_at TEXT,
+        next_run_at TEXT,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS agent_asks (
+        id TEXT PRIMARY KEY,
+        bot_id TEXT NOT NULL,
+        question TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        answer TEXT,
+        delivered_at TEXT,
+        answered_at TEXT,
+        acknowledged INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_cal_start ON calendar_events(start_at);
+      CREATE INDEX IF NOT EXISTS idx_routines_next ON routines(status, next_run_at);
       CREATE INDEX IF NOT EXISTS idx_needs_status ON pending_needs(status, created_at);
       CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at);
       CREATE INDEX IF NOT EXISTS idx_logs_created ON activity_logs(created_at);
@@ -404,6 +432,22 @@ export class OfficeHub extends DurableObject<Env> {
     if (!botCols.includes("archived")) {
       this.sql.exec("ALTER TABLE bots ADD COLUMN archived INTEGER NOT NULL DEFAULT 0");
     }
+    if (!botCols.includes("instructions")) {
+      this.sql.exec("ALTER TABLE bots ADD COLUMN instructions TEXT NOT NULL DEFAULT ''");
+    }
+    if (!botCols.includes("instructions_updated_at")) {
+      this.sql.exec("ALTER TABLE bots ADD COLUMN instructions_updated_at TEXT");
+    }
+    const queueCols = this.sql
+      .exec<{ name: string }>("PRAGMA table_info(task_queue)")
+      .toArray()
+      .map((c) => c.name);
+    if (!queueCols.includes("from_bot_id")) {
+      this.sql.exec("ALTER TABLE task_queue ADD COLUMN from_bot_id TEXT");
+    }
+    if (!queueCols.includes("source")) {
+      this.sql.exec("ALTER TABLE task_queue ADD COLUMN source TEXT NOT NULL DEFAULT 'owner'");
+    }
     if (!botCols.includes("placeholder")) {
       this.sql.exec("ALTER TABLE bots ADD COLUMN placeholder INTEGER NOT NULL DEFAULT 0");
     }
@@ -415,6 +459,7 @@ export class OfficeHub extends DurableObject<Env> {
       this.sql.exec("ALTER TABLE google_tasks ADD COLUMN sync_pending INTEGER NOT NULL DEFAULT 0");
     }
     this.applyOrgChartV1();
+    this.applyDailyCheckinV1();
     // Pushes cannot be in flight after a restart; return them to the queue.
     this.sql.exec("UPDATE task_queue SET status = 'queued' WHERE status = 'pushing'");
     const missingTokens = this.sql
@@ -585,7 +630,8 @@ export class OfficeHub extends DurableObject<Env> {
       if (bot.expected_interval_min > 0) {
         needNextAlarm = true;
         const slaCutoff = nowMs - bot.expected_interval_min * 60_000;
-        if (lastSeen < slaCutoff && bot.sla_alerted === 0) {
+        const graceUntil = Date.parse(this.getSettingValue("sla_grace_until") || "") || 0;
+        if (lastSeen < slaCutoff && bot.sla_alerted === 0 && nowMs > graceUntil) {
           const title = `Missed scheduled check-in (${bot.expected_interval_min}m SLA)`;
           const desc = `${bot.name} has not checked in for over ${bot.expected_interval_min} minutes.`;
           this.sql.exec(
@@ -671,6 +717,19 @@ export class OfficeHub extends DurableObject<Env> {
       }
     }
 
+    if (this.runDueRoutines(nowMs)) changed = true;
+    const hasRoutines = (this.sql.exec<{ c: number }>("SELECT COUNT(*) as c FROM routines WHERE status = 'active'").one()?.c ?? 0) > 0;
+    if (hasRoutines) needNextAlarm = true;
+    if (this.getSettingValue("notify_enabled") === "1") {
+      needNextAlarm = true;
+      try {
+        await this.flushNotifications();
+        await this.maybeSendMorningBrief(nowMs);
+      } catch (err) {
+        console.log(JSON.stringify({ event: "notify_error", message: err instanceof Error ? err.message : String(err) }));
+      }
+    }
+
     this.updateDailyRollup();
 
     if (changed) {
@@ -722,6 +781,9 @@ export class OfficeHub extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.hostname !== "internal" && (url.protocol === "https:" || url.hostname === "localhost" || url.hostname === "127.0.0.1")) {
+      if (this.publicOrigin !== url.origin && url.hostname !== "127.0.0.1" && url.hostname !== "localhost") {
+        this.saveSettingKey("public_origin", url.origin);
+      }
       this.publicOrigin = url.origin;
     }
 
@@ -827,8 +889,20 @@ export class OfficeHub extends DurableObject<Env> {
       }
 
       const result = await this.handleReport(payload, { isBotCheckIn: true });
+      const hq = this.handleAgentExtras(botId, url.searchParams);
+      const base = this.withOrders(result);
+      const orders = { ...base.orders, ...this.extendedOrders(botId) } as Record<string, unknown>;
+      // A task popped by this same check-in is already "current"; keep it in the daily list.
+      const popped = typeof base.orders.nextTask === "string" ? base.orders.nextTask : null;
+      const taskList = (orders.tasks as Array<{ id: string; task: string; from: string }>) || [];
+      if (popped && !taskList.some((t) => t.task === popped)) {
+        orders.tasks = [{ id: "current", task: popped, from: "queue" }, ...taskList];
+      }
+      const isDaily = url.searchParams.get("daily") === "1";
+      if (isDaily) this.markDailyDelivered(botId, orders);
+      this.ctx.waitUntil(this.flushNotifications().catch(() => {}));
       this.broadcastSnapshot();
-      return jsonResponse({ ok: true, ...this.withOrders(result) });
+      return jsonResponse({ ok: true, ...base, orders, ...(Object.keys(hq).length ? { hq } : {}) });
     }
 
     if (url.pathname === "/api/report" && request.method === "POST") {
@@ -1108,6 +1182,7 @@ export class OfficeHub extends DurableObject<Env> {
         reportsTo?: string | null;
         orgTitle?: string;
         archived?: boolean;
+        instructions?: string;
       } = {};
       try {
         body = (await request.json()) as typeof body;
@@ -1130,6 +1205,14 @@ export class OfficeHub extends DurableObject<Env> {
           }
         }
         this.sql.exec("UPDATE bots SET reports_to = ? WHERE id = ?", boss, botId);
+      }
+      if (body.instructions !== undefined) {
+        this.sql.exec(
+          "UPDATE bots SET instructions = ?, instructions_updated_at = ? WHERE id = ?",
+          clampText(body.instructions, 6000),
+          new Date().toISOString(),
+          botId
+        );
       }
       if (body.orgTitle !== undefined) {
         this.sql.exec("UPDATE bots SET org_title = ? WHERE id = ?", clampText(body.orgTitle, 40), botId);
@@ -1419,6 +1502,227 @@ export class OfficeHub extends DurableObject<Env> {
       await this.ensureAlarmScheduled();
       this.broadcastSnapshot();
       return jsonResponse({ ok: synced.ok, connected: true, syncedCount: synced.count, error: synced.error });
+    }
+
+    // ---- Routines ----
+    if (url.pathname === "/api/routines" && request.method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as { botId?: string; title?: string; schedule?: string };
+      const bot = this.findBotRef(clampText(body.botId, 64));
+      const title = clampText(body.title, 200);
+      const sched = parseSchedule(clampText(body.schedule, 80));
+      if (!bot) return jsonResponse({ error: "Pick an agent" }, 400);
+      if (!title) return jsonResponse({ error: "Describe the task" }, 400);
+      if (!sched) return jsonResponse({ error: "Schedule not understood. Try: weekdays 07:00, mon,thu 09:30, monthly 1 08:00" }, 400);
+      const id = `rt-${crypto.randomUUID().slice(0, 8)}`;
+      const text = scheduleToText(sched);
+      this.sql.exec(
+        "INSERT INTO routines (id, bot_id, title, schedule, status, source, created_at, next_run_at) VALUES (?, ?, ?, ?, 'active', 'owner', ?, ?)",
+        id,
+        bot.id,
+        title,
+        text,
+        new Date().toISOString(),
+        this.computeNextRun(text, Date.now())
+      );
+      await this.ensureAlarmScheduled();
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true, id, schedule: describeSchedule(sched) });
+    }
+
+    if (url.pathname === "/api/routines/approve-all" && request.method === "POST") {
+      const rows = this.sql.exec<{ id: string; schedule: string }>("SELECT id, schedule FROM routines WHERE status = 'proposed'").toArray();
+      for (const r of rows) {
+        this.sql.exec("UPDATE routines SET status = 'active', next_run_at = ? WHERE id = ?", this.computeNextRun(r.schedule, Date.now()), r.id);
+      }
+      await this.ensureAlarmScheduled();
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true, approved: rows.length });
+    }
+
+    const routineMatch = url.pathname.match(/^\/api\/routines\/([^/]+)(\/run)?$/);
+    if (routineMatch) {
+      const id = decodeURIComponent(routineMatch[1]);
+      const r = this.sql
+        .exec<{ id: string; bot_id: string; title: string; schedule: string; status: string }>("SELECT id, bot_id, title, schedule, status FROM routines WHERE id = ?", id)
+        .toArray()[0];
+      if (!r) return jsonResponse({ error: "Routine not found" }, 404);
+      if (routineMatch[2] && request.method === "POST") {
+        this.enqueueTaskForBot(r.bot_id, r.title, { source: "routine" });
+        this.sql.exec("UPDATE routines SET last_run_at = ? WHERE id = ?", new Date().toISOString(), id);
+        this.broadcastSnapshot();
+        return jsonResponse({ ok: true });
+      }
+      if (request.method === "DELETE") {
+        this.sql.exec("DELETE FROM routines WHERE id = ?", id);
+        this.broadcastSnapshot();
+        return jsonResponse({ ok: true });
+      }
+      if (request.method === "PATCH") {
+        const body = (await request.json().catch(() => ({}))) as { status?: string; title?: string; schedule?: string; botId?: string };
+        let schedule = r.schedule;
+        if (body.schedule !== undefined) {
+          const sched = parseSchedule(clampText(body.schedule, 80));
+          if (!sched) return jsonResponse({ error: "Schedule not understood" }, 400);
+          schedule = scheduleToText(sched);
+        }
+        const status = body.status && ["active", "paused", "rejected"].includes(body.status) ? body.status : r.status;
+        let botId = r.bot_id;
+        if (body.botId) {
+          const b = this.findBotRef(body.botId);
+          if (!b) return jsonResponse({ error: "Agent not found" }, 404);
+          botId = b.id;
+        }
+        const title = body.title !== undefined ? clampText(body.title, 200) || r.title : r.title;
+        if (status === "rejected") {
+          this.sql.exec("DELETE FROM routines WHERE id = ?", id);
+        } else {
+          this.sql.exec(
+            "UPDATE routines SET status = ?, schedule = ?, title = ?, bot_id = ?, next_run_at = ? WHERE id = ?",
+            status,
+            schedule,
+            title,
+            botId,
+            status === "active" ? this.computeNextRun(schedule, Date.now()) : null,
+            id
+          );
+        }
+        await this.ensureAlarmScheduled();
+        this.broadcastSnapshot();
+        return jsonResponse({ ok: true });
+      }
+    }
+
+    // ---- Ask an agent ----
+    if (url.pathname === "/api/asks" && request.method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as { botId?: string; question?: string };
+      const bot = this.findBotRef(clampText(body.botId, 64));
+      const question = clampText(body.question, 600);
+      if (!bot) return jsonResponse({ error: "Pick an agent" }, 400);
+      if (!question) return jsonResponse({ error: "Type a question" }, 400);
+      const id = `ask-${crypto.randomUUID().slice(0, 8)}`;
+      this.sql.exec("INSERT INTO agent_asks (id, bot_id, question, status, created_at) VALUES (?, ?, ?, 'open', ?)", id, bot.id, question, new Date().toISOString());
+      this.pushPendingDispatch(bot.id);
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true, id });
+    }
+    const askMatch = url.pathname.match(/^\/api\/asks\/([^/]+)(\/ack)?$/);
+    if (askMatch) {
+      const id = decodeURIComponent(askMatch[1]);
+      if (askMatch[2] && request.method === "POST") {
+        this.sql.exec("UPDATE agent_asks SET acknowledged = 1 WHERE id = ?", id);
+      } else if (request.method === "DELETE") {
+        this.sql.exec("DELETE FROM agent_asks WHERE id = ?", id);
+      } else {
+        return jsonResponse({ error: "Not found" }, 404);
+      }
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true });
+    }
+
+    // ---- Team handbook + time zone ----
+    if (url.pathname === "/api/handbook" && request.method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as { text?: string; timeZone?: string };
+      if (body.text !== undefined) this.saveSettingKey("handbook", clampText(body.text, 4000));
+      if (body.timeZone !== undefined) {
+        if (!isValidTimeZone(body.timeZone)) return jsonResponse({ error: "Unknown time zone" }, 400);
+        this.saveSettingKey("office_timezone", body.timeZone);
+        const rows = this.sql.exec<{ id: string; schedule: string }>("SELECT id, schedule FROM routines WHERE status = 'active'").toArray();
+        for (const r of rows) this.sql.exec("UPDATE routines SET next_run_at = ? WHERE id = ?", this.computeNextRun(r.schedule, Date.now()), r.id);
+      }
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true });
+    }
+
+    // ---- Phone notifications ----
+    if (url.pathname === "/api/notify/config" && request.method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as {
+        enabled?: boolean;
+        server?: string;
+        topic?: string;
+        finished?: boolean;
+        briefTime?: string;
+        newTopic?: boolean;
+      };
+      if (body.server !== undefined) {
+        const server = normalizeServer(body.server);
+        if (!server) return jsonResponse({ error: "Server must be an https:// address" }, 400);
+        this.saveSettingKey("notify_server", server);
+      }
+      if (body.newTopic || (body.enabled && !this.getSettingValue("notify_topic"))) this.saveSettingKey("notify_topic", randomTopic());
+      if (body.topic !== undefined) {
+        if (!isValidTopic(body.topic)) return jsonResponse({ error: "Topic must be 12-64 letters, numbers, - or _" }, 400);
+        this.saveSettingKey("notify_topic", body.topic);
+      }
+      if (body.finished !== undefined) this.saveSettingKey("notify_finished", body.finished ? "1" : "0");
+      if (body.briefTime !== undefined) {
+        if (body.briefTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(body.briefTime)) return jsonResponse({ error: "Brief time must be HH:MM" }, 400);
+        this.saveSettingKey("notify_brief_time", body.briefTime);
+      }
+      if (body.enabled !== undefined) {
+        const was = this.getSettingValue("notify_enabled") === "1";
+        this.saveSettingKey("notify_enabled", body.enabled ? "1" : "0");
+        if (body.enabled && !was) {
+          // Start fresh: only things that happen from now on are sent.
+          const now = new Date().toISOString();
+          for (const k of ["notify_wm_need", "notify_wm_run", "notify_wm_ask", "notify_wm_routine"]) this.saveSettingKey(k, now);
+          const tzLocal = localParts(Date.now(), this.officeTimeZone());
+          this.saveSettingKey("notify_last_brief", `${tzLocal.y}-${String(tzLocal.mo).padStart(2, "0")}-${String(tzLocal.d).padStart(2, "0")}`);
+          await this.ensureAlarmScheduled();
+        }
+      }
+      this.broadcastSnapshot();
+      return jsonResponse({ ok: true, notify: this.notifySnapshot() });
+    }
+
+    if (url.pathname === "/api/notify/test" && request.method === "POST") {
+      const cfg = this.getNotifyConfig();
+      const origin = this.knownOrigin();
+      const res = await this.sendNtfy({
+        title: "Grok Bot HQ is connected",
+        message: "Approvals, finished work, answers and your morning brief will arrive here.",
+        priority: 4,
+        tags: ["tada"],
+        click: origin ? `${origin}/#today` : undefined,
+      });
+      if (!res.ok) return jsonResponse({ error: res.error || "Could not reach ntfy" }, 502);
+      return jsonResponse({ ok: true, topic: cfg.topic });
+    }
+
+    if (url.pathname === "/api/notify/brief" && request.method === "POST") {
+      this.saveSettingKey("notify_last_brief", "");
+      const enabled = this.getSettingValue("notify_enabled") === "1";
+      if (!enabled) return jsonResponse({ error: "Turn on notifications first" }, 400);
+      const sent = await this.maybeSendMorningBrief(Date.now(), true);
+      return jsonResponse({ ok: true, sent });
+    }
+
+    if (url.pathname === "/api/notify/act") {
+      const n = clampText(url.searchParams.get("n"), 80);
+      const a = clampText(url.searchParams.get("a"), 10);
+      const exp = Number(url.searchParams.get("exp"));
+      const sig = clampText(url.searchParams.get("sig"), 100);
+      const valid = await verifyAction(this.getNotifyConfig().secret, n, a, exp, sig);
+      const page = (title: string, msg: string, form = "") =>
+        new Response(
+          `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><body style="font-family:system-ui;background:#0a0b0f;color:#ece9e2;display:grid;place-items:center;min-height:100vh;margin:0"><main style="max-width:360px;padding:24px;text-align:center"><h1 style="font-size:1.3rem">${title}</h1><p style="color:#a5a39d">${msg}</p>${form}</main></body>`,
+          { status: valid ? 200 : 403, headers: { "content-type": "text/html; charset=utf-8" } }
+        );
+      const esc = (x: string) => x.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] as string);
+      if (!valid) return page("Link expired", "This approval link is invalid or older than 7 days. Open the HQ Inbox instead.");
+      const need = this.listNeeds(null, null).find((x) => x.id === n);
+      if (!need) return page("Not found", "That request no longer exists.");
+      if (request.method === "GET") {
+        return page(
+          `${a === "approve" ? "Approve" : "Reject"}?`,
+          `${esc(need.botName)}: ${esc(need.title)}`,
+          `<form method="post"><button style="font:inherit;padding:12px 22px;border-radius:10px;border:0;background:#ffb547;color:#1a1206;font-weight:600">${a === "approve" ? "Approve" : "Reject"}</button></form>`
+        );
+      }
+      if (request.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
+      if (need.status !== "open") return page("Already handled", `This was already ${esc(need.status)}.`);
+      await this.resolveNeed(n, a === "approve" ? "approve" : "reject", "From phone notification");
+      this.broadcastSnapshot();
+      return page(a === "approve" ? "Approved" : "Rejected", `${esc(need.botName)} will get your decision on its next check-in.`);
     }
 
     if (url.pathname === "/api/calendar/feeds" && request.method === "POST") {
@@ -2813,6 +3117,8 @@ export class OfficeHub extends DurableObject<Env> {
         reports_to?: string | null;
         org_title?: string;
         placeholder?: number;
+        instructions?: string;
+        instructions_updated_at?: string | null;
       }>("SELECT * FROM bots WHERE archived = 0 ORDER BY desk_index ASC, name ASC")
       .toArray()
       .map((b, idx) => {
@@ -2847,6 +3153,8 @@ export class OfficeHub extends DurableObject<Env> {
           reportsTo: b.reports_to ?? null,
           orgTitle: b.org_title ?? "",
           placeholder: b.placeholder === 1,
+          instructions: b.instructions ?? "",
+          instructionsUpdatedAt: b.instructions_updated_at ?? null,
           link: connectionLink(
             b.last_seen_at,
             b.expected_interval_min ?? 0,
@@ -3076,6 +3384,26 @@ export class OfficeHub extends DurableObject<Env> {
       tasks: this.listGoogleTasks(bots),
       googleTasksSync,
       calendar: this.getCalendarSnapshot(),
+      routines: this.listRoutines(),
+      asks: this.sql
+        .exec<{ id: string; bot_id: string; question: string; status: string; answer: string | null; delivered_at: string | null; answered_at: string | null; acknowledged: number; created_at: string }>(
+          "SELECT * FROM agent_asks ORDER BY created_at DESC LIMIT 40"
+        )
+        .toArray()
+        .map((a) => ({
+          id: a.id,
+          botId: a.bot_id,
+          question: a.question,
+          status: a.status,
+          answer: a.answer,
+          deliveredAt: a.delivered_at,
+          answeredAt: a.answered_at,
+          acknowledged: a.acknowledged === 1,
+          createdAt: a.created_at,
+        })),
+      notify: this.notifySnapshot(),
+      handbook: this.getSettingValue("handbook"),
+      timeZone: this.officeTimeZone(),
       usageTodayByBot: Object.fromEntries(
         this.sql
           .exec<{ bot_id: string; tokens: number; cost: number; reqs: number }>(
@@ -3155,7 +3483,11 @@ export class OfficeHub extends DurableObject<Env> {
     };
   }
 
-  private enqueueTaskForBot(botId: string, taskText: string): void {
+  private enqueueTaskForBot(
+    botId: string,
+    taskText: string,
+    opts: { source?: "owner" | "routine" | "delegation" | "task"; fromBotId?: string | null } = {}
+  ): void {
     const clean = clampText(taskText, 200);
     if (!clean) return;
     const dup = this.sql
@@ -3167,11 +3499,13 @@ export class OfficeHub extends DurableObject<Env> {
       .toArray()[0];
     if (!dup) {
       this.sql.exec(
-        "INSERT INTO task_queue (id, bot_id, task, status, created_at) VALUES (?, ?, ?, 'queued', ?)",
+        "INSERT INTO task_queue (id, bot_id, task, status, created_at, source, from_bot_id) VALUES (?, ?, ?, 'queued', ?, ?, ?)",
         crypto.randomUUID(),
         botId,
         clean,
-        new Date().toISOString()
+        new Date().toISOString(),
+        opts.source ?? "owner",
+        opts.fromBotId ?? null
       );
     }
     this.pushPendingDispatch(botId);
@@ -3415,6 +3749,530 @@ export class OfficeHub extends DurableObject<Env> {
     for (const p of pending) {
       if (!(await this.pushPendingTask(p.id))) break;
     }
+  }
+
+  // ===========================================================================
+  // Daily check-in protocol: playbooks, batched orders, team status, delegation,
+  // HQ questions ("asks"), routine proposals.
+  // ===========================================================================
+  private getSettingValue(key: string): string {
+    return (
+      this.sql.exec<{ value: string }>("SELECT value FROM office_settings WHERE key = ?", key).toArray()[0]?.value ?? ""
+    );
+  }
+
+  private officeTimeZone(): string {
+    const tz = this.getSettingValue("office_timezone");
+    return tz && isValidTimeZone(tz) ? tz : "America/New_York";
+  }
+
+  private knownOrigin(): string {
+    return this.publicOrigin || this.getSettingValue("public_origin");
+  }
+
+  /**
+   * One-time switch to daily check-ins: daily SLA for connected Grok agents, and a
+   * question to Jared asking for the team's recurring routines.
+   */
+  private applyDailyCheckinV1(): void {
+    if (this.getSettingValue("daily_checkin_v1")) return;
+    const bots = this.sql
+      .exec<{ id: string; name: string }>("SELECT id, name FROM bots WHERE archived = 0")
+      .toArray();
+    if (bots.length === 0) return;
+    const now = new Date().toISOString();
+    this.sql.exec(
+      "UPDATE bots SET expected_interval_min = 1440, sla_alerted = 0 WHERE archived = 0 AND placeholder = 0 AND agent_kind = 'grok' AND expected_interval_min = 0"
+    );
+    const jared = bots.find((b) => b.name.trim().toLowerCase().startsWith("jared") || b.id.toLowerCase().startsWith("jared"));
+    if (jared) {
+      this.sql.exec(
+        "INSERT INTO agent_asks (id, bot_id, question, status, created_at) VALUES (?, ?, ?, 'open', ?)",
+        `ask-${crypto.randomUUID().slice(0, 8)}`,
+        jared.id,
+        "List the team's recurring routines so HQ can schedule them. For EACH routine, call orders.howTo.proposeRoutine once (agent id, schedule like \"weekdays 07:00\", short task). Then answer this ask with a one-line summary.",
+        now
+      );
+      this.sql.exec(
+        "INSERT INTO task_queue (id, bot_id, task, status, created_at, source) VALUES (?, ?, ?, 'queued', ?, 'owner')",
+        crypto.randomUUID(),
+        jared.id,
+        "HQ request: send the team's recurring routines. Follow orders.asks and orders.howTo in this response.",
+        now
+      );
+    }
+    // Give everyone a full day to do their first daily check-in before missed-check-in alerts start.
+    this.saveSettingKey("sla_grace_until", new Date(Date.now() + 26 * 3_600_000).toISOString());
+    this.saveSettingKey("daily_checkin_v1", now);
+  }
+
+  private findBotRef(ref: string): { id: string; name: string } | null {
+    const r = clampText(ref, 64).toLowerCase();
+    if (!r) return null;
+    const bots = this.sql
+      .exec<{ id: string; name: string }>("SELECT id, name FROM bots WHERE archived = 0")
+      .toArray();
+    return (
+      bots.find((b) => b.id.toLowerCase() === r) ||
+      bots.find((b) => b.name.toLowerCase() === r) ||
+      bots.find((b) => b.name.toLowerCase().split(/\s+/)[0] === r) ||
+      null
+    );
+  }
+
+  private descendantIds(botId: string): string[] {
+    const rows = this.sql
+      .exec<{ id: string; reports_to: string | null }>("SELECT id, reports_to FROM bots WHERE archived = 0")
+      .toArray();
+    const out: string[] = [];
+    const walk = (id: string, depth: number) => {
+      if (depth > 10) return;
+      for (const r of rows) {
+        if (r.reports_to === id && !out.includes(r.id) && r.id !== botId) {
+          out.push(r.id);
+          walk(r.id, depth + 1);
+        }
+      }
+    };
+    walk(botId, 0);
+    return out;
+  }
+
+  private teamStatus(botId: string): Array<Record<string, unknown>> {
+    const ids = this.descendantIds(botId);
+    if (!ids.length) return [];
+    const dayStart = `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`;
+    return ids
+      .map((id) => {
+        const b = this.sql
+          .exec<{ id: string; name: string; org_title: string; role: string; status: string; task: string; last_seen_at: string; reports_to: string | null; placeholder: number }>(
+            "SELECT id, name, org_title, role, status, task, last_seen_at, reports_to, placeholder FROM bots WHERE id = ?",
+            id
+          )
+          .toArray()[0];
+        if (!b) return null;
+        const queued = this.sql.exec<{ c: number }>("SELECT COUNT(*) as c FROM task_queue WHERE bot_id = ? AND status = 'queued'", id).one()?.c ?? 0;
+        const doneToday =
+          this.sql.exec<{ c: number }>("SELECT COUNT(*) as c FROM task_runs WHERE bot_id = ? AND status = 'completed' AND finished_at >= ?", id, dayStart).one()?.c ?? 0;
+        const needs = this.sql.exec<{ c: number }>("SELECT COUNT(*) as c FROM pending_needs WHERE bot_id = ? AND status = 'open'", id).one()?.c ?? 0;
+        return {
+          id: b.id,
+          name: b.name,
+          title: b.org_title || b.role,
+          reportsTo: b.reports_to,
+          status: b.placeholder ? "not_connected" : b.status,
+          currentTask: b.task,
+          lastCheckIn: b.last_seen_at,
+          queuedTasks: queued,
+          finishedToday: doneToday,
+          waitingOnOwner: needs,
+        };
+      })
+      .filter((x) => x !== null) as Array<Record<string, unknown>>;
+  }
+
+  private howToFor(botId: string, token: string, hasTeam: boolean): Record<string, string> {
+    const base = this.knownOrigin() || "https://YOUR-HQ";
+    const b = encodeURIComponent(botId);
+    const t = encodeURIComponent(token);
+    const how: Record<string, string> = {
+      dailyCheckIn: `${base}/api/ping?b=${b}&daily=1&token=${t}`,
+      reportDone: `${base}/api/ping?b=${b}&done=1&t=TASK&out=HTTPS_LINK&result=ONE_LINE&tok=TOKENS_USED&token=${t}`,
+      needOwner: `${base}/api/ping?b=${b}&s=wait&need=ONE_LINE_QUESTION&token=${t}`,
+      answerAsk: `${base}/api/ping?b=${b}&ask=ASK_ID&answer=YOUR_ANSWER&token=${t}`,
+      proposeRoutine: `${base}/api/ping?b=${b}&routine=AGENT_ID|SCHEDULE|TASK&token=${t}`,
+      scheduleFormat: "daily 07:00 · weekdays 07:00 · mon,thu 09:30 · weekly fri 16:00 · monthly 1 08:00 · monthly last 17:00",
+    };
+    if (hasTeam) how.delegate = `${base}/api/ping?b=${b}&delegate=AGENT_ID&dt=TASK&token=${t}`;
+    return how;
+  }
+
+  /** Extra fields for agents on every check-in. Full playbook/team/asks on daily check-ins. */
+  private extendedOrders(botId: string): Record<string, unknown> {
+    const bot = this.sql
+      .exec<{ instructions: string; instructions_updated_at: string | null; checkin_token: string; name: string }>(
+        "SELECT instructions, instructions_updated_at, checkin_token, name FROM bots WHERE id = ?",
+        botId
+      )
+      .toArray()[0];
+    if (!bot) return {};
+    const tasks = this.sql
+      .exec<{ id: string; task: string; source: string; from_bot_id: string | null }>(
+        "SELECT id, task, source, from_bot_id FROM task_queue WHERE bot_id = ? AND status = 'queued' ORDER BY created_at ASC LIMIT 10",
+        botId
+      )
+      .toArray()
+      .map((q) => ({ id: q.id, task: q.task, from: q.from_bot_id ? `delegated by ${q.from_bot_id}` : q.source }));
+    const asks = this.sql
+      .exec<{ id: string; question: string }>(
+        "SELECT id, question FROM agent_asks WHERE bot_id = ? AND status = 'open' ORDER BY created_at ASC LIMIT 5",
+        botId
+      )
+      .toArray();
+    const team = this.teamStatus(botId);
+    const routines = this.sql
+      .exec<{ title: string; schedule: string }>(
+        "SELECT title, schedule FROM routines WHERE bot_id = ? AND status = 'active' ORDER BY created_at ASC",
+        botId
+      )
+      .toArray()
+      .map((r) => {
+        const s = parseSchedule(r.schedule);
+        return { task: r.title, when: s ? describeSchedule(s) : r.schedule };
+      });
+    return {
+      instructions: bot.instructions || "",
+      instructionsUpdatedAt: bot.instructions_updated_at,
+      handbook: this.getSettingValue("handbook"),
+      tasks,
+      asks,
+      team,
+      canDelegateTo: team.map((m) => m.id),
+      routines,
+      howTo: this.howToFor(botId, bot.checkin_token, team.length > 0),
+      checkInSchedule: "Once a day, plus whenever the owner says check in.",
+    };
+  }
+
+  /** Daily check-in: everything listed in orders.tasks counts as delivered. */
+  private markDailyDelivered(botId: string, orders: Record<string, unknown>): void {
+    const now = new Date().toISOString();
+    const tasks = Array.isArray(orders.tasks) ? (orders.tasks as Array<{ id: string }>) : [];
+    for (const t of tasks) this.sql.exec("UPDATE task_queue SET status = 'dispatched' WHERE id = ? AND status = 'queued'", t.id);
+    const asks = Array.isArray(orders.asks) ? (orders.asks as Array<{ id: string }>) : [];
+    for (const a of asks) this.sql.exec("UPDATE agent_asks SET delivered_at = COALESCE(delivered_at, ?) WHERE id = ?", now, a.id);
+    this.sql.exec("UPDATE bots SET sla_alerted = 0 WHERE id = ?", botId);
+  }
+
+  /** delegate=, ask=/answer=, routine= parameters sent by agents. */
+  private handleAgentExtras(botId: string, params: URLSearchParams): Record<string, unknown> {
+    const results: Record<string, unknown> = {};
+    const now = new Date().toISOString();
+    const me = this.sql
+      .exec<{ name: string; avatar_color: string; status: BotStatus }>("SELECT name, avatar_color, status FROM bots WHERE id = ?", botId)
+      .toArray()[0];
+    if (!me) return results;
+
+    const delegateTo = params.get("delegate");
+    const delegateTask = clampText(params.get("dt") ?? params.get("delegate_task"), 200);
+    if (delegateTo) {
+      const target = this.findBotRef(delegateTo);
+      if (!target) results.delegate = { ok: false, error: `No agent called ${delegateTo}` };
+      else if (!this.descendantIds(botId).includes(target.id))
+        results.delegate = { ok: false, error: `${target.name} is not on your team. Delegate only to orders.canDelegateTo.` };
+      else if (!delegateTask) results.delegate = { ok: false, error: "Add &dt=TASK" };
+      else {
+        this.enqueueTaskForBot(target.id, delegateTask, { source: "delegation", fromBotId: botId });
+        this.insertLog(botId, me.name, me.avatar_color, me.status, "info", `Delegated to ${target.name}: "${clampText(delegateTask, 100)}"`);
+        results.delegate = { ok: true, to: target.id, task: delegateTask };
+      }
+    }
+
+    const askId = clampText(params.get("ask"), 40);
+    const answer = clampText(params.get("answer"), 1500);
+    if (askId) {
+      const ask = this.sql
+        .exec<{ id: string; bot_id: string; status: string }>("SELECT id, bot_id, status FROM agent_asks WHERE id = ?", askId)
+        .toArray()[0];
+      if (!ask || ask.bot_id !== botId) results.answer = { ok: false, error: "Unknown ask id" };
+      else if (!answer) results.answer = { ok: false, error: "Add &answer=TEXT" };
+      else {
+        this.sql.exec(
+          "UPDATE agent_asks SET status = 'answered', answer = ?, answered_at = ?, acknowledged = 0 WHERE id = ?",
+          answer,
+          now,
+          askId
+        );
+        this.insertLog(botId, me.name, me.avatar_color, me.status, "success", `Answered HQ: "${clampText(answer, 100)}"`);
+        results.answer = { ok: true, ask: askId };
+      }
+    }
+
+    for (const raw of params.getAll("routine").slice(0, 10)) {
+      const parts = raw.split("|").map((x) => x.trim());
+      const list = (results.routines as unknown[]) || [];
+      results.routines = list;
+      if (parts.length < 3) {
+        list.push({ ok: false, error: "Use routine=AGENT_ID|SCHEDULE|TASK" });
+        continue;
+      }
+      const target = this.findBotRef(parts[0]);
+      const sched = parseSchedule(parts[1]);
+      const title = clampText(parts.slice(2).join(" | "), 200);
+      if (!target) list.push({ ok: false, error: `No agent called ${parts[0]}` });
+      else if (!sched) list.push({ ok: false, error: `Could not read schedule "${parts[1]}". Examples: weekdays 07:00, mon,thu 09:30, monthly 1 08:00` });
+      else if (!title) list.push({ ok: false, error: "Missing task" });
+      else {
+        const dup = this.sql
+          .exec<{ id: string }>(
+            "SELECT id FROM routines WHERE bot_id = ? AND lower(title) = lower(?) AND status IN ('active','proposed')",
+            target.id,
+            title
+          )
+          .toArray()[0];
+        if (dup) {
+          list.push({ ok: true, id: dup.id, note: "Already exists" });
+          continue;
+        }
+        const id = `rt-${crypto.randomUUID().slice(0, 8)}`;
+        this.sql.exec(
+          "INSERT INTO routines (id, bot_id, title, schedule, status, source, proposed_by, created_at) VALUES (?, ?, ?, ?, 'proposed', 'agent', ?, ?)",
+          id,
+          target.id,
+          title,
+          scheduleToText(sched),
+          botId,
+          now
+        );
+        list.push({ ok: true, id, status: "proposed", note: "Waiting for the owner to approve in HQ" });
+      }
+    }
+    return results;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Routines
+  // ---------------------------------------------------------------------------
+  private computeNextRun(scheduleText: string, afterMs: number): string | null {
+    const s = parseSchedule(scheduleText);
+    return s ? new Date(nextRunAfter(s, afterMs, this.officeTimeZone())).toISOString() : null;
+  }
+
+  private runDueRoutines(nowMs: number): boolean {
+    const due = this.sql
+      .exec<{ id: string; bot_id: string; title: string; schedule: string }>(
+        "SELECT id, bot_id, title, schedule FROM routines WHERE status = 'active' AND next_run_at IS NOT NULL AND next_run_at <= ? LIMIT 50",
+        new Date(nowMs).toISOString()
+      )
+      .toArray();
+    for (const r of due) {
+      const archived = this.sql.exec<{ archived: number }>("SELECT archived FROM bots WHERE id = ?", r.bot_id).toArray()[0];
+      if (archived && archived.archived === 0) this.enqueueTaskForBot(r.bot_id, r.title, { source: "routine" });
+      this.sql.exec(
+        "UPDATE routines SET last_run_at = ?, next_run_at = ? WHERE id = ?",
+        new Date(nowMs).toISOString(),
+        this.computeNextRun(r.schedule, nowMs),
+        r.id
+      );
+    }
+    return due.length > 0;
+  }
+
+  private listRoutines(): Array<Record<string, unknown>> {
+    const names = new Map(
+      this.sql.exec<{ id: string; name: string }>("SELECT id, name FROM bots").toArray().map((b) => [b.id, b.name])
+    );
+    return this.sql
+      .exec<{ id: string; bot_id: string; title: string; schedule: string; status: string; source: string; proposed_by: string | null; last_run_at: string | null; next_run_at: string | null; created_at: string }>(
+        "SELECT * FROM routines WHERE status IN ('active','paused','proposed') ORDER BY CASE status WHEN 'proposed' THEN 0 ELSE 1 END, created_at ASC LIMIT 200"
+      )
+      .toArray()
+      .map((r) => {
+        const s = parseSchedule(r.schedule);
+        return {
+          id: r.id,
+          botId: r.bot_id,
+          botName: names.get(r.bot_id) ?? r.bot_id,
+          title: r.title,
+          schedule: r.schedule,
+          scheduleLabel: s ? describeSchedule(s) : r.schedule,
+          status: r.status,
+          source: r.source,
+          proposedBy: r.proposed_by ? names.get(r.proposed_by) ?? r.proposed_by : null,
+          lastRunAt: r.last_run_at,
+          nextRunAt: r.next_run_at,
+          createdAt: r.created_at,
+        };
+      });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phone notifications (ntfy)
+  // ---------------------------------------------------------------------------
+  private getNotifyConfig(): { enabled: boolean; server: string; topic: string; finished: boolean; briefTime: string; secret: string } {
+    let secret = this.getSettingValue("notify_secret");
+    if (!secret) {
+      secret = `${crypto.randomUUID()}${crypto.randomUUID()}`.replace(/-/g, "");
+      this.saveSettingKey("notify_secret", secret);
+    }
+    return {
+      enabled: this.getSettingValue("notify_enabled") === "1",
+      server: this.getSettingValue("notify_server") || "https://ntfy.sh",
+      topic: this.getSettingValue("notify_topic"),
+      finished: this.getSettingValue("notify_finished") !== "0",
+      briefTime: this.getSettingValue("notify_brief_time") || "07:30",
+      secret,
+    };
+  }
+
+  private async sendNtfy(msg: Omit<NtfyMessage, "topic">, override?: { server: string; topic: string }): Promise<{ ok: boolean; error?: string }> {
+    const cfg = this.getNotifyConfig();
+    const server = override?.server ?? cfg.server;
+    const topic = override?.topic ?? cfg.topic;
+    if (!topic || !isValidTopic(topic)) return { ok: false, error: "No notification topic set" };
+    try {
+      const res = await fetch(server, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...msg, topic, title: clip(msg.title, 120), message: clip(msg.message) }),
+      });
+      return res.ok ? { ok: true } : { ok: false, error: `ntfy returned HTTP ${res.status}` };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "Network error" };
+    }
+  }
+
+  private notifyChain: Promise<void> = Promise.resolve();
+
+  /** Sends anything new since the last watermark. Calls are serialized so nothing is sent twice. */
+  private flushNotifications(): Promise<void> {
+    this.notifyChain = this.notifyChain.then(() => this.flushNotificationsNow()).catch(() => {});
+    return this.notifyChain;
+  }
+
+  private async flushNotificationsNow(): Promise<void> {
+    const cfg = this.getNotifyConfig();
+    if (!cfg.enabled || !cfg.topic) return;
+    const origin = this.knownOrigin();
+    const hq = origin || undefined;
+    const wm = (k: string) => this.getSettingValue(k) || new Date().toISOString();
+
+    const needWm = wm("notify_wm_need");
+    const needs = this.sql
+      .exec<{ id: string; bot_name: string; title: string; description: string; severity: string; created_at: string }>(
+        "SELECT id, bot_name, title, description, severity, created_at FROM pending_needs WHERE status = 'open' AND created_at > ? ORDER BY created_at ASC LIMIT 10",
+        needWm
+      )
+      .toArray();
+    for (const n of needs) {
+      const canDecide = n.severity === "approval" || n.severity === "input";
+      const actions: NtfyMessage["actions"] = [];
+      if (canDecide && origin) {
+        actions.push({ action: "http", label: "Approve", url: await actionUrl(origin, cfg.secret, n.id, "approve"), method: "POST", clear: true });
+        actions.push({ action: "http", label: "Reject", url: await actionUrl(origin, cfg.secret, n.id, "reject"), method: "POST", clear: true });
+      }
+      if (hq) actions.push({ action: "view", label: "Open", url: `${hq}/#needs` });
+      await this.sendNtfy({
+        title: `${n.bot_name} needs you`,
+        message: n.description ? `${n.title}\n${n.description}` : n.title,
+        priority: n.severity === "error" || n.severity === "budget" ? 5 : 4,
+        tags: [n.severity === "error" ? "rotating_light" : n.severity === "budget" ? "moneybag" : "raised_hand"],
+        click: hq ? `${hq}/#needs` : undefined,
+        actions: actions.slice(0, 3),
+      });
+      this.saveSettingKey("notify_wm_need", n.created_at);
+    }
+
+    if (cfg.finished) {
+      const runWm = wm("notify_wm_run");
+      const runs = this.sql
+        .exec<{ bot_name: string; task: string; result_summary: string | null; output_url: string | null; finished_at: string }>(
+          "SELECT bot_name, task, result_summary, output_url, finished_at FROM task_runs WHERE status = 'completed' AND finished_at > ? ORDER BY finished_at ASC LIMIT 10",
+          runWm
+        )
+        .toArray();
+      for (const r of runs) {
+        const link = r.output_url && /^https:\/\//.test(r.output_url) ? r.output_url : null;
+        await this.sendNtfy({
+          title: `${r.bot_name} finished`,
+          message: r.result_summary ? `${r.task}\n${r.result_summary}` : r.task,
+          priority: 3,
+          tags: ["white_check_mark"],
+          click: link ?? (hq ? `${hq}/#needs` : undefined),
+          actions: link ? [{ action: "view", label: "Open result", url: link }] : undefined,
+        });
+        this.saveSettingKey("notify_wm_run", r.finished_at);
+      }
+    }
+
+    const askWm = wm("notify_wm_ask");
+    const asks = this.sql
+      .exec<{ bot_id: string; question: string; answer: string; answered_at: string }>(
+        "SELECT bot_id, question, answer, answered_at FROM agent_asks WHERE status = 'answered' AND answered_at > ? ORDER BY answered_at ASC LIMIT 10",
+        askWm
+      )
+      .toArray();
+    for (const a of asks) {
+      const name = this.sql.exec<{ name: string }>("SELECT name FROM bots WHERE id = ?", a.bot_id).toArray()[0]?.name ?? a.bot_id;
+      await this.sendNtfy({ title: `${name} answered`, message: a.answer, priority: 3, tags: ["speech_balloon"], click: hq ? `${hq}/#needs` : undefined });
+      this.saveSettingKey("notify_wm_ask", a.answered_at);
+    }
+
+    const rtWm = wm("notify_wm_routine");
+    const proposed = this.sql
+      .exec<{ title: string; schedule: string; created_at: string }>(
+        "SELECT title, schedule, created_at FROM routines WHERE status = 'proposed' AND created_at > ? ORDER BY created_at ASC LIMIT 20",
+        rtWm
+      )
+      .toArray();
+    if (proposed.length) {
+      await this.sendNtfy({
+        title: `${proposed.length} routine${proposed.length === 1 ? "" : "s"} to approve`,
+        message: proposed.map((p) => `• ${p.title} (${p.schedule})`).join("\n"),
+        priority: 3,
+        tags: ["repeat"],
+        click: hq ? `${hq}/#needs` : undefined,
+      });
+      this.saveSettingKey("notify_wm_routine", proposed[proposed.length - 1].created_at);
+    }
+  }
+
+  private async maybeSendMorningBrief(nowMs: number, force = false): Promise<boolean> {
+    const cfg = this.getNotifyConfig();
+    if (!cfg.enabled || !cfg.topic || !cfg.briefTime) return false;
+    const tz = this.officeTimeZone();
+    const local = localParts(nowMs, tz);
+    const dateKey = `${local.y}-${String(local.mo).padStart(2, "0")}-${String(local.d).padStart(2, "0")}`;
+    const [bh, bm] = cfg.briefTime.split(":").map(Number);
+    if (!force && local.h * 60 + local.mi < bh * 60 + bm) return false;
+    if (!force && this.getSettingValue("notify_last_brief") === dateKey) return false;
+    this.saveSettingKey("notify_last_brief", dateKey);
+
+    const dayAgo = new Date(nowMs - 24 * 3_600_000).toISOString();
+    const needs = this.sql.exec<{ c: number }>("SELECT COUNT(*) as c FROM pending_needs WHERE status = 'open'").one()?.c ?? 0;
+    const done = this.sql
+      .exec<{ bot_name: string; task: string }>(
+        "SELECT bot_name, task FROM task_runs WHERE status = 'completed' AND finished_at >= ? ORDER BY finished_at DESC LIMIT 5",
+        dayAgo
+      )
+      .toArray();
+    const failed = this.sql.exec<{ c: number }>("SELECT COUNT(*) as c FROM task_runs WHERE status = 'failed' AND started_at >= ?", dayAgo).one()?.c ?? 0;
+    const due = this.sql
+      .exec<{ title: string }>("SELECT title FROM google_tasks WHERE status = 'needsAction' AND due IS NOT NULL AND substr(due, 1, 10) <= ? ORDER BY due ASC LIMIT 5", dateKey)
+      .toArray();
+    const dayStartUtc = new Date(nowMs).toISOString();
+    const dayEndUtc = new Date(nowMs + 18 * 3_600_000).toISOString();
+    const events = this.sql
+      .exec<{ title: string; start_at: string; all_day: number }>(
+        "SELECT title, start_at, all_day FROM calendar_events WHERE start_at >= ? AND start_at < ? ORDER BY start_at ASC LIMIT 5",
+        dayStartUtc,
+        dayEndUtc
+      )
+      .toArray();
+    const fmt = (iso: string) => new Date(iso).toLocaleTimeString("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" });
+    const lines: string[] = [];
+    lines.push(needs ? `${needs} item${needs === 1 ? "" : "s"} waiting on you` : "Nothing waiting on you");
+    if (events.length) lines.push(`Calendar: ${events.map((e) => (e.all_day ? e.title : `${fmt(e.start_at)} ${e.title}`)).join(" · ")}`);
+    if (due.length) lines.push(`Due: ${due.map((t) => t.title).join(" · ")}`);
+    lines.push(
+      done.length
+        ? `Overnight: ${done.map((r) => `${r.bot_name}: ${r.task}`).join(" · ")}${failed ? ` (${failed} failed)` : ""}`
+        : `No finished agent work in the last 24h${failed ? `, ${failed} failed` : ""}`
+    );
+    const origin = this.knownOrigin();
+    await this.sendNtfy({
+      title: "Good morning. Your HQ brief",
+      message: lines.join("\n"),
+      priority: 3,
+      tags: ["sunrise"],
+      click: origin ? `${origin}/#today` : undefined,
+    });
+    return true;
+  }
+
+  private notifySnapshot(): Record<string, unknown> {
+    const cfg = this.getNotifyConfig();
+    return { enabled: cfg.enabled, server: cfg.server, topic: cfg.topic, finished: cfg.finished, briefTime: cfg.briefTime };
   }
 
   private getCalendarFeeds(): Array<{ id: string; url: string; name: string; color: string }> {
@@ -4042,8 +4900,11 @@ async function checkOfficePassword(request: Request, env: Env): Promise<Response
   if (
     url.pathname === "/api/report" ||
     url.pathname === "/api/ping" ||
+    url.pathname === "/api/notify/act" ||
     url.pathname.startsWith("/api/bot/") ||
-    url.pathname.startsWith("/proxy/")
+    url.pathname.startsWith("/proxy/") ||
+    url.pathname === "/manifest.webmanifest" ||
+    url.pathname.startsWith("/icons/")
   ) {
     return null;
   }

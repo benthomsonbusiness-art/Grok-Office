@@ -3033,3 +3033,74 @@ span.rail-chip.ghost { cursor: default; }
   .cal-feed-form { grid-template-columns: 1fr; }
 }
 .page-container > * { flex-shrink: 0; }
+
+/* =========================================================================
+   v12: Routines, playbooks, asks, phone setup
+   ========================================================================= */
+.icon-btn { position: relative; }
+.icon-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--lamp); box-shadow: 0 0 0 2px var(--ink); }
+.big-textarea {
+  width: 100%;
+  min-height: 110px;
+  resize: vertical;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-hover);
+  background: var(--surface-0);
+  color: var(--text-bright);
+  font: inherit;
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+.big-textarea:focus { outline: none; border-color: var(--border-accent); box-shadow: 0 0 0 3px rgba(255, 181, 71, 0.1); }
+.edit-section { display: flex; flex-direction: column; gap: 12px; padding-top: 4px; border-top: 1px solid var(--border); }
+.edit-section label > span em { font-style: normal; font-weight: 400; font-size: 0.74rem; }
+.ask-box { display: flex; flex-direction: column; gap: 7px; }
+.ask-label { font-size: 0.8rem; color: var(--muted); }
+.ask-row { display: flex; gap: 8px; }
+.ask-row input { flex: 1; min-width: 0; height: 36px; padding: 0 11px; border-radius: 9px; border: 1px solid var(--border-hover); background: var(--surface-0); color: var(--text-bright); font: inherit; font-size: 0.84rem; }
+.ask-list { display: flex; flex-direction: column; gap: 6px; }
+.ask-item { padding: 8px 10px; border-radius: 9px; background: rgba(255, 244, 228, 0.03); border: 1px solid var(--border); }
+.ask-q { font-size: 0.8rem; color: var(--text-bright); font-weight: 600; }
+.ask-a { font-size: 0.8rem; color: var(--text); margin-top: 3px; white-space: pre-wrap; }
+.ask-a.pending { color: var(--muted); font-style: italic; }
+
+.routine-form { display: grid; grid-template-columns: 170px minmax(0, 1fr) 150px auto auto auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+.routine-form select, .routine-form input[type="text"], .routine-form input[type="time"] {
+  height: 36px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--border-hover); background: var(--surface-0); color: var(--text-bright); font: inherit; font-size: 0.84rem; min-width: 0; color-scheme: dark;
+}
+.routine-days { display: inline-flex; gap: 3px; }
+.routine-days label { display: inline-grid; place-items: center; width: 26px; height: 30px; border-radius: 7px; border: 1px solid var(--border); font-size: 0.72rem; color: var(--muted); cursor: pointer; position: relative; }
+.routine-days input { position: absolute; opacity: 0; inset: 0; cursor: pointer; }
+.routine-days label:has(input:checked) { background: rgba(255, 181, 71, 0.14); border-color: rgba(255, 181, 71, 0.4); color: var(--text-bright); }
+.routines-list, .proposals-card { display: flex; flex-direction: column; }
+.routine-row { display: flex; align-items: center; gap: 12px; padding: 10px 2px; border-top: 1px solid var(--border); }
+.routine-row.paused { opacity: 0.55; }
+.routine-main { flex: 1; min-width: 0; }
+.routine-actions { display: flex; gap: 5px; flex-shrink: 0; }
+.routine-proposed-note { font-size: 0.82rem; color: var(--lamp); padding: 8px 2px; }
+.inbox-proposals { margin-bottom: 4px; }
+.proposals-card { border-color: rgba(255, 181, 71, 0.3); }
+.answer-card { border-left-color: var(--cal); }
+.answer-text { white-space: pre-wrap; color: var(--text-bright); }
+
+.phone-body { display: flex; flex-direction: column; gap: 12px; }
+.phone-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; font-size: 0.86rem; color: var(--text); line-height: 1.45; }
+.phone-steps a { color: var(--lamp); }
+.topic-row { display: flex; gap: 8px; align-items: center; margin: 6px 0 2px; }
+.topic-row code { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 8px; background: var(--surface-0); border: 1px solid var(--border-hover); color: var(--lamp); font-size: 0.82rem; overflow-wrap: anywhere; }
+.phone-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.phone-adv summary { cursor: pointer; font-size: 0.78rem; margin-top: 6px; }
+.phone-adv label { margin-top: 8px; }
+
+@media (max-width: 1080px) {
+  .routine-form { grid-template-columns: 1fr 1fr; }
+  .routine-form #routine-title { grid-column: 1 / -1; }
+}
+@media (max-width: 760px) {
+  .routine-row { flex-wrap: wrap; }
+  .routine-actions { width: 100%; justify-content: flex-end; }
+  .routine-form .btn { grid-column: 1 / -1; }
+}
+#phone-form .checkbox-label { background: rgba(255, 244, 228, 0.03); border-color: var(--border); }
+#phone-form .checkbox-label input { accent-color: var(--lamp); }
