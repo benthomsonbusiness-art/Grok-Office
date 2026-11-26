@@ -18,6 +18,7 @@ import {
 } from "./reportAuth";
 import { renderOfficePasswordPage } from "./passwordGate";
 import { runProxyGuard } from "./proxyGuard";
+import { CEO_BOT_ID, allowWake, buildCeoWakePayload, wakeAuthHeader } from "./ceoWake";
 import { redactAlertWebhook } from "./settingsRedact";
 import {
   type CalendarEvent,
@@ -66,6 +67,9 @@ export interface Env extends Cloudflare.Env {
   AI_GATEWAY_BASE_URL?: string;
   GOOGLE_TASKS_BRIDGE_URL?: string;
   GOOGLE_TASKS_BRIDGE_SECRET?: string;
+  /** Jared's routine webhook (hq-order-router). Only the CEO is ever woken through it. */
+  HQ_WEBHOOK_URL?: string;
+  HQ_WEBHOOK_KEY?: string;
 }
 
 function isValidGoogleTasksBridgeUrl(rawUrl: string): boolean {
@@ -197,6 +201,7 @@ function reportAuthInput(
 export class OfficeHub extends DurableObject<Env> {
   private sql: SqlStorage;
   private lastBroadcastAt = 0;
+  private wakeHistory: number[] = [];
   private broadcastPending = false;
   private broadcastTimer: ReturnType<typeof setTimeout> | null = null;
   private publicOrigin = "";
@@ -415,6 +420,7 @@ export class OfficeHub extends DurableObject<Env> {
       this.sql.exec("ALTER TABLE google_tasks ADD COLUMN sync_pending INTEGER NOT NULL DEFAULT 0");
     }
     this.applyOrgChartV1();
+    this.applyCeoPrimaryV1();
     // Pushes cannot be in flight after a restart; return them to the queue.
     this.sql.exec("UPDATE task_queue SET status = 'queued' WHERE status = 'pushing'");
     const missingTokens = this.sql
@@ -1047,6 +1053,7 @@ export class OfficeHub extends DurableObject<Env> {
         task,
         new Date().toISOString()
       );
+      this.wakeCeo(id, botId, task, "api-queue");
       this.pushPendingDispatch(botId);
       this.broadcastSnapshot();
       return jsonResponse({ ok: true, id });
@@ -1206,13 +1213,15 @@ export class OfficeHub extends DurableObject<Env> {
           )
           .toArray()[0];
         if (!dup) {
+          const qid = crypto.randomUUID();
           this.sql.exec(
             "INSERT INTO task_queue (id, bot_id, task, status, created_at) VALUES (?, ?, ?, 'queued', ?)",
-            crypto.randomUUID(),
+            qid,
             botId,
             queuedTask,
             new Date().toISOString()
           );
+          this.wakeCeo(qid, botId, queuedTask, "bot-command");
         }
       }
       if (queuedTask) this.pushPendingDispatch(botId);
@@ -1811,9 +1820,8 @@ export class OfficeHub extends DurableObject<Env> {
       (url.pathname === "/api/office/reset" || url.pathname === "/api/demo/reset") &&
       request.method === "POST"
     ) {
-      this.resetOffice();
-      this.broadcastSnapshot();
-      return jsonResponse({ ok: true, snapshot: this.getSnapshot() });
+      // Standing rule: HQ history is never wiped from the dashboard or API.
+      return jsonResponse({ error: "Reset is disabled. HQ history is kept." }, 405);
     }
 
     return jsonResponse({ error: "Not found" }, 404);
@@ -3166,15 +3174,60 @@ export class OfficeHub extends DurableObject<Env> {
       )
       .toArray()[0];
     if (!dup) {
+      const qid = crypto.randomUUID();
       this.sql.exec(
         "INSERT INTO task_queue (id, bot_id, task, status, created_at) VALUES (?, ?, ?, 'queued', ?)",
-        crypto.randomUUID(),
+        qid,
         botId,
         clean,
         new Date().toISOString()
       );
+      this.wakeCeo(qid, botId, clean, "task-assign");
     }
     this.pushPendingDispatch(botId);
+  }
+
+  /**
+   * v19 CEO wake: POST the new request to Jared's routine webhook (HQ_WEBHOOK_URL), and nowhere else.
+   * Capped at 20 wakes per rolling hour (RULE 0); over the cap the request just waits in the queue,
+   * where Jared still pulls it from GET /api/bot/<id>/status. Never throws.
+   */
+  private wakeCeo(queueId: string, targetBotId: string, task: string, source: string): void {
+    try {
+      const target = (this.env.HQ_WEBHOOK_URL ?? "").trim();
+      const rawKey = (this.env.HQ_WEBHOOK_KEY ?? "").trim();
+      if (!target || !rawKey || !isSafeCallbackUrl(target)) return;
+      const gate = allowWake(this.wakeHistory, Date.now());
+      this.wakeHistory = gate.history;
+      if (!gate.allowed) {
+        console.log(JSON.stringify({ event: "ceo_wake_capped", queueId }));
+        return;
+      }
+      const payload = buildCeoWakePayload(queueId, targetBotId, task, source, new Date().toISOString());
+      const [hName, hValue] = wakeAuthHeader(rawKey);
+      this.ctx.waitUntil(
+        (async () => {
+          let last = "error";
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+              const res = await fetch(target, {
+                method: "POST",
+                headers: { "content-type": "application/json", "user-agent": "GrokBotHQ-CeoWake/1.0", [hName]: hValue },
+                body: JSON.stringify(payload),
+                signal: AbortSignal.timeout(10_000),
+              });
+              last = String(res.status);
+              if (res.ok) break;
+            } catch (err) {
+              last = err instanceof Error ? err.name : "error";
+            }
+          }
+          console.log(JSON.stringify({ event: "ceo_wake", ceo: CEO_BOT_ID, queueId, targetBotId, result: last }));
+        })()
+      );
+    } catch {
+      // A failed wake never blocks the request; it stays queued for Jared's pull.
+    }
   }
 
   /**
@@ -3307,6 +3360,34 @@ export class OfficeHub extends DurableObject<Env> {
    *   └─ Bernard (Executive Assistant, personal) → Wyatt, Andy, Chad, Cornelius
    * Every other bot is archived (hidden, restorable), never deleted.
    */
+  /**
+   * v19 one-time fix: org_chart_v1 archived "primary" (Jared's real check-in id) and kept the old paused
+   * "jared" duplicate as CEO. Restore primary as CEO, re-point its reports, and archive (never delete) the duplicate.
+   */
+  private applyCeoPrimaryV1(): void {
+    const done = this.sql
+      .exec<{ value: string }>("SELECT value FROM office_settings WHERE key = 'ceo_primary_v1'")
+      .toArray()[0];
+    if (done) return;
+    const primary = this.sql.exec<{ id: string }>("SELECT id FROM bots WHERE id = ?", CEO_BOT_ID).toArray()[0];
+    if (!primary) {
+      this.saveSettingKey("ceo_primary_v1", "skipped");
+      return;
+    }
+    this.sql.exec(
+      "UPDATE bots SET archived = 0, reports_to = NULL, org_title = 'CEO', name = 'Jared' WHERE id = ?",
+      CEO_BOT_ID
+    );
+    const dup = this.sql
+      .exec<{ id: string; task: string }>("SELECT id, task FROM bots WHERE id = 'jared'")
+      .toArray()[0];
+    if (dup) {
+      this.sql.exec("UPDATE bots SET reports_to = ? WHERE reports_to = 'jared'", CEO_BOT_ID);
+      this.sql.exec("UPDATE bots SET archived = 1 WHERE id = 'jared'");
+    }
+    this.saveSettingKey("ceo_primary_v1", "applied");
+  }
+
   private applyOrgChartV1(): void {
     const done = this.sql
       .exec<{ value: string }>("SELECT value FROM office_settings WHERE key = 'org_chart_v1'")
